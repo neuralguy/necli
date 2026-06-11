@@ -1,0 +1,13 @@
+{
+  "id": "google",
+  "name": "Google Gemini",
+  "type": "google",
+  "base_url": "https://generativelanguage.googleapis.com",
+  "api_format": "google",
+  "models": [
+    {"id": "gemini-3.1-pro", "display_name": "Gemini 3.1 Pro", "context_window": 2000000, "input_price": 1.25, "output_price": 5.00},
+    {"id": "gemini-3-flash", "display_name": "Gemini 3 Flash", "context_window": 1000000, "input_price": 0.075, "output_price": 0.30},
+    {"id": "gemini-2.5-pro", "display_name": "Gemini 2.5 Pro", "context_window": 2000000, "input_price": 1.25, "output_price": 5.00}
+  ],
+  "default_model": "gemini-3.1-pro"
+}

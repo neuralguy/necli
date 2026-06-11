@@ -1,0 +1,15 @@
+{
+  "id": "groq",
+  "name": "Groq",
+  "type": "openai_compatible",
+  "base_url": "https://api.groq.com/openai/v1",
+  "api_format": "openai",
+  "models": [
+    {"id": "moonshotai/kimi-k2-instruct", "display_name": "Kimi K2", "context_window": 128000, "input_price": 0.15, "output_price": 0.60},
+    {"id": "openai/gpt-oss-120b", "display_name": "GPT OSS 120B", "context_window": 131072, "input_price": 0.15, "output_price": 0.75},
+    {"id": "qwen/qwen3-32b", "display_name": "Qwen3 32B", "context_window": 131072, "input_price": 0.29, "output_price": 0.59},
+    {"id": "llama-3.3-70b-versatile", "display_name": "Llama 3.3 70B", "context_window": 128000, "input_price": 0.59, "output_price": 0.79},
+    {"id": "groq/compound", "display_name": "Compound", "context_window": 128000, "input_price": 0.50, "output_price": 1.00}
+  ],
+  "default_model": "moonshotai/kimi-k2-instruct"
+}

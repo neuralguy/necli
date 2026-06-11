@@ -1,0 +1,16 @@
+{
+  "id": "openai",
+  "name": "OpenAI",
+  "type": "openai_compatible",
+  "base_url": "https://api.openai.com/v1",
+  "api_format": "openai",
+  "models": [
+    {"id": "gpt-5", "display_name": "GPT-5", "context_window": 400000, "input_price": 2.50, "output_price": 10.00},
+    {"id": "gpt-5-mini", "display_name": "GPT-5 Mini", "context_window": 400000, "input_price": 0.30, "output_price": 1.20},
+    {"id": "gpt-4o", "display_name": "GPT-4o", "context_window": 128000, "input_price": 2.50, "output_price": 10.00},
+    {"id": "gpt-4o-mini", "display_name": "GPT-4o Mini", "context_window": 128000, "input_price": 0.15, "output_price": 0.60},
+    {"id": "o3", "display_name": "o3", "context_window": 200000, "input_price": 10.00, "output_price": 40.00},
+    {"id": "o3-mini", "display_name": "o3 Mini", "context_window": 200000, "input_price": 1.10, "output_price": 4.40}
+  ],
+  "default_model": "gpt-5"
+}

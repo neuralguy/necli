@@ -1,0 +1,47 @@
+[project]
+name = "necli-api"
+version = "0.13.8"
+description = "Terminal client for AI chat (API-only, no browser)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "rich",
+    "prompt-toolkit",
+    "click",
+    "tiktoken",
+    "httpx>=0.27",
+    "Pillow",
+    "python-docx",
+    "openpyxl",
+    "pylatexenc",
+    "loguru>=0.7",
+    "ddgs",
+    "trafilatura",
+    "pymupdf>=1.24",
+    "pdfplumber>=0.11",
+    "aiogram>=3.28.2",
+    "mcp>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.24",
+    "vulture>=2.16",
+    "pyinstaller>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: slow tests (>1s)",
+    "requires_pandoc: requires pandoc binary",
+    "requires_git: requires git binary",
+    "requires_node: requires node binary",
+    "requires_network: requires network access",
+    "integration: integration tests",
+    "e2e: end-to-end tests",
+]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"

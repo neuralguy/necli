@@ -1,0 +1,13 @@
+{
+  "id": "cohere",
+  "name": "Cohere",
+  "type": "openai_compatible",
+  "base_url": "https://api.cohere.ai/compatibility/v1",
+  "api_format": "openai",
+  "models": [
+    {"id": "command-a-03-2025", "display_name": "Command A", "context_window": 256000, "input_price": 2.50, "output_price": 10.00},
+    {"id": "command-r-plus", "display_name": "Command R+", "context_window": 128000, "input_price": 2.50, "output_price": 10.00},
+    {"id": "command-r", "display_name": "Command R", "context_window": 128000, "input_price": 0.15, "output_price": 0.60}
+  ],
+  "default_model": "command-a-03-2025"
+}

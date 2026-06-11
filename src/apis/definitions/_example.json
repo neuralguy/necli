@@ -1,0 +1,20 @@
+{
+  "_comment": "Пример определения API-провайдера. Файлы с _ в начале игнорируются.",
+  "id": "my-provider",
+  "name": "My Provider",
+  "type": "openai_compatible",
+  "base_url": "https://api.example.com/v1",
+  "api_format": "openai",
+  "models": [
+    {
+      "id": "my-model",
+      "display_name": "My Model",
+      "context_window": 128000,
+      "input_price": 1.0,
+      "output_price": 3.0
+    }
+  ],
+  "default_model": "my-model",
+  "timeout": 120,
+  "max_retries": 3
+}

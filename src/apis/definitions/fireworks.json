@@ -1,0 +1,14 @@
+{
+  "id": "fireworks",
+  "name": "Fireworks AI",
+  "type": "openai_compatible",
+  "base_url": "https://api.fireworks.ai/inference/v1",
+  "api_format": "openai",
+  "models": [
+    {"id": "accounts/fireworks/models/llama-v3p3-70b-instruct", "display_name": "Llama 3.3 70B", "context_window": 131072, "input_price": 0.90, "output_price": 0.90},
+    {"id": "accounts/fireworks/models/deepseek-v3", "display_name": "DeepSeek V3", "context_window": 128000, "input_price": 0.90, "output_price": 0.90},
+    {"id": "accounts/fireworks/models/qwen2p5-coder-32b-instruct", "display_name": "Qwen2.5 Coder 32B", "context_window": 32768, "input_price": 0.90, "output_price": 0.90},
+    {"id": "accounts/fireworks/models/mixtral-8x22b-instruct", "display_name": "Mixtral 8x22B", "context_window": 65536, "input_price": 1.20, "output_price": 1.20}
+  ],
+  "default_model": "accounts/fireworks/models/llama-v3p3-70b-instruct"
+}

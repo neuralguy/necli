@@ -1,0 +1,14 @@
+{
+  "id": "together",
+  "name": "Together AI",
+  "type": "openai_compatible",
+  "base_url": "https://api.together.xyz/v1",
+  "api_format": "openai",
+  "models": [
+    {"id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8", "display_name": "Llama 4 Maverick", "context_window": 1000000, "input_price": 0.27, "output_price": 0.85},
+    {"id": "deepseek-ai/DeepSeek-V3", "display_name": "DeepSeek V3", "context_window": 128000, "input_price": 1.25, "output_price": 1.25},
+    {"id": "Qwen/Qwen2.5-Coder-32B-Instruct", "display_name": "Qwen2.5 Coder 32B", "context_window": 32768, "input_price": 0.80, "output_price": 0.80},
+    {"id": "mistralai/Mixtral-8x22B-Instruct-v0.1", "display_name": "Mixtral 8x22B", "context_window": 65536, "input_price": 1.20, "output_price": 1.20}
+  ],
+  "default_model": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+}

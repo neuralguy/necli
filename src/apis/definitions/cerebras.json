@@ -1,0 +1,13 @@
+{
+  "id": "cerebras",
+  "name": "Cerebras",
+  "type": "openai_compatible",
+  "base_url": "https://api.cerebras.ai/v1",
+  "api_format": "openai",
+  "models": [
+    {"id": "llama-3.3-70b", "display_name": "Llama 3.3 70B", "context_window": 128000, "input_price": 0.85, "output_price": 1.20},
+    {"id": "llama3.1-8b", "display_name": "Llama 3.1 8B", "context_window": 128000, "input_price": 0.10, "output_price": 0.10},
+    {"id": "qwen-3-32b", "display_name": "Qwen3 32B", "context_window": 131072, "input_price": 0.40, "output_price": 0.80}
+  ],
+  "default_model": "llama-3.3-70b"
+}
