@@ -144,14 +144,23 @@ async def build_first_message(
     working_dir: str,
     history: list[dict] | None = None,
     plan: "Plan | None" = None,
+    include_system: bool = True,
 ) -> str:
-    """Строит первое сообщение: system prompt + dir context + [plan] + [history] + user text."""
-    proof, dir_context = await asyncio.gather(
-        gather_proof(working_dir),
-        gather_dir_context(working_dir),
-    )
-    system = build_system_prompt(proof=proof)
-    parts = [system]
+    """Строит первое сообщение: [system prompt +] dir context + [plan] + [history] + user text.
+
+    include_system=False используется в API-режиме, где системный промпт
+    передаётся отдельно через system_prompt= параметр api_send_message.
+    """
+    if include_system:
+        proof, dir_context = await asyncio.gather(
+            gather_proof(working_dir),
+            gather_dir_context(working_dir),
+        )
+        system = build_system_prompt(proof=proof)
+        parts = [system]
+    else:
+        dir_context = await gather_dir_context(working_dir)
+        parts = []
     if dir_context:
         parts.append("\n" + dir_context)
     if plan and plan.steps and not plan.is_complete:

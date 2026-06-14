@@ -460,7 +460,7 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         messages.insert(0, SystemMessage(content=effective_prompt))
     mm_content_cached = None
     has_images = False
-    pending_tool_calls = _pending_native_tool_calls(session.messages) if use_tools else []
+    pending_tool_calls = _pending_native_tool_calls(messages) if use_tools else []
     tool_result_messages: list[ToolMessage] = []
     extras_message: HumanMessage | None = None
     images_message: HumanMessage | None = None

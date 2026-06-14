@@ -123,6 +123,8 @@ def select_menu(
     items: list[dict],
     current: int = 0,
     title: str = "",
+    allow_back: bool = False,
+    allow_forward: bool = False,
 ) -> Optional[int]:
     """
     Показывает интерактивное меню со стрелками.
@@ -185,7 +187,15 @@ def select_menu(
                 lines.append(f"  {marker}{text}")
         return lines
 
-    hint_line = f"  {DIM}↑↓ select · enter confirm · esc cancel{RESET}"
+    if allow_back and allow_forward:
+        nav_hint = " · ←→ steps"
+    elif allow_back:
+        nav_hint = " · ← step"
+    elif allow_forward:
+        nav_hint = " · → step"
+    else:
+        nav_hint = ""
+    hint_line = f"  {DIM}↑↓ select · enter confirm{nav_hint} · esc cancel{RESET}"
 
     def _build_content():
         parts = []
@@ -219,6 +229,12 @@ def select_menu(
                 elif key == 'ctrl-c' or key == 'escape':
                     clear_lines(rendered_count)
                     return None
+                elif key == 'left' and allow_back:
+                    clear_lines(rendered_count)
+                    return -(selected + 2)
+                elif key == 'right' and allow_forward:
+                    clear_lines(rendered_count)
+                    return selected
                 else:
                     if key.isdigit():
                         num = int(key)
@@ -560,6 +576,8 @@ def _panel_menu_direct(
     initial_selected: int,
     on_key=None,
     text_input: bool = False,
+    allow_back: bool = False,
+    allow_forward: bool = False,
 ) -> Optional[int]:
     """
     Общий цикл навигации для панельных меню без мигания.
@@ -570,7 +588,15 @@ def _panel_menu_direct(
     """
     DIM = '\x1b[2m'
     RESET = '\x1b[0m'
-    hint_line = f"  {DIM}{hint_text}{RESET}"
+    if allow_back and allow_forward:
+        nav_suffix = " · ←→ steps"
+    elif allow_back:
+        nav_suffix = " · ← step"
+    elif allow_forward:
+        nav_suffix = " · → step"
+    else:
+        nav_suffix = ""
+    hint_line = f"  {DIM}{hint_text}{nav_suffix}{RESET}"
 
     selected = initial_selected
 
@@ -604,6 +630,16 @@ def _panel_menu_direct(
                     stream.write('\x1b[?25h')
                     stream.flush()
                     return None
+                elif key == 'left' and allow_back:
+                    _clear_stream_lines(stream, rendered_count)
+                    stream.write('\x1b[?25h')
+                    stream.flush()
+                    return -(selected + 2)
+                elif key == 'right' and allow_forward:
+                    _clear_stream_lines(stream, rendered_count)
+                    stream.write('\x1b[?25h')
+                    stream.flush()
+                    return selected
                 else:
                     if on_key is not None:
                         res = on_key(key, selected)

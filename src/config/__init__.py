@@ -50,3 +50,5 @@ def get_telegram_enabled() -> bool:
 
 def set_telegram_enabled(enabled: bool) -> None:
     set_value("telegram_enabled", bool(enabled))
+
+

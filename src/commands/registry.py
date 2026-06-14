@@ -76,8 +76,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/stats",       "misc",    "help.stats",       args_hint="[N]"),
     SlashCommand("/copy",        "misc",    "help.copy",        args_hint="[N]"),
     SlashCommand("/tg",          "misc",    "help.tg"),
-
 )
+
 
 
 # Lookup: name/alias → SlashCommand
