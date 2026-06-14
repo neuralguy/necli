@@ -156,17 +156,6 @@ def _format_background_notice(results: list[tools.ToolResult]) -> str:
         + "\n---\n".join(parts)
     )
 
-
-def _format_background_notice(results: list[tools.ToolResult]) -> str:
-    """Текстовый блок-уведомление о завершённых фоновых shell-задачах."""
-    if not results:
-        return ""
-    parts = [r.output for r in results if r.output]
-    return (
-        "[BACKGROUND TASKS FINISHED]\n"
-        + "\n---\n".join(parts)
-    )
-
 def _collect_image_paths(results: list[tools.ToolResult]) -> list[Path]:
     paths = []
     for r in results:
@@ -272,7 +261,7 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         stream.stop(cancelled=True)
         partial = strip_tool_calls(stream.buffer).strip() or "[Interrupted]"
         if session:
-            session.add_assistant_message(partial, model=model or "", thoughts=_extract_thoughts(stream.buffer))
+            session.add_assistant_message(partial, model=model or "", usage=usage or None, thoughts=_extract_thoughts(stream.buffer))
         raise
     except StreamEarlyAbort:
         logger.info("stream aborted early (precheck failed)")
