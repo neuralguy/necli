@@ -6,14 +6,17 @@ from apis.tool_schemas import (
     TOOL_SCHEMAS,
     get_tool_schemas,
     invalidate_schemas_cache,
+    tool_requires_args,
 )
 from config import READ_ONLY_TOOLS
 from tools.registry import TOOL_REGISTRY
 
+# ssh/subagent теперь гейтятся скиллами и в agent-mode по умолчанию скрыты —
+# тестируются отдельно в TestSkillGating. Здесь только негейтящиеся write-тулы.
 WRITE_TOOLS = {
     "shell", "write_file", "patch_file", "create_file", "delete_file",
     "rename_file", "copy_file", "move_file", "create_docx", "mkdir",
-    "rmdir", "apply_diff", "ssh", "subagent",
+    "rmdir", "apply_diff",
 }
 
 def _names(schemas):
@@ -88,6 +91,55 @@ class TestAgentMode:
         assert a is not b
         assert _names(a) == _names(b)
 
+class TestSkillGating:
+    """Гейтящиеся скиллами тулы скрыты, пока скилл не активен."""
+
+    GATED = {"web_search", "image_search", "ssh", "subagent", "workflow"}
+
+    def test_gated_hidden_by_default(self):
+        names = set(_names(get_tool_schemas("agent")))
+        assert not (self.GATED & names), f"gated tools leaked: {self.GATED & names}"
+
+    def test_gated_hidden_with_empty_active(self):
+        names = set(_names(get_tool_schemas("agent", set())))
+        assert not (self.GATED & names)
+
+    def test_web_skill_exposes_web_tools(self):
+        names = set(_names(get_tool_schemas("agent", {"web"})))
+        assert "web_search" in names
+        assert "image_search" in names
+        # but not ssh/subagent (different skills)
+        assert "ssh" not in names
+        assert "subagent" not in names
+
+    def test_ssh_skill_exposes_ssh(self):
+        names = set(_names(get_tool_schemas("agent", {"ssh"})))
+        assert "ssh" in names
+        assert "web_search" not in names
+
+    def test_subagents_skill_exposes_orchestration(self):
+        names = set(_names(get_tool_schemas("agent", {"subagents"})))
+        assert "subagent" in names
+        assert "workflow" in names
+
+    def test_all_skills_active_exposes_all_gated(self):
+        names = set(_names(get_tool_schemas("agent", {"web", "ssh", "subagents"})))
+        assert self.GATED <= names
+
+    def test_ungated_tools_always_present(self):
+        names = set(_names(get_tool_schemas("agent", set())))
+        assert "shell" in names
+        assert "read_files" in names
+        assert "skill" in names
+
+    def test_cache_distinguishes_active_skills(self):
+        # разный набор активных скиллов → разные результаты (кэш не путает)
+        n_none = set(_names(get_tool_schemas("agent", set())))
+        n_web = set(_names(get_tool_schemas("agent", {"web"})))
+        assert "web_search" not in n_none
+        assert "web_search" in n_web
+
+
 class TestPlanMode:
     def test_excludes_write_tools(self):
         names = set(_names(get_tool_schemas("plan")))
@@ -117,3 +169,18 @@ class TestSchemaValidity:
         import json
         json.dumps(get_tool_schemas("agent"))
         json.dumps(get_tool_schemas("plan"))
+
+class TestToolRequiresArgs:
+    """Используется для восстановления потерянных при стриминге native-args:
+    пустой {} у тула с required-полями → нужен фолбэк-перезапрос."""
+
+    def test_tools_with_required_params(self):
+        assert tool_requires_args("memory_write") is True
+        assert tool_requires_args("memory_read") is True
+        assert tool_requires_args("shell") is True
+
+    def test_noarg_tools(self):
+        assert tool_requires_args("memory_list") is False
+
+    def test_unknown_tool_is_false(self):
+        assert tool_requires_args("definitely_not_a_tool") is False

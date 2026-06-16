@@ -21,8 +21,8 @@ def strip_tool_calls(text: str) -> str:
         return ""
     import re
     result = _strip_call_calls(text)
-    # Уберём пустые :::call ... call::: обёртки.
-    result = re.sub(r":::call[^\n]*\n\s*\n?call:::", "", result)
+    # Уберём пустые :::call ... call::: обёртки (2-3 двоеточия — см. call_parser).
+    result = re.sub(r"(?m)^[ \t]*:{2,3}call[^\n]*\n\s*\n?call:{2,3}", "", result)
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
 

@@ -5,8 +5,6 @@ import pytest
 from commands.registry import (
     CATEGORIES,
     COMMANDS,
-    SlashCommand,
-    all_completion_names,
     by_category,
     lookup,
 )
@@ -84,37 +82,6 @@ class TestLookup:
         for c in COMMANDS:
             for a in c.aliases:
                 assert lookup(a) is c
-
-class TestCompletionNames:
-    def test_includes_all_completable_names(self):
-        names = all_completion_names()
-        for c in COMMANDS:
-            if c.completable:
-                assert c.name in names
-            else:
-                assert c.name not in names
-
-    def test_includes_aliases_of_completable(self):
-        names = all_completion_names()
-        for c in COMMANDS:
-            if not c.completable:
-                continue
-            for a in c.aliases:
-                assert a in names
-
-    def test_returns_list(self):
-        assert isinstance(all_completion_names(), list)
-
-    def test_no_duplicates_among_canonical_names(self):
-        names = all_completion_names()
-        canon = [c.name for c in COMMANDS if c.completable]
-        for n in canon:
-            assert names.count(n) == 1
-
-    def test_respects_completable_false(self):
-        marker = SlashCommand("/__hidden__", "misc", "help.help", completable=False)
-        # sanity on the dataclass flag itself
-        assert marker.completable is False
 
 class TestByCategory:
     def test_order_matches_categories(self):

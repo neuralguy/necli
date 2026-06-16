@@ -72,33 +72,64 @@ def clear_lines(n: int):
     sys.stdout.flush()
 
 
+def _strip_ansi(text: str) -> str:
+    """Удаляет ANSI-escape последовательности для подсчёта видимой ширины."""
+    import re
+    return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', text)
+
+
+def _physical_rows(line: str, term_width: int) -> int:
+    """Сколько физических строк терминала займёт одна логическая строка.
+
+    Учитывает перенос длинных строк (wrap) и двойную ширину CJK-символов,
+    игнорируя ANSI-коды (они не занимают видимых ячеек).
+    """
+    if term_width <= 0:
+        return 1
+    visible_w = _cell_width(_strip_ansi(line))
+    if visible_w == 0:
+        return 1
+    return (visible_w + term_width - 1) // term_width
+
+
 def _move_up_and_overwrite(stream, new_content: str, prev_lines: int) -> int:
     """
     Перемещает курсор вверх на prev_lines, перезаписывает содержимое построчно.
     Каждая строка очищается до конца — устраняет артефакты и мигание.
-    Возвращает количество строк в новом контенте.
+    Возвращает количество ФИЗИЧЕСКИХ строк терминала в новом контенте
+    (с учётом переноса длинных строк), чтобы следующий вызов поднял курсор
+    ровно на столько же строк.
     """
+    term_width = shutil.get_terminal_size((80, 24)).columns
     stream.write('\x1b[?25l')  # скрыть курсор
     stream.write('\r')  # начало текущей строки
-    # Подняться на prev_lines - 1 строк
-    for _ in range(prev_lines - 1):
+    # Подняться на prev_lines - 1 физических строк
+    for _ in range(max(0, prev_lines - 1)):
         stream.write('\x1b[A')
 
-    # Разбиваем на строки и пишем каждую с очисткой остатка
+    # Разбиваем на логические строки и пишем каждую с очисткой остатка.
     lines = new_content.split('\n')
-    # Визуальные строки = количество элементов split
-    # (последний элемент может быть непустым, например hint_line)
-    new_lines = len(lines) if lines[-1] else len(lines) - 1
+    # Последний элемент может быть пустым (контент заканчивается \n).
+    logical = lines if lines[-1] else lines[:-1]
 
-    for i, line in enumerate(lines):
+    # Физическое число строк = сумма перенесённых строк по каждой логической.
+    new_lines = sum(_physical_rows(ln, term_width) for ln in logical) or 1
+
+    for i, line in enumerate(logical):
         stream.write('\r')  # начало строки
         stream.write(line)
         stream.write('\x1b[K')  # очистить от курсора до конца строки
-        if i < len(lines) - 1:
+        if i < len(logical) - 1:
+            # Спускаемся на число физических строк, которое заняла записанная
+            # строка (а не на одну): при переносе терминал уже сдвинул курсор
+            # на rows-1 строк автоматически, поэтому добиваем недостающее.
+            rows = _physical_rows(line, term_width)
             stream.write('\x1b[B')
+            for _ in range(rows - 1):
+                stream.write('\x1b[B')
 
-    # Если старый контент был длиннее — очистить лишние строки
-    extra = prev_lines - new_lines
+    # Если старый контент был длиннее — очистить лишние физические строки
+    extra = max(0, prev_lines - new_lines)
     for _ in range(extra):
         stream.write('\x1b[B\r\x1b[2K')
     # Вернуться назад на extra строк
@@ -123,6 +154,8 @@ def select_menu(
     items: list[dict],
     current: int = 0,
     title: str = "",
+    allow_back: bool = False,
+    allow_forward: bool = False,
 ) -> Optional[int]:
     """
     Показывает интерактивное меню со стрелками.
@@ -185,7 +218,15 @@ def select_menu(
                 lines.append(f"  {marker}{text}")
         return lines
 
-    hint_line = f"  {DIM}↑↓ select · enter confirm · esc cancel{RESET}"
+    if allow_back and allow_forward:
+        nav_hint = " · ←→ steps"
+    elif allow_back:
+        nav_hint = " · ← step"
+    elif allow_forward:
+        nav_hint = " · → step"
+    else:
+        nav_hint = ""
+    hint_line = f"  {DIM}↑↓ select · enter confirm{nav_hint} · esc cancel{RESET}"
 
     def _build_content():
         parts = []
@@ -219,6 +260,12 @@ def select_menu(
                 elif key == 'ctrl-c' or key == 'escape':
                     clear_lines(rendered_count)
                     return None
+                elif key == 'left' and allow_back:
+                    clear_lines(rendered_count)
+                    return -(selected + 2)
+                elif key == 'right' and allow_forward:
+                    clear_lines(rendered_count)
+                    return selected
                 else:
                     if key.isdigit():
                         num = int(key)
@@ -560,6 +607,8 @@ def _panel_menu_direct(
     initial_selected: int,
     on_key=None,
     text_input: bool = False,
+    allow_back: bool = False,
+    allow_forward: bool = False,
 ) -> Optional[int]:
     """
     Общий цикл навигации для панельных меню без мигания.
@@ -570,7 +619,15 @@ def _panel_menu_direct(
     """
     DIM = '\x1b[2m'
     RESET = '\x1b[0m'
-    hint_line = f"  {DIM}{hint_text}{RESET}"
+    if allow_back and allow_forward:
+        nav_suffix = " · ←→ steps"
+    elif allow_back:
+        nav_suffix = " · ← step"
+    elif allow_forward:
+        nav_suffix = " · → step"
+    else:
+        nav_suffix = ""
+    hint_line = f"  {DIM}{hint_text}{nav_suffix}{RESET}"
 
     selected = initial_selected
 
@@ -604,6 +661,16 @@ def _panel_menu_direct(
                     stream.write('\x1b[?25h')
                     stream.flush()
                     return None
+                elif key == 'left' and allow_back:
+                    _clear_stream_lines(stream, rendered_count)
+                    stream.write('\x1b[?25h')
+                    stream.flush()
+                    return -(selected + 2)
+                elif key == 'right' and allow_forward:
+                    _clear_stream_lines(stream, rendered_count)
+                    stream.write('\x1b[?25h')
+                    stream.flush()
+                    return selected
                 else:
                     if on_key is not None:
                         res = on_key(key, selected)

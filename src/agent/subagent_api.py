@@ -42,7 +42,23 @@ from apis.messages import (
 
 logger = logging.getLogger(__name__)
 
-MAX_SUBAGENT_ITERATIONS = 120
+MAX_SUBAGENT_ITERATIONS = 200
+
+# Потолок АКТИВНОГО контекста (input одного вызова) субагента. Бэкстоп от
+# runaway-петель verify/polish: «проверь → поправь → перечитай файл → снова
+# проверь» раздувает контекст одного вызова, перечитывая большие файлы по кругу;
+# прунер вытесняет старое, но если петля тащит всё больше — input улетает вверх.
+# При превышении субагент останавливается с тем, что есть (graceful). Это НЕ
+# кумулятив по итерациям (тот рос бы O(N²) и ложно стопил нормальную длинную
+# работу) — длину ограничивает MAX_SUBAGENT_ITERATIONS. 1M токенов активного
+# контекста — заведомо аномалия для фокусной задачи субагента.
+MAX_SUBAGENT_CONTEXT_TOKENS = 1_000_000
+
+# Таймаут на ОДИН вызов модели субагентом. Прокси (onlysq) умеет зависать на
+# стриме (в логах ответы по 38с и дольше); без таймаута повисший ainvoke/astream
+# блокирует субагента — и весь воркфлоу/пул — навсегда. При срабатывании итерация
+# завершается с ошибкой, цикл идёт дальше (или штатно упирается в лимит итераций).
+MODEL_CALL_TIMEOUT_SEC = 240.0
 
 _ROLE_PROFILES: dict[str, str] = {
     "coder": (
@@ -201,6 +217,7 @@ class _ApiSubagentRunner:
         preset=None,
         project_root: str = "",
         isolate: bool = True,
+        wave_size: int = 1,
     ):
         self.index = index
         self.prompt = prompt
@@ -218,6 +235,20 @@ class _ApiSubagentRunner:
         self.role = _normalize_role(role)
         self.preset = preset  # AgentPreset | None
         self.dep_context = dep_context or ""
+        # Сколько субагентов работает ОДНОВРЕМЕННО в этой волне (включая себя).
+        # 1 → пиров нет, ждать некого: критично против sleep-поллинга «соседа».
+        self.wave_size = max(1, int(wave_size or 1))
+        # АКТИВНЫЙ контекст последнего вызова модели (input_tokens последнего
+        # обмена). Это правильный сигнал runaway-петли: каждый вызов шлёт весь
+        # растущий контекст, и если прунер не справляется (verify/polish крутит
+        # перечитывание больших файлов), input одного вызова улетает за потолок
+        # окна. СУММИРОВАТЬ input по итерациям нельзя — это O(N²) и ложно стопит
+        # нормальную длинную работу. Число итераций ограничено отдельно
+        # (MAX_SUBAGENT_ITERATIONS). Считаем независимо от buffer (на tool-пути
+        # buffer=None).
+        self._last_input_tokens = 0
+        # Кумулятив (input+output по всем вызовам) — только для лога/справки.
+        self._spent_tokens = 0
 
         self.session = ApiSession(provider_id, model_id)
         self.use_native = self.session.use_native_tools
@@ -262,12 +293,19 @@ class _ApiSubagentRunner:
         # свой фокусный протокол, THINK
         # ему не навязываем. mode='agent' тут номинален: ниже добавляется
         # subagent-specific mode_block с детальными правилами worktree/роли.
+        # Субагент не гейтит инструменты скиллами: он короткоживущий и фокусный,
+        # а его mode-block прямо обещает доступность web_search и пр. Даём ему
+        # полный набор (все гейтящие скиллы считаем «активными»).
+        from skills.registry import SKILL_TOOLS as _SK
+        all_skills = set(_SK)
         base = build_system_prompt(
             proof=proof,
             mode="agent",
             working_dir=self.working_dir,
             think_enabled=False,
             native_tools=self.use_native,
+            for_subagent=True,
+            active_skills=all_skills,
         )
         mode_block = (
             "\n\n━━━ SUBAGENT MODE: AGENT ━━━\n"
@@ -276,6 +314,21 @@ class _ApiSubagentRunner:
             "(web_search IS available — use it for any real-time/online info). "
             "NEVER ask the user questions — decide and act.\n"
             f"{self._workspace_prompt()}"
+            "CONTEXT DISCIPLINE (your context is small — keep it lean, every token counts):\n"
+            "  - LOCATE, then read NARROW. Never open a file whole to find something. For a symbol "
+            "(function/class/method/variable) the FIRST tool is LSP (lsp_definition/references/hover); "
+            "for text it's grep_files. Then read a TARGETED window (≈±60 lines) around the hit — not the "
+            "entire file. Read a file in full ONLY if it's genuinely small (≲200 lines) or you truly "
+            "need all of it. Dragging a 1000-line file into context to touch one function is exactly the "
+            "waste that kills a subagent — a few grep/LSP calls plus narrow reads cost a fraction of it.\n"
+            "  - You ALREADY KNOW the content you write/patch — do NOT re-read a file right after "
+            "editing it just to 'check'. The edit either applied or errored; trust the result.\n"
+            "  - Read each needed range ONCE up front (batch them in one read_files call). Don't re-read "
+            "the same file across iterations 'to be sure'.\n"
+            "  - VERIFY ONCE at the end, not after every change: make all edits, then run the check "
+            "(test/grep/build) a single time. Fix only what it surfaces.\n"
+            "  - This is a bounded task, NOT endless polishing. When it works and meets the brief, STOP "
+            "and give the final answer. Do not keep re-reading and re-tweaking for marginal gains.\n"
             "FINAL ANSWER FORMAT (reply with text only, no tool call, when done):\n"
             "  1. What you did — 1-3 bullet lines.\n"
             "  2. Files changed — path + one line each (or 'none').\n"
@@ -303,28 +356,48 @@ class _ApiSubagentRunner:
                 f"{self.dep_context}\n"
             )
 
+        # ⛔ Анти-sleep: субагент НИКОГДА не должен спать/поллить в ожидании
+        # соседа. Файлы ниже — справка для ОДНОКРАТНОГО чтения, не канал ожидания.
+        mode_block += (
+            "\n━━━ NEVER WAIT, NEVER SLEEP FOR A PEER ━━━\n"
+            "You CANNOT wait for another subagent. Same-wave peers run in parallel and their files may "
+            "not exist yet; `sleep N && cat <peer-file>` / `sleep; if [ -f ... ]` / any poll-retry loop "
+            "for a sibling's output is ALWAYS A BUG — it just burns your wall-clock and the file still "
+            "won't be there. If you NEED another agent's output before you can start, that is a "
+            "dependency the orchestrator must model with depends_on (its result is then injected into "
+            "your prompt under RESULTS FROM DEPENDENCY SUBAGENTS) — it is NOT something you sleep for. "
+            "`sleep` is allowed ONLY for a real local reason (wait a few seconds for a server you just "
+            "started before curl-ing it; let a process you killed die) — never to wait on a peer.\n"
+        )
+        if self.wave_size <= 1:
+            mode_block += (
+                "You are the ONLY subagent in this wave — there are NO peers running alongside you. "
+                "Nothing will appear in any shared/progress file from a sibling. Do your task and "
+                "finish; do not look for or wait on work from others.\n"
+            )
+
         import os as _os
         progress_path = _os.path.join(
             _os.path.dirname(self.working_dir.rstrip("/")), "progress.md",
         )
         mode_block += (
-            "\n━━━ PEER PROGRESS LOG ━━━\n"
-            "An incremental log of THIS run's subagents is written at:\n"
+            "\n━━━ PEER PROGRESS LOG (read-once reference, never poll) ━━━\n"
+            "A log of THIS run's subagents is at:\n"
             f"  {progress_path}\n"
-            "Each peer is appended there the moment it FINISHES (DONE/ERROR) — "
-            "read it to inspect already-completed peers without waiting for the "
-            "whole run. It lives OUTSIDE your worktree and is NOT committed.\n"
+            "Each peer is appended the moment it FINISHES. Read it AT MOST ONCE if you genuinely need "
+            "to know what already completed — then act on whatever is there. Do NOT re-read it in a "
+            "loop and NEVER sleep waiting for an entry to appear. It lives OUTSIDE your worktree and "
+            "is NOT committed.\n"
         )
 
         scratch = _read_scratchpad(self.working_dir)
         mode_block += (
-            "\n━━━ SHARED SCRATCHPAD ━━━\n"
-            "A shared notes file is available to ALL subagents of this run at:\n"
+            "\n━━━ SHARED SCRATCHPAD (read-once reference, never poll) ━━━\n"
+            "A shared notes file for this run is at:\n"
             f"  {_shared_scratchpad_path(self.working_dir)}\n"
-            "Read it for contracts/interfaces other subagents agreed on. "
-            "Append (never overwrite) your own decisions other subagents may "
-            "need — use shell `cat >>` or read_files+write_file carefully. "
-            "It lives OUTSIDE your worktree and is NOT committed.\n"
+            "Read it ONCE for contracts/interfaces already agreed on, then proceed. Append (never "
+            "overwrite) your own decisions peers may need. Treat a missing entry as 'not decided yet, "
+            "decide it yourself' — never sleep waiting for one. OUTSIDE your worktree, NOT committed.\n"
         )
         if scratch:
             mode_block += f"Current scratchpad content:\n{scratch}\n"
@@ -333,7 +406,10 @@ class _ApiSubagentRunner:
         return base + mode_block
 
     def _tools_schema(self) -> list[dict]:
-        schemas = get_tool_schemas("agent")
+        # Субагент не гейтит инструменты скиллами (см. _build_system_prompt) —
+        # передаём все гейтящие скиллы как активные, гасим только запрещённые.
+        from skills.registry import SKILL_TOOLS as _SK
+        schemas = get_tool_schemas("agent", set(_SK))
         return [
             s for s in schemas
             if s.get("function", {}).get("name") not in _BLOCKED_FOR_SUBAGENTS
@@ -367,6 +443,41 @@ class _ApiSubagentRunner:
                 pass
         return llm, bound_ok
 
+    def _pruned_messages(self) -> list:
+        """Контекст для отправки модели с вытеснением старых read/tool-выводов.
+
+        Главный цикл (agent_adapter) прунит контекст перед каждым вызовом, а
+        субагент раньше слал сырой self.session.messages — он копился линейно
+        (54 tool-call = 350k токенов). Тот же prune_messages: не мутирует вход,
+        вытесняет устаревшие/крупные/древние чтения, дедуплицирует пути.
+        """
+        from apis._context_pruner import prune_messages
+        messages, stats = prune_messages(self.session.messages)
+        if stats["pruned_blocks"]:
+            logger.info(
+                "subagent %d context pruner: evicted %d block(s), saved ~%d chars",
+                self.index + 1, stats["pruned_blocks"], stats["saved_chars"],
+            )
+        return messages
+
+    def _track_usage(self, usage) -> None:
+        """Копит токены раннера из usage_metadata и обновляет buffer, если он есть.
+
+        Источник истины для бюджет-гарда — self._spent_tokens (работает и когда
+        buffer=None, т.е. на основном tool-пути).
+        """
+        if self.buffer:
+            self.buffer.on_usage(usage)
+        if isinstance(usage, dict):
+            it = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+            ot = usage.get("output_tokens") or usage.get("completion_tokens") or 0
+            total = usage.get("total_tokens")
+            try:
+                self._last_input_tokens = int(it)
+                self._spent_tokens += int(total) if total else int(it) + int(ot)
+            except (TypeError, ValueError):
+                pass
+
     async def _call_model(self) -> tuple[str, list[dict]]:
         """Делает один вызов модели, возвращает (raw_text, tool_calls)."""
         # tools биндим если у нас native function calling и есть хоть один
@@ -379,16 +490,19 @@ class _ApiSubagentRunner:
 
         on_chunk = self.buffer.on_chunk if self.buffer else None
 
+        # Прунинг ПЕРЕД каждым вызовом — как в главном цикле. Отправляем
+        # пруненую копию, не сырой self.session.messages.
+        msgs = self._pruned_messages()
+
         raw_text = ""
         tool_calls: list[dict] = []
 
         if use_tools:
-            result = await with_throttle_retry(lambda: llm.ainvoke(self.session.messages))
+            result = await with_throttle_retry(lambda: llm.ainvoke(msgs))
             raw_text = _content_to_text(getattr(result, "content", result))
             tool_calls = list(getattr(result, "tool_calls", []) or [])
             tool_calls = _ensure_tool_call_ids(tool_calls)
-            if self.buffer:
-                self.buffer.on_usage(getattr(result, "usage_metadata", None))
+            self._track_usage(getattr(result, "usage_metadata", None))
             if on_chunk is not None:
                 if raw_text:
                     on_chunk(raw_text)
@@ -396,24 +510,22 @@ class _ApiSubagentRunner:
                     on_chunk(raw_text + _tool_calls_to_text_blocks(tool_calls))
         elif on_chunk is not None:
             final_chunk = await stream_with_throttle_retry(
-                lambda: llm.astream(self.session.messages),
+                lambda: llm.astream(msgs),
                 on_chunk,
                 on_tool_chunk=lambda c: None,
             )
             raw_text = _content_to_text(getattr(final_chunk, "content", ""))
             tool_calls = list(getattr(final_chunk, "tool_calls", []) or [])
-            if self.buffer:
-                self.buffer.on_usage(getattr(final_chunk, "usage_metadata", None))
+            self._track_usage(getattr(final_chunk, "usage_metadata", None))
             if tool_calls:
                 tool_calls = _ensure_tool_call_ids(tool_calls)
                 on_chunk(raw_text + _tool_calls_to_text_blocks(tool_calls))
         else:
-            result = await with_throttle_retry(lambda: llm.ainvoke(self.session.messages))
+            result = await with_throttle_retry(lambda: llm.ainvoke(msgs))
             raw_text = _content_to_text(getattr(result, "content", result))
             tool_calls = list(getattr(result, "tool_calls", []) or [])
             tool_calls = _ensure_tool_call_ids(tool_calls)
-            if self.buffer:
-                self.buffer.on_usage(getattr(result, "usage_metadata", None))
+            self._track_usage(getattr(result, "usage_metadata", None))
 
         return raw_text, tool_calls
 
@@ -545,12 +657,51 @@ class _ApiSubagentRunner:
             raw_text = ""
             progress_nudges = 0
             for iterations in range(MAX_SUBAGENT_ITERATIONS):
+                # Context-size backstop: если АКТИВНЫЙ контекст одного вызова
+                # (input последнего обмена) раздулся за потолок — это runaway-петля
+                # read/patch/re-read, которую прунер не смог удержать. Останавливаемся
+                # с тем, что есть. Сравниваем активный контекст, НЕ кумулятив по
+                # итерациям (тот рос бы O(N²) и ложно стопил нормальную длинную
+                # работу). Длину ограничивает MAX_SUBAGENT_ITERATIONS.
+                ctx = self._last_input_tokens
+                if ctx > MAX_SUBAGENT_CONTEXT_TOKENS:
+                    logger.warning(
+                        "Subagent %s context too large (%d > %d) at iter %d "
+                        "(cumulative billed: %d) — stopping",
+                        self.index, ctx, MAX_SUBAGENT_CONTEXT_TOKENS,
+                        iterations, self._spent_tokens,
+                    )
+                    final = strip_tool_calls(raw_text).strip()
+                    final = (final + "\n\n[Subagent stopped: context size limit reached]").strip()
+                    if self.buffer:
+                        self.buffer.on_done(final)
+                    # Контекст переполнен = РАБОТА, скорее всего, НЕ ДОВЕДЕНА до конца.
+                    # Возвращаем error (а не None), чтобы главный агент/workflow
+                    # узнали о неполноте, а не считали это полным успехом. Сделанный
+                    # текст сохраняется в final — он не теряется.
+                    return final, iterations + 1, "stopped: context size limit reached (work likely incomplete)"
+
                 self.status_cb(self.index, f"Iteration {iterations + 1}")
                 if self.buffer:
                     self.buffer.streaming_text = ""
                     self.buffer.on_iteration(iterations)
 
-                raw_text, native_tool_calls = await self._call_model()
+                try:
+                    raw_text, native_tool_calls = await asyncio.wait_for(
+                        self._call_model(), timeout=MODEL_CALL_TIMEOUT_SEC,
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.warning(
+                        "Subagent %d model call timed out (%.0fs) at iter %d",
+                        self.index + 1, MODEL_CALL_TIMEOUT_SEC, iterations,
+                    )
+                    # Повисший провайдер: не зависаем навсегда. Подсказываем
+                    # модели продолжить на следующей итерации; если повторяется —
+                    # упрёмся в лимит итераций и завершимся с тем, что есть.
+                    self.session.messages.append(HumanMessage(
+                        content="(previous model call timed out — continue concisely)",
+                    ))
+                    continue
                 raw_text = sanitize_response(raw_text)
                 self._append_assistant(raw_text, native_tool_calls)
 
@@ -593,11 +744,12 @@ class _ApiSubagentRunner:
                 else:
                     self._append_tool_results_text(results)
 
-            # Лимит итераций
+            # Лимит итераций исчерпан — как и бюджет, это сигнал неполноты:
+            # помечаем error, чтобы главный агент/workflow знали (текст сохранён).
             final = strip_tool_calls(raw_text).strip() + "\n\n[Subagent iteration limit]"
             if self.buffer:
                 self.buffer.on_done(final)
-            return final, iterations + 1, None
+            return final, iterations + 1, "stopped: iteration limit reached (work likely incomplete)"
 
         except Exception as e:
             logger.error(f"Subagent {self.index} API run failed: {e}", exc_info=True)
@@ -963,6 +1115,7 @@ async def run_api_subagents(
                 preset=preset,
                 project_root=project_root,
                 isolate=isolate,
+                wave_size=len(wave),
             )
             # _run_one финализирует и пишет в progress.md внутри себя.
             coros.append(_run_one(runner, task, handles[i]))

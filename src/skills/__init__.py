@@ -15,6 +15,16 @@ from .manager import (
     consume_pending_messages,
     SkillInfo,
 )
+from .registry import (
+    SKILL_TOOLS,
+    GATED_TOOLS,
+    ACTIVE_WINDOW_ROUNDS,
+    tools_for_skill,
+    skill_for_tool,
+    visible_gated_tools,
+    is_tool_gated_out,
+    active_skills_from_messages,
+)
 
 __all__ = [
     "discover_skills",
@@ -32,4 +42,12 @@ __all__ = [
     "get_active_skill_names",
     "consume_pending_messages",
     "SkillInfo",
+    "SKILL_TOOLS",
+    "GATED_TOOLS",
+    "ACTIVE_WINDOW_ROUNDS",
+    "tools_for_skill",
+    "skill_for_tool",
+    "visible_gated_tools",
+    "is_tool_gated_out",
+    "active_skills_from_messages",
 ]

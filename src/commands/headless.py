@@ -24,6 +24,20 @@ def _read_stdin_if_piped() -> str:
         return ""
 
 
+def _fail(msg: str, json_output: bool, code: int = 2) -> None:
+    """Завершает с ошибкой консистентно режиму вывода.
+
+    В --json режиме ошибка идёт на stdout как валидный JSON {ok:false,error},
+    чтобы CI/cron-скрипт `run --json | parse` не падал на пустом stdout. Без
+    --json — привычное `error: ...` на stderr.
+    """
+    if json_output:
+        click.echo(json.dumps({"ok": False, "error": msg}, ensure_ascii=False))
+    else:
+        click.echo(f"error: {msg}", err=True)
+    sys.exit(code)
+
+
 def _resolve_model(model_arg: str | None) -> tuple[str, str | None]:
     """Возвращает (display_name, error_or_none)."""
     if model_arg:
@@ -43,9 +57,25 @@ def _check_active_api() -> str | None:
     if not config.get_active_api():
         return (
             "No API provider selected. Run once "
-            "`python main.py interactive --api PROVIDER` or use --api."
+            "`python src/main.py cli --api PROVIDER` or use --api."
         )
     return None
+
+
+def _select_api_model(provider_id: str) -> tuple[str, str | None]:
+    """Возвращает model_id для провайдера и ошибку, если выбрать нечего."""
+    from apis.registry import get_definition
+
+    defn = get_definition(provider_id)
+    if defn is None:
+        return "", f"API provider not found: {provider_id}"
+    current = config.get_active_api_model() or ""
+    if current and defn.get_model_info(current):
+        return current, None
+    model_id = defn.default_model or (defn.models[0].id if defn.models else "")
+    if not model_id:
+        return "", f"API provider has no models configured: {provider_id}"
+    return model_id, None
 
 
 async def _run_once(
@@ -133,27 +163,24 @@ def run_command(
     full_prompt = "\n".join(full_prompt_parts).strip()
 
     if not full_prompt:
-        click.echo("error: empty prompt (pass as argument or via stdin)", err=True)
-        sys.exit(2)
+        _fail("empty prompt (pass as argument or via stdin)", json_output)
 
     # Активный API
     if api:
-        from apis.registry import get_definition
-        if get_definition(api) is None:
-            click.echo(f"error: API provider not found: {api}", err=True)
-            sys.exit(2)
+        api_model, api_model_err = _select_api_model(api)
+        if api_model_err:
+            _fail(api_model_err, json_output)
         config.set_active_api(api)
+        config.set_active_api_model(api_model)
 
     err = _check_active_api()
     if err:
-        click.echo(f"error: {err}", err=True)
-        sys.exit(2)
+        _fail(err, json_output)
 
     # Модель
     resolved_model, model_err = _resolve_model(model)
     if model_err:
-        click.echo(f"error: {model_err}", err=True)
-        sys.exit(2)
+        _fail(model_err, json_output)
 
     # Инициализация API session
     try:
@@ -162,14 +189,12 @@ def run_command(
         api_model = config.get_active_api_model() or ""
         create_api_session(api_id, api_model)
     except Exception as e:
-        click.echo(f"error: failed to create API session: {e}", err=True)
-        sys.exit(2)
+        _fail(f"failed to create API session: {e}", json_output)
 
     # Workdir
     workdir_resolved = os.path.abspath(workdir or os.getcwd())
     if not Path(workdir_resolved).is_dir():
-        click.echo(f"error: workdir does not exist: {workdir_resolved}", err=True)
-        sys.exit(2)
+        _fail(f"workdir does not exist: {workdir_resolved}", json_output)
 
     # allow-all: ставим wildcard, чтобы покрыть и динамически зарегистрированные MCP-tools
     if allow_all:
@@ -209,15 +234,16 @@ def run_command(
         text, meta = asyncio.run(
             _run_once(full_prompt, resolved_model, workdir_resolved, quiet, timeout),
         )
-    except click.ClickException:
+    except click.ClickException as e:
+        # timeout и пр. структурированные ошибки: в --json — как JSON, иначе обычно
+        if json_output:
+            _fail(e.format_message(), json_output, code=e.exit_code)
         raise
     except KeyboardInterrupt:
-        click.echo("interrupted", err=True)
-        sys.exit(130)
+        _fail("interrupted", json_output, code=130)
     except Exception as e:
         logger.opt(exception=True).error("headless run failed: {}", e)
-        click.echo(f"error: {type(e).__name__}: {e}", err=True)
-        sys.exit(1)
+        _fail(f"{type(e).__name__}: {e}", json_output, code=1)
 
     if json_output:
         payload = {

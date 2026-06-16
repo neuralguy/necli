@@ -61,17 +61,29 @@ def _save_apis(data: dict) -> None:
         _apis_cache = data
         return
     APIS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _apis_cache = data
     payload = json.dumps(data, ensure_ascii=False, indent=2)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=APIS_FILE.parent,
-        delete=False,
-    ) as fh:
-        fh.write(payload)
-        tmp_name = fh.name
-    os.replace(tmp_name, APIS_FILE)
+    # Сначала надёжно пишем на диск, и только при успехе обновляем кэш —
+    # иначе при ошибке I/O in-memory кэш расходился бы с файлом, а
+    # temp-файл утекал бы в директорию данных.
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=APIS_FILE.parent,
+            delete=False,
+        ) as fh:
+            fh.write(payload)
+            tmp_name = fh.name
+        os.replace(tmp_name, APIS_FILE)
+        tmp_name = None  # успешно перемещён
+        _apis_cache = data
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                logger.debug("failed to clean up temp apis file %s", tmp_name)
 
 
 def _get_store() -> list[dict]:
@@ -186,56 +198,6 @@ def get_api_key(provider_id: str) -> str:
 def get_api_keys(provider_id: str) -> list[str]:
     """Возвращает все ключи провайдера."""
     return _get_keys().get(provider_id, [])
-
-
-def get_tool_format(provider_id: str) -> str:
-    """Возвращает формат tool calls для провайдера: 'native' или 'text'. Default 'text' (fenced)."""
-    for p in _get_store():
-        if p.get("id") == provider_id:
-            fmt = p.get("tool_format", "text")
-            return fmt if fmt in ("native", "text") else "text"
-    return "text"
-
-
-def set_tool_format(provider_id: str, fmt: str) -> bool:
-    """Устанавливает формат tool calls для провайдера ('native' | 'text')."""
-    if fmt not in ("native", "text"):
-        logger.error(f"Invalid tool_format '{fmt}', expected 'native' or 'text'")
-        return False
-    store = _get_store()
-    for p in store:
-        if p.get("id") == provider_id:
-            p["tool_format"] = fmt
-            _save_store(store)
-            _invalidate_provider_instances(provider_id)
-            logger.info(f"Tool format for {provider_id} set to {fmt}")
-            return True
-    return False
-
-
-def _invalidate_provider_instances(provider_id: str) -> None:
-    """Инвалидирует кэш инстансов и определений реестра для провайдера.
-
-    Импорт отложенный — apis.registry зависит от apis.config (избегаем цикла).
-    """
-    try:
-        from apis.registry import reload_providers
-        reload_providers()
-    except Exception:
-        logger.warning(
-            f"failed to invalidate registry cache for {provider_id}", exc_info=True
-        )
-
-def toggle_api(provider_id: str, enabled: bool) -> bool:
-    """Включает/выключает провайдера."""
-    store = _get_store()
-    for p in store:
-        if p.get("id") == provider_id:
-            p["enabled"] = enabled
-            _save_store(store)
-            _invalidate_provider_instances(provider_id)
-            return True
-    return False
 
 
 def add_model_to_provider(

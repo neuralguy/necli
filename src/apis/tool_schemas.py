@@ -27,7 +27,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "For heavy/long commands (builds, full test suites, long downloads) set "
                 "background=true: the command runs detached, you get a job-id immediately "
                 "and can keep working; a notification with its output is delivered "
-                "automatically once it finishes. Foreground commands time out at 60s."
+                "automatically once it finishes. Do NOT call poll just to wait for a "
+                "background job; wait for the automatic completion notification. "
+                "Foreground commands time out at 60s."
             ),
             "parameters": {
                 "type": "object",
@@ -38,7 +40,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "description": (
                             "Run the command in the background for heavy/long tasks. "
                             "Returns a job-id at once; output arrives as a notification "
-                            "when it finishes. Foreground (default) times out at 60s."
+                            "when it finishes. Do NOT call poll just to wait for it; "
+                            "wait for the automatic completion notification. "
+                            "Foreground (default) times out at 60s."
                         ),
                     },
                 },
@@ -58,11 +62,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Single file path."},
+                    "path": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Single file path, or multiple file paths.",
+                    },
                     "paths": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Multiple file paths.",
+                        "items": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "lines": {"type": "string"},
+                                        "encoding": {"type": "string"},
+                                    },
+                                    "required": ["path"],
+                                },
+                            ]
+                        },
+                        "description": "Multiple file paths, optionally with per-file line ranges.",
                     },
                     "lines": {"type": "string", "description": "Line range like '10-50' or '5'."},
                     "encoding": {"type": "string", "description": "Text encoding, default utf-8."},
@@ -354,20 +377,37 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Ask user a question with options. Use INSTEAD of plain text questions "
                 "when uncertain. Single step: {question, options}. "
-                "Multi-step: {steps: [{question, options}, ...]}. Max 4 options."
+                "Multi-step: {steps: [{question, options, multiple}, ...]}. "
+                "Max 10 steps. Each step is single-select by default; set "
+                "multiple=true (or multi_select=true/type='multi') for multi-select."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "question": {"type": "string"},
-                    "options": {"type": "array", "items": {"type": "string"}},
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 10,
+                    },
+                    "multiple": {"type": "boolean"},
+                    "multi_select": {"type": "boolean"},
+                    "type": {"type": "string", "enum": ["single", "multi", "multiple", "multi-select"]},
                     "steps": {
                         "type": "array",
+                        "maxItems": 10,
                         "items": {
                             "type": "object",
                             "properties": {
                                 "question": {"type": "string"},
-                                "options": {"type": "array", "items": {"type": "string"}},
+                                "options": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "maxItems": 10,
+                                },
+                                "multiple": {"type": "boolean"},
+                                "multi_select": {"type": "boolean"},
+                                "type": {"type": "string", "enum": ["single", "multi", "multiple", "multi-select"]},
                             },
                         },
                     },
@@ -428,6 +468,43 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "image_search",
+            "description": (
+                "Search for images on the web. Useful for finding pictures for "
+                "websites, mockups, docs, etc. Default source is DuckDuckGo (no key "
+                "needed); Unsplash/Pexels are also used if their API keys are set in "
+                "config api_keys. Returns a numbered list of image URLs with "
+                "dimensions, page link and source. "
+                "Set download=true to download images into the project (validated "
+                "with Pillow — broken/non-image files are skipped); use "
+                "download_indices to pick specific results and download_dir to "
+                "choose the folder (default assets/images). License is NOT filtered — "
+                "the source is shown so you can check usage rights yourself."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for, e.g. 'mountain sunset'."},
+                    "max_results": {"type": "integer", "description": "Max images to return (1-50, default 10)."},
+                    "source": {
+                        "type": "string",
+                        "enum": ["auto", "ddg", "unsplash", "pexels"],
+                        "description": "Image source. 'auto' (default) = DuckDuckGo + any configured stock sources.",
+                    },
+                    "size": {"type": "string", "description": "ddg size filter: Small|Medium|Large|Wallpaper."},
+                    "type": {"type": "string", "description": "ddg type filter: photo|clipart|gif|transparent|line."},
+                    "color": {"type": "string", "description": "ddg color filter, e.g. Red, Blue, Monochrome."},
+                    "download": {"type": "boolean", "description": "Download images to disk and validate them."},
+                    "download_indices": {"type": "array", "items": {"type": "integer"}, "description": "Indices of results to download (default: all)."},
+                    "download_dir": {"type": "string", "description": "Target folder for downloads (default assets/images)."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "apply_diff",
             "description": (
                 "Apply a unified diff to the working tree via 'git apply' "
@@ -472,14 +549,17 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "memory_write",
             "description": (
-                "Сохранить долговременный факт в персистентную память проекта "
+                "Сохранить долговременный факт в персистентную память "
                 "(переживает сессии, автоматически подмешивается в системный промпт). "
                 "Сохраняй ТОЛЬКО то, что НЕ выводимо из кода/git/AGENTS.md: "
                 "предпочтения и роль пользователя (type=user), обратную связь о том, "
                 "как вести работу (type=feedback), контекст текущих задач/целей/инцидентов "
                 "(type=project), внешние референсы/значения (type=reference). "
-                "Относительные даты переводи в абсолютные (YYYY-MM-DD). "
-                "Если файл с таким name уже есть — он обновляется."
+                "scope='global' — факт НЕ привязан к одному проекту (кто пользователь, "
+                "его общие предпочтения/стиль работы, универсальные референсы); такой "
+                "факт виден во ВСЕХ проектах. scope='project' (по умолчанию) — только "
+                "контекст текущего проекта. Относительные даты переводи в абсолютные "
+                "(YYYY-MM-DD). Если файл с таким name уже есть в этом scope — он обновляется."
             ),
             "parameters": {
                 "type": "object",
@@ -490,6 +570,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "enum": ["user", "feedback", "project", "reference"],
                         "description": "Тип памяти.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["project", "global"],
+                        "description": (
+                            "project (default) — память текущего проекта. "
+                            "global — кросс-проектный факт (про пользователя/общие "
+                            "предпочтения), виден во всех проектах."
+                        ),
                     },
                 },
                 "required": ["name", "body", "type"],
@@ -873,7 +962,21 @@ def _resolve_think_for_schemas() -> bool:
         return False
 
 
-def get_tool_schemas(mode: str = "agent") -> list[dict[str, Any]]:
+def _skill_gated_filter(active_skills) -> frozenset:
+    """Набор гейтящихся инструментов, которые сейчас НЕ должны быть в схемах.
+
+    Возвращает frozenset скрытых имён (для хешируемого cache_key).
+    """
+    try:
+        from skills.registry import GATED_TOOLS, visible_gated_tools
+
+        visible = visible_gated_tools(set(active_skills or ()))
+        return frozenset(GATED_TOOLS - visible)
+    except Exception:
+        return frozenset()
+
+
+def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, Any]]:
     """Возвращает JSON-схемы инструментов для нужного режима.
 
     plan  → read-only инструменты + plan (+ think если включён).
@@ -881,10 +984,16 @@ def get_tool_schemas(mode: str = "agent") -> list[dict[str, Any]]:
 
     think попадает в схемы ТОЛЬКО при активном think-режиме — иначе модель
     звала бы его без надобности. plan доступен всегда (структурирование задач).
+
+    active_skills — множество загруженных скиллов. Инструменты, гейтящиеся
+    скиллом (web_search/image_search→web, ssh→ssh, subagent/workflow→subagents),
+    исключаются из схем, пока соответствующий скилл не активен. Так модель не
+    видит инструмент, пока не загрузит его скилл.
     """
     think_on = _resolve_think_for_schemas()
     mcp_sig = () if mode == "plan" else _mcp_signature()
-    cache_key = (mode, mcp_sig, think_on)
+    hidden = _skill_gated_filter(active_skills)
+    cache_key = (mode, mcp_sig, think_on, hidden)
     cached = _SCHEMAS_CACHE.get(cache_key)
     if cached is not None:
         return list(cached)
@@ -907,8 +1016,30 @@ def get_tool_schemas(mode: str = "agent") -> list[dict[str, Any]]:
             base.extend(get_mcp_tool_schemas())
         except Exception:
             pass
+    if hidden:
+        base = [s for s in base if s["function"]["name"] not in hidden]
     _SCHEMAS_CACHE[cache_key] = base
     return list(base)
+
+
+def tool_requires_args(name: str) -> bool:
+    """True, если у инструмента есть обязательные параметры.
+
+    Нужен для восстановления после прокси-бага: при стриминге native tool_calls
+    некоторые провайдеры отдают args пустым `{}`. Если у инструмента есть
+    required-поля, пустой `{}` — почти наверняка потерянные аргументы, и нужен
+    фолбэк-перезапрос. Для безаргументных инструментов (memory_list и т.п.)
+    пустой `{}` валиден — фолбэк не нужен.
+    """
+    for s in TOOL_SCHEMAS:
+        fn = s.get("function", {})
+        if fn.get("name") == name:
+            params = fn.get("parameters", {}) or {}
+            return bool(params.get("required"))
+    # Неизвестный/MCP-инструмент: безопаснее считать, что аргументы нужны
+    # (лишний фолбэк дешевле потерянных args). Но если это вообще не наш тул —
+    # пустой dict не критичен; возвращаем False, чтобы не зацикливать.
+    return False
 
 
 def invalidate_schemas_cache() -> None:

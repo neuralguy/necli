@@ -235,11 +235,3 @@ def get_pricing(model: str) -> tuple[float, float]:
     if api_p is not None:
         return (api_p.input, api_p.output)
     return (_NO_PRICING.input, _NO_PRICING.output)
-
-def get_model_pricing(model: str) -> ModelPricing:
-    if model in MODEL_PRICING:
-        return MODEL_PRICING[model]
-    api_p = _lookup_api_pricing(model)
-    if api_p is not None:
-        return api_p
-    return _NO_PRICING

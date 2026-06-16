@@ -74,9 +74,9 @@ COMMANDS: tuple[SlashCommand, ...] = (
     # ── misc ────────────────────────────────────────────────
     SlashCommand("/help",        "misc",    "help.help"),
     SlashCommand("/stats",       "misc",    "help.stats",       args_hint="[N]"),
+    SlashCommand("/insights",    "misc",    "help.insights"),
     SlashCommand("/copy",        "misc",    "help.copy",        args_hint="[N]"),
     SlashCommand("/tg",          "misc",    "help.tg"),
-
 )
 
 
@@ -91,17 +91,6 @@ for _c in COMMANDS:
 def lookup(name: str) -> SlashCommand | None:
     """Resolve command by canonical name or alias."""
     return _BY_NAME.get(name)
-
-
-def all_completion_names() -> list[str]:
-    """Все имена (canonical + алиасы), пригодные для автокомплита."""
-    names: list[str] = []
-    for c in COMMANDS:
-        if not c.completable:
-            continue
-        names.append(c.name)
-        names.extend(c.aliases)
-    return names
 
 
 def by_category() -> list[tuple[str, str, list[SlashCommand]]]:

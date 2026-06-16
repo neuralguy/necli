@@ -116,7 +116,8 @@ def parse_at_references(text, working_dir):
     """
     refs = []
     seen_paths = set()
-    
+    base = Path(working_dir).resolve()
+
     for m in _AT_REF_RE.finditer(text):
         path_str = m.group(1)
         # Skip obvious non-paths
@@ -135,19 +136,28 @@ def parse_at_references(text, working_dir):
 
         resolved = Path(working_dir) / path_str
         resolved = resolved.resolve()
-        
+
+        # Защита от path traversal: @-ссылка не должна выходить за пределы
+        # рабочей директории (например @../../etc/passwd), иначе в контекст
+        # модели можно было бы подсунуть произвольные файлы хоста.
+        raw = "@" + path_str
+        if not (resolved == base or resolved.is_relative_to(base)):
+            ref = FileReference(raw, path_str, resolved, False)
+            ref.error = f"outside working directory: {path_str}"
+            refs.append(ref)
+            continue
+
         if str(resolved) in seen_paths:
             continue
         seen_paths.add(str(resolved))
-        
-        raw = "@" + path_str
+
         is_dir = resolved.is_dir()
-        
+
         if not resolved.exists():
             # Try with/without trailing slash
             alt = Path(working_dir) / path_str.rstrip("/")
             alt = alt.resolve()
-            if alt.exists():
+            if alt.exists() and (alt == base or alt.is_relative_to(base)):
                 resolved = alt
                 is_dir = alt.is_dir()
             else:

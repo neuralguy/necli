@@ -456,7 +456,7 @@ def create_google_provider(
     if not api_key and definition.requires_auth:
         raise ValueError(
             f"API key not set for provider '{definition.id}'. "
-            f"Use /api-key {definition.id} <key>"
+            "Use /api → provider → Set key."
         )
 
     model_info = definition.get_model_info(model_id)

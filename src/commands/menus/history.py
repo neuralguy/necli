@@ -11,7 +11,7 @@ console = Console()
 
 
 _TOOL_BLOCK_RE = re.compile(
-    r':::call[ \t]+(?P<tool>\w+)(?P<header>[^\n]*)\n(?P<body>.*?)(?:\n|^)call:::[ \t]*(?:\n|$)'
+    r'^[ \t]*:{2,3}call[ \t]+(?P<tool>\w+)(?P<header>[^\n]*)\n(?P<body>.*?)(?:\n|^)call:{2,3}[ \t]*(?:\n|$)'
     r"|(?P<fence>`{3,}|~{3,})call[ \t]+(?P<old_tool>\w+)[^\n]*\n(?P<old_body>.*?)(?:\n|^)(?P=fence)[ \t]*(?:\n|$)",
     re.DOTALL | re.MULTILINE,
 )

@@ -17,6 +17,9 @@ def _fast_retries(monkeypatch):
     fast = (0.001,) * 16
     monkeypatch.setattr("apis._retry._RETRY_DELAYS", fast)
     monkeypatch.setattr("apis._retry._MAX_DELAY", fast[-1])
+    # Пол тоже сжимаем, иначе _backoff_delay поднимет паузу до реальных 1.5с
+    # и retry-тесты будут висеть.
+    monkeypatch.setattr("apis._retry._MIN_RETRY_DELAY", 0.001)
 
 
 class _FakeHttpError(Exception):
@@ -86,6 +89,21 @@ class TestBackoffDelay:
         delay = _backoff_delay(0, e)
         # после clamp delay не больше _MAX_DELAY
         assert delay <= r._MAX_DELAY
+
+    def test_retry_after_zero_floored(self, monkeypatch):
+        # Регрессия: onlysq присылал Retry-After: 0 → 8 мгновенных ретраев впустую.
+        # Теперь любая пауза не ниже _MIN_RETRY_DELAY. Проверяем на РЕАЛЬНОМ поле
+        # (отменяем сжатие из фикстуры).
+        monkeypatch.setattr("apis._retry._MIN_RETRY_DELAY", 1.5)
+        monkeypatch.setattr("apis._retry._MAX_DELAY", 60.0)  # отменяем сжатие фикстуры
+        e = _FakeHttpError(headers={"Retry-After": "0"})
+        assert _backoff_delay(0, e) >= 1.5
+
+    def test_table_delay_floored(self, monkeypatch):
+        # Даже если табличная задержка вышла крошечной, пол держит её.
+        monkeypatch.setattr("apis._retry._MIN_RETRY_DELAY", 1.5)
+        monkeypatch.setattr("apis._retry._RETRY_DELAYS", (0.0,) * 8)
+        assert _backoff_delay(0, _FakeHttpError()) >= 1.5
 
 
 class TestWithThrottleRetry:

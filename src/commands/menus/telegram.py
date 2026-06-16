@@ -27,7 +27,13 @@ def _mask_token(token: str) -> str:
     return token[:6] + "…" + token[-4:]
 
 def telegram_interactive():
-    """Интерактивное меню Telegram-моста."""
+    """Интерактивное меню Telegram-моста.
+
+    Возвращает новое желаемое состояние enabled (bool), если пользователь
+    переключил включение/выключение — вызывающий код применит его на лету
+    (запустит/остановит бридж). Возвращает None, если ничего не меняли.
+    """
+    toggled = None
     while True:
         token = config.get_telegram_bot_token()
         chat_id = config.get_telegram_chat_id()
@@ -36,6 +42,11 @@ def telegram_interactive():
         from apis.telegram import get_bridge
         bridge = get_bridge()
         running = bridge.is_running
+
+        show_thinking = config.get_telegram_show_thinking()
+        tool_io = config.get_telegram_tool_io()
+        assistant_header = config.get_telegram_assistant_header()
+        approve = config.get_telegram_approve()
 
         status = f"[green]{_('tg.on')}[/green]" if enabled else f"[dim]{_('tg.off')}[/dim]"
         run_status = f"[green]{_('tg.bot_running')}[/green]" if running else f"[dim]{_('tg.bot_stopped')}[/dim]"
@@ -46,6 +57,9 @@ def telegram_interactive():
         console.print(f"  [dim]{_('tg.chat_id_label')} {escape(chat_id) if chat_id else '—'}[/dim]")
         console.print()
 
+        def _flag(v: bool) -> str:
+            return f"[green]{_('tg.on')}[/green]" if v else f"[dim]{_('tg.off')}[/dim]"
+
         items = [
             {"label": _("tg.set_token"), "hint": _("tg.set_token_hint")},
             {"label": _("tg.set_chat"), "hint": _("tg.set_chat_hint")},
@@ -55,11 +69,15 @@ def telegram_interactive():
                 "label": _("tg.disable") if enabled else _("tg.enable"),
                 "hint": _("tg.enable_hint"),
             },
+            {"label": f"{_('tg.show_thinking')}  {_flag(show_thinking)}", "hint": _("tg.show_thinking_hint")},
+            {"label": f"{_('tg.tool_io')}  {_flag(tool_io)}", "hint": _("tg.tool_io_hint")},
+            {"label": f"{_('tg.assistant_header')}  {_flag(assistant_header)}", "hint": _("tg.assistant_header_hint")},
+            {"label": f"{_('tg.approve')}  {_flag(approve)}", "hint": _("tg.approve_hint")},
             {"label": _("common.back")},
         ]
         choice = select_menu(items, title=_("tg.title"))
-        if choice is None or choice == 5:
-            return
+        if choice is None or choice == 9:
+            return toggled
 
         if choice == 0:
             new_token = _ainput(f"  [bold]{_('tg.field_token')}:[/bold] ")
@@ -92,12 +110,26 @@ def telegram_interactive():
         if choice == 4:
             new_enabled = not enabled
             config.set_telegram_enabled(new_enabled)
+            toggled = new_enabled
             console.print(
                 f"  [green]✓[/green] {_('tg.bridge_enabled') if new_enabled else _('tg.bridge_disabled')}"
             )
-            console.print(
-                f"  [dim]{_('tg.restart_to_apply')}[/dim]"
-            )
+            continue
+
+        if choice == 5:
+            config.set_telegram_show_thinking(not show_thinking)
+            continue
+
+        if choice == 6:
+            config.set_telegram_tool_io(not tool_io)
+            continue
+
+        if choice == 7:
+            config.set_telegram_assistant_header(not assistant_header)
+            continue
+
+        if choice == 8:
+            config.set_telegram_approve(not approve)
             continue
 
 def _discover_chat_id(token: str) -> None:
@@ -151,21 +183,18 @@ def _discover_chat_id(token: str) -> None:
 def _test_send(token: str, chat_id: str) -> None:
     from apis.telegram import get_bridge
     bridge = get_bridge()
+    # chat_id парсим один раз ДО try, чтобы ValueError от некорректного ввода
+    # перехватывался единообразно (раньше парсинг во fallback-ветке мог
+    # выбросить ValueError мимо обработчика и уронить меню).
     try:
-        ok, msg = asyncio.get_event_loop().run_until_complete(
-            bridge.test_send(token, int(chat_id), "<b>necli-api</b>: connectivity test ✅")
-        )
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            ok, msg = loop.run_until_complete(
-                bridge.test_send(token, int(chat_id), "<b>necli-api</b>: connectivity test ✅")
-            )
-        finally:
-            loop.close()
+        cid = int(chat_id)
     except ValueError:
         console.print(f"  [red]✗ {_('tg.chat_id_must_be_number')}[/red]")
         return
+
+    ok, msg = asyncio.run(
+        bridge.test_send(token, cid, "<b>necli-api</b>: connectivity test ✅")
+    )
 
     if ok:
         console.print(f"  [green]✓[/green] {_('tg.sent')}")

@@ -25,6 +25,10 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "telegram_enabled": False,
     "think_enabled": False,
     "tool_format_force_native": False,
+    # Авто-резюм агента при завершении фоновой shell-задачи: если задача
+    # завершилась, пока агент ждёт ввода пользователя, он сам продолжит работу
+    # с её результатом (не прерывая пользователя, если тот печатает).
+    "background_autoresume": True,
     "temperature": 0.7,
     "max_tokens": 0,
     # 0 = trust Rich/wcwidth (emoji = 2 cells). 1 = принудительно считать emoji

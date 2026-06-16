@@ -87,5 +87,6 @@ def has_hooks(event: str | None = None) -> bool:
 
 
 def invalidate_cache() -> None:
+    """Сбрасывает кэш разобранных hooks (после изменения hooks.json)."""
     global _cache, _cache_mtime
     _cache, _cache_mtime = None, -1.0

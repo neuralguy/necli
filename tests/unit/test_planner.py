@@ -2,7 +2,7 @@
 
 from planner import (
     Plan, PlanStep, StepStatus,
-    parse_plan_commands, strip_plan_commands, has_plan_commands,
+    parse_plan_commands, strip_plan_commands,
     apply_plan_commands,
     _render_plan_markdown, _parse_plan_markdown,
     save_plan_file, load_plan_file, delete_plan_file,
@@ -101,13 +101,6 @@ class TestProgress:
 
 
 class TestPlanBlockParsing:
-    def test_has_plan_commands_true(self):
-        text = ':::call plan\n{"action": "create", "steps": ["a", "b", "c"]}\ncall:::'
-        assert has_plan_commands(text) is True
-
-    def test_has_plan_commands_false(self):
-        assert has_plan_commands("plain text") is False
-
     def test_strip_removes_block(self):
         text = 'before\n:::call plan\n{"action":"create","steps":["a","b","c"]}\ncall:::\nafter'
         result = strip_plan_commands(text)
@@ -130,6 +123,18 @@ class TestPlanBlockParsing:
     def test_parse_create_no_steps_rejected(self):
         text = ':::call plan\n{"action": "create"}\ncall:::'
         assert parse_plan_commands(text) == []
+
+    def test_two_colon_plan_parses(self):
+        # Модель роняет одно двоеточие — ::call plan тоже должен исполняться.
+        text = '::call plan\n{"action": "create", "steps": ["a", "b", "c"]}\ncall::'
+        cmds = parse_plan_commands(text)
+        assert len(cmds) == 1 and cmds[0].action == "create"
+
+    def test_two_colon_plan_stripped(self):
+        text = 'before\n::call plan\n{"action":"create","steps":["a","b","c"]}\ncall::\nafter'
+        result = strip_plan_commands(text)
+        assert "call" not in result.replace("before", "").replace("after", "")
+        assert "before" in result and "after" in result
 
     def test_parse_update(self):
         text = ':::call plan\n{"action": "update", "step": 1, "status": "done"}\ncall:::'

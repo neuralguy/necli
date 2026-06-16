@@ -87,23 +87,41 @@ def _split_long(text: str, limit: int = TG_MAX_LEN) -> list[str]:
     parts: list[str] = []
     remaining = text
     carry: list[str] = []  # теги, которые надо переоткрыть в начале следующего чанка
-    while len(remaining) > limit:
+    while True:
         prefix = "".join(f"<{t}>" for t in carry)
-        budget = limit - len(prefix)
+        # Резервируем место не только под открывающий prefix, но и под
+        # закрывающие теги, которые могут быть дописаны в конец чанка.
+        # Худший случай закрытия — все теги carry плюс возможные теги,
+        # открытые внутри head; оцениваем сверху как 2x длину prefix
+        # (открывающий <tag> ≈ закрывающий </tag> + слеш).
+        close_reserve = len(prefix) + len(carry) + 2
+        budget = limit - len(prefix) - close_reserve
         if budget < 64:  # деградация: limit слишком мал относительно carry
-            budget = limit
+            budget = max(64, limit - len(prefix))
+        if len(prefix) + len(remaining) <= limit:
+            # Остаток (с переоткрытыми тегами) помещается целиком.
+            parts.append(prefix + remaining)
+            break
         cut = _safe_cut(remaining, budget)
         head = remaining[:cut]
         chunk = prefix + head
         open_now = _open_tags_at(chunk)
         if open_now:
             chunk += "".join(f"</{t}>" for t in reversed(open_now))
+        # Подстраховка: если оценка не сработала и чанк всё равно длиннее
+        # лимита, ужимаем head до тех пор, пока не уложимся.
+        while len(chunk) > limit and cut > 1:
+            cut = max(1, cut - (len(chunk) - limit) - 1)
+            head = remaining[:cut]
+            chunk = prefix + head
+            open_now = _open_tags_at(chunk)
+            if open_now:
+                chunk += "".join(f"</{t}>" for t in reversed(open_now))
         parts.append(chunk)
         carry = open_now
         remaining = remaining[cut:].lstrip("\n")
-    if remaining:
-        prefix = "".join(f"<{t}>" for t in carry)
-        parts.append(prefix + remaining)
+        if not remaining:
+            break
     return parts
 
 
@@ -147,6 +165,9 @@ class TelegramBridge:
         self._reply_keyboard = None
         self._button_aliases: dict[str, str] = {}
         self.agent_busy: bool = False
+        # Inline-approve tool-вызовов: approval_id → (concurrent.futures.Future, message_id)
+        self._pending_approvals: dict = {}
+        self._approval_seq: int = 0
 
     @classmethod
     def instance(cls) -> "TelegramBridge":
@@ -227,6 +248,10 @@ class TelegramBridge:
             @self._dp.callback_query(F.message.chat.id == target_chat)
             async def _on_cb(cb):  # type: ignore[no-redef]
                 data = cb.data or ""
+                # Approve tool-вызова имеет приоритет над меню-handler'ом.
+                if data.startswith("approve:") or data.startswith("deny:"):
+                    await self._resolve_approval(data, cb)
+                    return
                 handler = self._callback_handler
                 if handler is not None:
                     try:
@@ -343,6 +368,13 @@ class TelegramBridge:
             self._callback_handler = None
             self._button_aliases = {}
             self._reply_keyboard = None
+            for _aid, (fut, _mid) in list(self._pending_approvals.items()):
+                if not fut.done():
+                    try:
+                        fut.set_result(None)
+                    except Exception:
+                        logger.debug("pending approval cancel failed", exc_info=True)
+            self._pending_approvals = {}
             self._loop = None
             logger.info("telegram bridge stopped")
 
@@ -398,6 +430,98 @@ class TelegramBridge:
             await callback_query.answer(text or None, show_alert=show_alert)
         except Exception as e:
             logger.debug("answer_callback failed: %s", e)
+
+    async def _resolve_approval(self, data: str, cb) -> None:
+        """Обрабатывает нажатие inline-кнопки approve:/deny: и будит ждущий поток."""
+        try:
+            verb, _, approval_id = data.partition(":")
+        except Exception:
+            verb, approval_id = "", ""
+        allowed = verb == "approve"
+        entry = self._pending_approvals.pop(approval_id, None)
+        try:
+            await cb.answer("✅ allowed" if allowed else "✗ denied", show_alert=False)
+        except Exception:
+            logger.debug("approval answer_callback failed", exc_info=True)
+        if entry is None:
+            return
+        fut, message_id = entry
+        if not fut.done():
+            try:
+                fut.set_result(allowed)
+            except Exception:
+                logger.debug("approval future set_result failed", exc_info=True)
+        if message_id is not None:
+            try:
+                mark = "✅ <b>Allowed</b>" if allowed else "✗ <b>Denied</b>"
+                await self._bot.edit_message_reply_markup(
+                    chat_id=self._chat_id, message_id=message_id, reply_markup=None,
+                )
+                await self._bot.edit_message_text(
+                    chat_id=self._chat_id, message_id=message_id, text=mark,
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                logger.debug("approval message edit failed", exc_info=True)
+
+    async def _send_approval_message(self, text: str, approval_id: str):
+        """Отправляет сообщение с inline-кнопками allow/deny. Возвращает message_id."""
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        markup = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Allow", callback_data=f"approve:{approval_id}"),
+            InlineKeyboardButton(text="✗ Deny", callback_data=f"deny:{approval_id}"),
+        ]])
+        chunk = _split_long(text)[0]
+        try:
+            m = await self._bot.send_message(
+                self._chat_id, chunk, disable_web_page_preview=True, reply_markup=markup,
+            )
+            return m.message_id
+        except Exception as e:
+            if _is_html_parse_error(e):
+                try:
+                    m = await self._bot.send_message(
+                        self._chat_id, _strip_html(chunk), disable_web_page_preview=True,
+                        reply_markup=markup, parse_mode=None,
+                    )
+                    return m.message_id
+                except Exception as e2:
+                    logger.warning("tg approval send failed (plain): %s", e2)
+                    return None
+            logger.warning("tg approval send failed: %s", e)
+            return None
+
+    def request_approval(self, text: str, timeout: float = 300.0) -> Optional[bool]:
+        """Sync: шлёт запрос с inline-кнопками allow/deny и ждёт нажатия.
+
+        Возвращает True (allow), False (deny) или None (таймаут / бридж не активен).
+        Безопасно вызывать из рабочего потока executor'а.
+        """
+        if not self._running or self._loop is None or self._bot is None:
+            return None
+        import concurrent.futures
+        self._approval_seq += 1
+        approval_id = str(self._approval_seq)
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+
+        async def _setup() -> None:
+            message_id = await self._send_approval_message(text, approval_id)
+            self._pending_approvals[approval_id] = (fut, message_id)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_setup(), self._loop).result(timeout=10.0)
+        except Exception as e:
+            logger.warning("tg approval setup failed: %s", e)
+            return None
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            self._pending_approvals.pop(approval_id, None)
+            logger.info("tg approval timed out: id=%s", approval_id)
+            return None
+        except Exception as e:
+            logger.debug("tg approval wait failed: %s", e)
+            return None
 
     async def edit_inline_message(self, callback_query, text: str, reply_markup=None) -> None:
         try:

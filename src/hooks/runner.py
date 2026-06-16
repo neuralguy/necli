@@ -205,14 +205,31 @@ def _spawn_async(spec: HookSpec, payload_json: str, working_dir: str | None) -> 
                 target=_run_http_hook, args=(spec, payload_json), daemon=True
             ).start()
             return
-        subprocess.Popen(  # noqa: S602
-            spec.command,
-            shell=True,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=working_dir or str(BASE_DIR),
-            text=True,
-        ).stdin.write(payload_json)  # type: ignore[union-attr]
+        import threading
+
+        def _run_cmd_hook() -> None:
+            try:
+                proc = subprocess.Popen(  # noqa: S602
+                    spec.command,
+                    shell=True,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    cwd=working_dir or str(BASE_DIR),
+                    text=True,
+                )
+                # communicate() записывает payload, закрывает stdin (иначе хук
+                # может зависнуть на чтении / получить неполные данные) и
+                # дожидается завершения процесса — без этого плодились зомби
+                # и утекали file descriptors.
+                proc.communicate(input=payload_json, timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                logger.warning("hooks: async command hook timed out")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hooks: async command hook failed: {}", e)
+
+        threading.Thread(target=_run_cmd_hook, daemon=True).start()
     except Exception as e:  # noqa: BLE001
         logger.warning("hooks: async spawn failed: {}", e)

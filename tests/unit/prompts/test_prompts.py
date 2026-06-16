@@ -21,7 +21,6 @@ from prompts import (
 )
 from prompts._base import (
     TOOL_FORMAT_BLOCK_NATIVE,
-    DOCX_BLOCK_NATIVE,
     HARD_CONSTRAINTS_BLOCK_NATIVE,
 )
 
@@ -30,6 +29,10 @@ def _build(**kw):
     # глобальных настроек сессии в окружении теста.
     kw.setdefault("native_tools", False)
     kw.setdefault("think_enabled", False)
+    # По умолчанию активируем все гейтящие скиллы — тесты ниже проверяют
+    # СОДЕРЖИМОЕ блоков (web/orchestration/workflows), которые теперь гейтятся
+    # скиллами. Сам гейтинг проверяется отдельно в TestSkillGatingInPrompt.
+    kw.setdefault("active_skills", {"web", "ssh", "subagents"})
     return build_system_prompt(**kw)
 
 class TestBuildSystemPrompt:
@@ -51,11 +54,123 @@ class TestBuildSystemPrompt:
             "S4. PLANNING",
             "S6. HARD CONSTRAINTS",
             "S7. AGENT RULES",
+            "S7.3. ORCHESTRATION DECISION",
             "S8. WORKFLOWS",
             "S9. SUBAGENTS",
             "LANGUAGE",
         ):
             assert anchor in result, anchor
+
+    def test_skill_gating_hides_blocks_when_inactive(self):
+        # Без активных скиллов гейтящиеся инструменты и их блоки скрыты.
+        bare = build_system_prompt(
+            native_tools=False, think_enabled=False, active_skills=set(),
+        )
+        # web_search скрыт из S5.0 и блока S5.2
+        tools_list = bare.split("S5.0")[1].split("S5.1")[0]
+        assert "web_search" not in tools_list
+        assert "S5.2. WEB SEARCH" not in bare
+        # orchestration/workflows/subagents скрыты
+        assert "ORCHESTRATION DECISION" not in bare
+        assert "S8. WORKFLOWS" not in bare
+        assert "S9. SUBAGENTS" not in bare
+        # ssh/subagent/workflow отсутствуют в списке инструментов
+        assert "ssh" not in tools_list
+        assert "subagent" not in tools_list
+        # но базовые инструменты на месте
+        assert "shell" in tools_list
+        assert "skill" in tools_list
+
+    def test_skill_gating_web_exposes_web_block(self):
+        p = build_system_prompt(
+            native_tools=False, think_enabled=False, active_skills={"web"},
+        )
+        tools_list = p.split("S5.0")[1].split("S5.1")[0]
+        assert "web_search" in tools_list
+        assert "S5.2. WEB SEARCH" in p
+        # но subagents-блоки всё ещё скрыты
+        assert "S8. WORKFLOWS" not in p
+
+    def test_skill_gating_subagents_exposes_orchestration(self):
+        p = build_system_prompt(
+            native_tools=False, think_enabled=False, active_skills={"subagents"},
+        )
+        assert "ORCHESTRATION DECISION" in p
+        assert "S8. WORKFLOWS" in p
+        assert "S9. SUBAGENTS" in p
+        # web остаётся скрытым
+        assert "S5.2. WEB SEARCH" not in p
+
+    def test_isolate_warns_about_merge_conflicts(self):
+        # Изоляция спасает от затирания, но не от merge-конфликтов при правке
+        # одного региона. Промт должен это честно сказать, чтобы агент не считал
+        # isolate панацеей и предпочитал распределять distinct-файлы.
+        # нормализуем пробелы/переносы — фраза может переноситься по строкам
+        result = " ".join(_build().split())
+        assert "isolation prevents agents OVERWRITING" in result
+        assert "DISTINCT files even under isolation" in result
+
+    def test_explicit_user_instruction_overrides_solo_heuristic(self):
+        # If the user explicitly asked for a workflow/subagents, the agent must NOT
+        # rationalize doing it solo ("this phase is linear"). The override rule must
+        # be present and must precede the checklist.
+        for mode in (True, False):
+            result = _build(native_tools=mode)
+            assert "EXPLICIT USER INSTRUCTION OVERRIDES" in result
+            override_pos = result.index("EXPLICIT USER INSTRUCTION OVERRIDES")
+            checklist_pos = result.index("Run this checklist")
+            assert override_pos < checklist_pos, "override must come before the checklist"
+
+    def test_orchestration_decision_has_triggers_and_anti_triggers(self):
+        # S7.3 must teach BOTH when to orchestrate and when to stay solo,
+        # otherwise the agent either dives in solo or forces workflows onto trivia.
+        for mode in (True, False):
+            result = _build(native_tools=mode)
+            assert "ORCHESTRATION DECISION" in result
+            # trigger toward orchestration
+            assert "fan-out" in result
+            # anti-trigger: small/linear work stays solo
+            assert "SOLO" in result
+            # names the trap explicitly
+            assert "feels faster" in result
+
+    def test_efficiency_teaches_locate_then_narrow_read(self):
+        # The agent must locate (grep/LSP) then read a targeted range — NOT pull
+        # whole files into context. The old "Read files WHOLE" rule was the bug.
+        for mode in (True, False):
+            result = _build(native_tools=mode)
+            assert "LOCATE before you read" in result
+            assert "TARGETED range" in result
+            assert "Read files WHOLE." not in result
+
+    def test_workflows_block_teaches_pipeline_vs_barrier(self):
+        # The single abstract example was the cause of mis-built workflows.
+        # Both modes must spell out pipeline-as-default and barrier-as-exception.
+        for mode in (True, False):
+            result = _build(native_tools=mode)
+            assert "pipeline" in result
+            assert "barrier" in result
+            assert "adversarial verify" in result
+            assert "loop-until-dry" in result
+
+    def test_for_subagent_drops_orchestration_and_user_blocks(self):
+        # Субагент не может звать subagent/workflow и пишет не юзеру, а главному
+        # агенту. Эти блоки — повторяющийся мёртвый вес на каждой итерации.
+        for native in (True, False):
+            main = _build(native_tools=native, for_subagent=False)
+            sub = _build(native_tools=native, for_subagent=True)
+            # у главного есть, у субагента нет
+            assert "S8. WORKFLOWS" in main and "S8. WORKFLOWS" not in sub
+            assert "S9. SUBAGENTS" in main and "S9. SUBAGENTS" not in sub
+            assert "ORCHESTRATION DECISION" in main
+            assert "ORCHESTRATION DECISION" not in sub
+            # субагент заметно короче
+            assert len(sub) < len(main)
+            # но критичное для работы — сохранено
+            assert "EFFICIENCY" in sub
+            assert "HARD CONSTRAINTS" in sub
+            assert "DELIVERABLE DISCIPLINE" in sub
+            assert "TOOL STRATEGY" in sub
 
     def test_includes_environment_block(self):
         result = _build(working_dir="/tmp/some-dir")
@@ -151,8 +266,8 @@ class TestBlockSelectors:
         assert tool_format_block_for(True) == TOOL_FORMAT_BLOCK_NATIVE
         assert tool_format_block_for(False) == TOOL_FORMAT_BLOCK
 
-    def test_docx_differs_by_mode(self):
-        assert docx_block_for(True) == DOCX_BLOCK_NATIVE
+    def test_docx_same_both_modes(self):
+        assert docx_block_for(True) == DOCX_BLOCK
         assert docx_block_for(False) == DOCX_BLOCK
 
     def test_hard_constraints_differs_by_mode(self):

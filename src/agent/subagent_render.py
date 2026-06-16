@@ -33,7 +33,9 @@ console = Console()
 
 
 def _w() -> int:
-    return min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns)
+    cap = int(ui.get("subagent.max_width", 0))
+    term = shutil.get_terminal_size((80, 24)).columns
+    return term if cap <= 0 else min(cap, term)
 
 
 def _spinner_frame() -> str:
@@ -97,9 +99,14 @@ class SubagentBuffer:
         self.files_changed = 0
         # Накопленное потребление токенов (по последнему non-empty usage каждого
         # вызова модели — провайдеры шлют usage финальным чанком стрима).
+        # АКТИВНЫЙ контекст последнего вызова модели (как видит модель сейчас) —
+        # input последнего обмена + его output. Это та же метрика, что у обычного
+        # агента: «сколько занято в окне», а НЕ сумма по итерациям.
         self.input_tokens = 0
         self.output_tokens = 0
         self.total_tokens = 0
+        # Кумулятивно по всем вызовам (для справки/биллинга), НЕ для строки статуса.
+        self.cumulative_tokens = 0
 
     def _mark_activity(self) -> None:
         now = time.monotonic()
@@ -155,17 +162,24 @@ class SubagentBuffer:
         """Аккумулирует потребление токенов за один вызов модели.
 
         usage_metadata имеет форму _convert_usage (см. apis/base.py):
-        {input_tokens, output_tokens, total_tokens, ...}. Один вызов модели —
-        это одна итерация субагента, поэтому суммируем по итерациям.
+        {input_tokens, output_tokens, total_tokens, ...}.
+
+        Каждый вызов модели шлёт ВЕСЬ растущий контекст заново, поэтому
+        input_tokens N-го вызова ≈ весь активный контекст на тот момент.
+        Суммировать их по итерациям нельзя — это даёт O(N²) и «1M за 10
+        вызовов». Берём метрики ПОСЛЕДНЕГО вызова как активный контекст
+        (та же семантика, что у обычного агента), а сумму держим отдельно
+        в cumulative_tokens для справки.
         """
         if not usage_metadata:
             return
         inp = int(usage_metadata.get("input_tokens", 0) or 0)
         out = int(usage_metadata.get("output_tokens", 0) or 0)
         tot = int(usage_metadata.get("total_tokens", 0) or 0) or (inp + out)
-        self.input_tokens += inp
-        self.output_tokens += out
-        self.total_tokens += tot
+        self.input_tokens = inp
+        self.output_tokens = out
+        self.total_tokens = tot
+        self.cumulative_tokens += tot
 
     def on_done(self, response: str):
         self._mark_activity()

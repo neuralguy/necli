@@ -242,7 +242,7 @@ def _format_relative_time(ts: float) -> str:
 
 
 def _build_left_content(model: str, session: Session, display_wd: str, n_lsp: int = 0,
-                        n_mcp: int = 0, mcp_tools: int = 0):
+                        n_mcp: int = 0, mcp_tools: int = 0, tg_info: str = ""):
     logo = Text()
     for i, line in enumerate(_LOGO_LINES):
         if i:
@@ -277,6 +277,11 @@ def _build_left_content(model: str, session: Session, display_wd: str, n_lsp: in
         meta.append("\n")
         meta.append("mcp  ", style="dim")
         meta.append(_("welcome.mcp_ready", n=n_mcp, tools=mcp_tools), style=f"bold {t('success')}")
+
+    if tg_info:
+        meta.append("\n")
+        meta.append("tg   ", style="dim")
+        meta.append(tg_info, style=f"bold {t('success')}")
 
     if session.message_count > 0:
         meta.append("\n")
@@ -332,7 +337,7 @@ def _build_right_content():
 
 
 def _print_welcome(model: str, session: Session, workdir: str = ".", n_lsp: int = 0,
-                   n_mcp: int = 0, mcp_tools: int = 0):
+                   n_mcp: int = 0, mcp_tools: int = 0, tg_info: str = ""):
     try:
         from ui.terminal_title import set_session_terminal_title
         set_session_terminal_title(session)
@@ -343,7 +348,7 @@ def _print_welcome(model: str, session: Session, workdir: str = ".", n_lsp: int 
     import agent.render_replay as _rr
     _rr._LAST_WELCOME_ARGS = {
         "model": model, "workdir": workdir, "n_lsp": n_lsp,
-        "n_mcp": n_mcp, "mcp_tools": mcp_tools,
+        "n_mcp": n_mcp, "mcp_tools": mcp_tools, "tg_info": tg_info,
         "session_id": getattr(session, "id", ""),
     }
     home = os.path.expanduser("~")
@@ -377,7 +382,7 @@ def _print_welcome(model: str, session: Session, workdir: str = ".", n_lsp: int 
         table.add_column(width=right_w, no_wrap=False)
         table.add_row(
             _build_left_content(model, session, display_wd, n_lsp=n_lsp,
-                                n_mcp=n_mcp, mcp_tools=mcp_tools),
+                                n_mcp=n_mcp, mcp_tools=mcp_tools, tg_info=tg_info),
             divider,
             _build_right_content(),
         )
@@ -394,7 +399,7 @@ def _print_welcome(model: str, session: Session, workdir: str = ".", n_lsp: int 
         console.print(Panel(
             Group(
                 _build_left_content(model, session, display_wd, n_lsp=n_lsp,
-                                    n_mcp=n_mcp, mcp_tools=mcp_tools),
+                                    n_mcp=n_mcp, mcp_tools=mcp_tools, tg_info=tg_info),
                 Text(""),
                 _build_right_content(),
             ),

@@ -47,17 +47,6 @@ class TestApiProviderDefinition:
         )
         assert d.get_model_info("nope") is None
 
-    def test_list_model_ids(self):
-        d = ApiProviderDefinition(
-            id="x", name="X", type="openai_compatible", base_url="u",
-            models=[
-                ApiModelInfo(id="a", display_name="A"),
-                ApiModelInfo(id="b", display_name="B"),
-            ],
-        )
-        assert d.list_model_ids() == ["a", "b"]
-        assert d.list_display_names() == ["A", "B"]
-
     def test_default_factories(self):
         d = ApiProviderDefinition(id="x", name="X", type="openai_compatible", base_url="u")
         assert d.models == []

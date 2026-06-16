@@ -178,25 +178,6 @@ class Session:
                 return i
         return -1
 
-    def get_branches_for(self, msg_id: str) -> tuple[int, int]:
-        """Возвращает (current_index, total_count) для сообщения в active path.
-
-        Варианты отсортированы по timestamp (хронологически). current_index —
-        реальная позиция active-варианта в этом отсортированном списке.
-        """
-        variants = self.list_all_variants(msg_id)
-        if not variants:
-            return (0, 1)
-        active_idx = self._find_message_index(msg_id)
-        if active_idx < 0:
-            return (len(variants) - 1, len(variants))
-        active_msg = self.messages[active_idx]
-        try:
-            cur = next(i for i, m in enumerate(variants) if m.id == active_msg.id)
-        except StopIteration:
-            cur = len(variants) - 1
-        return (cur, len(variants))
-
     def list_all_variants(self, msg_id: str) -> list[Message]:
         """Все варианты сообщения (alts + active), отсортированы по timestamp."""
         idx = self._find_message_index(msg_id)
@@ -415,17 +396,6 @@ class Session:
         return sum(m.tokens for m in self.messages if m.role == "assistant")
 
     @property
-    def output_tokens_since_last_user(self) -> int:
-        """Сумма tokens у assistant сообщений после последнего user сообщения."""
-        total = 0
-        for m in reversed(self.messages):
-            if m.role == "user":
-                break
-            if m.role == "assistant":
-                total += m.tokens
-        return total
-
-    @property
     def raw_input_tokens(self) -> int:
         return sum(m.tokens for m in self.messages if m.role in ("user", "system", "tool_result"))
 
@@ -520,9 +490,6 @@ class Session:
                 input_buffer = []
         return total
 
-    def cost_by_model(self) -> dict[str, dict]:
-        return self._compute_cost()
-
     @property
     def total_cost(self) -> float:
         base = self._compressed_stats["total_cost"] if self._compressed_stats else 0.0
@@ -539,7 +506,7 @@ class Session:
 
     def summary(self) -> dict:
         cost_data = self._compute_cost()
-        total_cost = sum(s["total_cost"] for s in cost_data.values())
+        total_cost = self.total_cost
         return {
             "id": self.id,
             "title": self.title,

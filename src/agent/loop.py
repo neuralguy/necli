@@ -93,6 +93,39 @@ def _extract_thoughts(text: str) -> list[str]:
         return []
 
 
+def _with_interrupt_marker(content: str) -> str:
+    """Добавляет маркер остановки к ответу ассистента, если его ещё нет.
+
+    Маркер живёт в тексте сохранённого сообщения (а не во флаге ctx), поэтому
+    переживает reset_interrupt() и виден модели в истории на следующем ходу.
+    """
+    from prompts import INTERRUPTED_NOTICE
+    base = (content or "").strip()
+    if INTERRUPTED_NOTICE in base:
+        return base
+    if not base:
+        return INTERRUPTED_NOTICE
+    return base + "\n\n" + INTERRUPTED_NOTICE
+
+
+def _handle_hard_interrupt(session, full_response, model, last_usage) -> str:
+    """Жёсткая остановка (Ctrl+C дважды → CancelledError): сохраняем частичный
+    ответ модели с маркером прерывания, чтобы он не потерялся и модель на
+    следующем ходу понимала, что её остановили."""
+    try:
+        if session is not None:
+            partial = _clean_for_save(full_response or "").strip()
+            session.add_assistant_message(
+                _with_interrupt_marker(partial),
+                model=model or "",
+                usage=last_usage or {},
+                thoughts=_extract_thoughts(full_response or ""),
+            )
+    except Exception:
+        logger.debug("save partial on hard interrupt failed", exc_info=True)
+    return "[Interrupted]"
+
+
 def _is_control_only_response(
     text: str,
     plan_processed: int = 0,
@@ -144,17 +177,6 @@ def get_current_ctx() -> AgentContext | None:
 def set_current_ctx(ctx: AgentContext | None) -> None:
     global _current_ctx
     _current_ctx = ctx
-
-
-def _format_background_notice(results: list[tools.ToolResult]) -> str:
-    """Текстовый блок-уведомление о завершённых фоновых shell-задачах."""
-    if not results:
-        return ""
-    parts = [r.output for r in results if r.output]
-    return (
-        "[BACKGROUND TASKS FINISHED]\n"
-        + "\n---\n".join(parts)
-    )
 
 
 def _format_background_notice(results: list[tools.ToolResult]) -> str:
@@ -228,14 +250,23 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
     usage: dict = {}
     native_tool_calls: list[dict] = []
     try:
-        from apis.agent_adapter import api_send_message
+        from apis.agent_adapter import api_send_message, current_active_skills
         from apis.tool_schemas import get_tool_schemas
         from system_prompt import _resolve_native_tools
         api_proof = await _gather_proof(ctx.working_dir)
-        api_sys = build_system_prompt(proof=api_proof, mode=ctx.mode, working_dir=ctx.working_dir)
+        # Активные скиллы определяют видимость гейтящихся инструментов
+        # (web_search/image_search/ssh/subagent/workflow) — и в промте, и в схемах.
+        active_skills = current_active_skills()
+        api_sys = build_system_prompt(
+            proof=api_proof, mode=ctx.mode, working_dir=ctx.working_dir,
+            active_skills=active_skills,
+        )
         # tools нужны ТОЛЬКО в native — в fenced они игнорируются (не биндятся),
         # а синтаксис вызова описан в системном промте. Не считаем схемы зря.
-        api_tools = get_tool_schemas(ctx.mode) if _resolve_native_tools() else None
+        api_tools = (
+            get_tool_schemas(ctx.mode, active_skills)
+            if _resolve_native_tools() else None
+        )
         api_result = await api_send_message(
             text,
             system_prompt=api_sys,
@@ -272,7 +303,7 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         stream.stop(cancelled=True)
         partial = strip_tool_calls(stream.buffer).strip() or "[Interrupted]"
         if session:
-            session.add_assistant_message(partial, model=model or "", thoughts=_extract_thoughts(stream.buffer))
+            session.add_assistant_message(partial, model=model or "", usage=usage or None, thoughts=_extract_thoughts(stream.buffer))
         raise
     except StreamEarlyAbort:
         logger.info("stream aborted early (precheck failed)")
@@ -286,17 +317,25 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
     return sanitize_response(response), stream.inline_results, stream.inline_call_keys, stream._plan_processed_count, usage, native_tool_calls
 
 
-async def _send_via_api(text, on_chunk, images, tool_results=None, extras=None, return_result: bool = False):
-    """Отправка через API без стрима для retry-веток в run_agent."""
-    from apis.agent_adapter import api_send_message
+async def _send_via_api(text, on_chunk, images, tool_results=None, extras=None, return_result: bool = False, system_prompt=""):
+    """Отправка через API без стрима для retry-веток в run_agent.
+
+    system_prompt передаём ТОЛЬКО на первом вызове хода (headless run_agent):
+    адаптер вставит его как SystemMessage. На последующих вызовах пусто —
+    SystemMessage уже в истории, адаптер его не продублирует.
+    """
+    from apis.agent_adapter import api_send_message, current_active_skills
     from apis.tool_schemas import get_tool_schemas
     from system_prompt import _resolve_native_tools
     ctx = get_current_ctx()
     mode = ctx.mode if ctx else "agent"
     # tools только в native (см. _stream_send).
-    api_tools = get_tool_schemas(mode) if _resolve_native_tools() else None
+    api_tools = (
+        get_tool_schemas(mode, current_active_skills())
+        if _resolve_native_tools() else None
+    )
     result = await api_send_message(
-        text, on_chunk=on_chunk, tools=api_tools, images=images,
+        text, system_prompt=system_prompt, on_chunk=on_chunk, tools=api_tools, images=images,
         tool_results=tool_results, extras=extras,
     )
     # usage не аккумулируется: run_agent — служебная ветка без сессии/биллинга
@@ -442,7 +481,17 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
         plan=ctx.plan,
     )
 
-    api_result = await _send_via_api(first_msg, on_chunk, images, return_result=True)
+    # build_first_message больше НЕ вшивает системный промпт в тело сообщения —
+    # передаём его отдельно как system_prompt, адаптер вставит SystemMessage.
+    from apis.agent_adapter import current_active_skills as _cas
+    api_sys = build_system_prompt(
+        proof=await _gather_proof(ctx.working_dir),
+        mode=ctx.mode, working_dir=ctx.working_dir,
+        active_skills=_cas(),
+    )
+    api_result = await _send_via_api(
+        first_msg, on_chunk, images, return_result=True, system_prompt=api_sys,
+    )
     full_response = sanitize_response(api_result["text"])
     native_tool_calls = api_result.get("tool_calls") or []
     _process_plan_commands(full_response, ctx)
@@ -459,9 +508,10 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
             _process_plan_commands(full_response, ctx)
             continue
 
-        calls = _dedupe_tool_calls(
-            tools.parse_tool_calls(full_response) + _native_tool_calls_to_calls(native_tool_calls)
-        )
+        if _api_uses_native_tools():
+            calls = _dedupe_tool_calls(_native_tool_calls_to_calls(native_tool_calls))
+        else:
+            calls = _dedupe_tool_calls(tools.parse_tool_calls(full_response))
         calls = [c for c in calls if c.tool_name not in ("think", "plan")]
         if not calls:
             if _is_control_only_response(full_response, native_tool_calls=native_tool_calls):
@@ -732,6 +782,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
         msg = await build_first_message(
             user_message, ctx.working_dir, history=history,
             plan=ctx.plan,
+            session_dir=str(session.dir) if session else None,
         )
 
     if session and not is_continuation:
@@ -754,7 +805,8 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             message_num=msg_num,
         )
     except asyncio.CancelledError:
-        return "[Interrupted]"
+        # Прервали до первого ответа: full_response/last_usage могли не присвоиться.
+        return _handle_hard_interrupt(session, "", model, {})
 
     _process_plan_commands(full_response, ctx, already_processed=plan_processed)
 
@@ -774,7 +826,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                     message_num=msg_num,
                 )
             except asyncio.CancelledError:
-                return "[Interrupted]"
+                return _handle_hard_interrupt(session, full_response, model, last_usage)
 
             _process_plan_commands(full_response, ctx, already_processed=plan_processed)
             continue
@@ -786,12 +838,17 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                 )
             final = _clean_for_save(full_response).strip() or "[Interrupted]"
             if session:
-                session.add_assistant_message(final, model=model or "", usage=last_usage, thoughts=_extract_thoughts(full_response))
+                session.add_assistant_message(
+                    _with_interrupt_marker(final),
+                    model=model or "", usage=last_usage,
+                    thoughts=_extract_thoughts(full_response),
+                )
             return final
 
-        all_calls = _dedupe_tool_calls(
-            tools.parse_tool_calls(full_response) + _native_tool_calls_to_calls(native_tool_calls)
-        )
+        if _api_uses_native_tools():
+            all_calls = _dedupe_tool_calls(_native_tool_calls_to_calls(native_tool_calls))
+        else:
+            all_calls = _dedupe_tool_calls(tools.parse_tool_calls(full_response))
         # think — не исполняемый инструмент, а отображаемая мысль.
         # Native function-calling провайдеры присылают его как обычный tool_call;
         # parse_think_blocks в LiveStream уже добавил его в think_log и нарисовал
@@ -888,7 +945,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                             message_num=msg_num,
                         )
                 except asyncio.CancelledError:
-                    return "[Interrupted]"
+                    return _handle_hard_interrupt(session, full_response, model, last_usage)
                 _process_plan_commands(full_response, ctx, already_processed=plan_processed)
                 continue
 
@@ -913,7 +970,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                         message_num=msg_num,
                     )
                 except asyncio.CancelledError:
-                    return "[Interrupted]"
+                    return _handle_hard_interrupt(session, full_response, model, last_usage)
 
                 _process_plan_commands(full_response, ctx, already_processed=plan_processed)
                 continue
@@ -945,7 +1002,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                             message_num=msg_num,
                         )
                 except asyncio.CancelledError:
-                    return "[Interrupted]"
+                    return _handle_hard_interrupt(session, full_response, model, last_usage)
                 _process_plan_commands(full_response, ctx, already_processed=plan_processed)
                 continue
 
@@ -1011,7 +1068,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                     extras=extras or None,
                 )
             except asyncio.CancelledError:
-                return "[Interrupted]"
+                return _handle_hard_interrupt(session, full_response, model, last_usage)
         else:
             result_msg = _build_result_message(
                 inline_results, plan=ctx.plan,
@@ -1033,7 +1090,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                     message_num=msg_num,
                 )
             except asyncio.CancelledError:
-                return "[Interrupted]"
+                return _handle_hard_interrupt(session, full_response, model, last_usage)
 
         _process_plan_commands(full_response, ctx, already_processed=plan_processed)
 

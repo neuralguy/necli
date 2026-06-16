@@ -30,6 +30,19 @@ from typing import Any
 from apis.messages import HumanMessage, AIMessage, ToolMessage
 from logger import logger
 
+
+def _is_real_user(msg: Any) -> bool:
+    """True только для НАСТОЯЩЕЙ реплики юзера (не synthetic).
+
+    Служебные HumanMessage (extras/картинки/гибрид tool-результаты), которые
+    агент сам вставляет между репликами юзера в native-режиме, помечены
+    additional_kwargs={"synthetic": True} и не должны считаться за раунд —
+    иначе окна вытеснения схлопываются раньше, чем юзер напишет 5 сообщений.
+    """
+    if not isinstance(msg, HumanMessage):
+        return False
+    return not (getattr(msg, "additional_kwargs", None) or {}).get("synthetic")
+
 _BLOCK_SEP = "\n---\n"
 _READ_CMD_RE = re.compile(r"^\$ (read_files?|read_file)\s+(.+)$")
 _WRITE_CMD_RE = re.compile(r"^\$ (write_file|patch_file|create_file)\s+(.+)$")
@@ -47,6 +60,14 @@ _TOOL_CMD_RE = re.compile(
     r"^\$ (shell|grep_files|find_files|tree|ls|web_search|"
     r"lsp_definition|lsp_references|lsp_hover|lsp_diagnostics)\b(.*)$"
 )
+
+# Скилл-результаты (вывод инструмента `skill` — тело SKILL.md). Вытесняются по
+# собственному порогу: текст инструкции нужен только пока скилл «активен».
+# _SKILL_EVICT_ROUNDS должен совпадать с skills.registry.ACTIVE_WINDOW_ROUNDS —
+# тогда исчезновение текста и скрытие инструментов скилла происходят синхронно.
+_SKILL_NAMES = {"skill"}
+_SKILL_CMD_RE = re.compile(r"^\$ skill\b(.*)$")
+_SKILL_EVICT_ROUNDS = 5
 
 # Read старше этого числа раундов и крупнее _MIN_EVICT_CHARS — кандидат на
 # age-eviction (триггер C). Свежие раунды остаются дословно.
@@ -136,7 +157,7 @@ def _scan_round_writes(messages: list) -> dict[str, int]:
     writes: dict[str, int] = {}
     round_idx = 0
     for msg in messages:
-        if isinstance(msg, HumanMessage):
+        if _is_real_user(msg):
             round_idx += 1
             text = _get_text_content(msg)
             if text:
@@ -172,7 +193,7 @@ def _scan_read_paths(messages: list) -> dict[str, int]:
                 reads[p] = round_idx
 
     for msg in messages:
-        if isinstance(msg, HumanMessage):
+        if _is_real_user(msg):
             round_idx += 1
             text = _get_text_content(msg)
             if text:
@@ -224,6 +245,25 @@ def _should_evict_tool(block_round: int, current_round: int, block_chars: int) -
         return f"very old tool output ({age} rounds old)"
     return None
 
+
+def _should_evict_skill(block_round: int, current_round: int) -> str | None:
+    """Вытеснение skill-инструкции: после _SKILL_EVICT_ROUNDS раундов (любой размер).
+
+    Совпадает с окном активности скилла — за порогом скилл «забывается», его
+    инструменты снова скрыты, держать текст SKILL.md в контексте незачем.
+    """
+    age = current_round - block_round
+    if age >= _SKILL_EVICT_ROUNDS:
+        return f"skill instructions expired ({age} rounds old)"
+    return None
+
+
+def _skill_placeholder(cmd_line: str, reason: str) -> str:
+    return (
+        f"{cmd_line}\n"
+        f"{_EVICT_MARKER} — {reason}. Reload the skill (skill tool) if you still need it.]"
+    )
+
 def _tool_placeholder(cmd_line: str, reason: str) -> str:
     return (
         f"{cmd_line}\n"
@@ -274,6 +314,15 @@ def _prune_user_text(
             new_blocks.append(_tool_placeholder(first_line, reason))
             changed = True
             continue
+        msk = _SKILL_CMD_RE.match(first_line)
+        if msk:
+            reason = _should_evict_skill(user_round, current_round)
+            if reason is None:
+                new_blocks.append(block)
+                continue
+            new_blocks.append(_skill_placeholder(first_line, reason))
+            changed = True
+            continue
         new_blocks.append(block)
 
     if not changed:
@@ -297,9 +346,10 @@ def _prune_native(
     # Карта tool_call_id → (round, paths) для read-вызовов + round для tool-вызовов.
     call_meta: dict[str, tuple[int, list[str]]] = {}
     tool_meta: dict[str, int] = {}
+    skill_meta: dict[str, int] = {}
     round_idx = 0
     for msg in messages:
-        if isinstance(msg, HumanMessage):
+        if _is_real_user(msg):
             round_idx += 1
         elif isinstance(msg, AIMessage):
             for tc in getattr(msg, "tool_calls", []) or []:
@@ -309,6 +359,8 @@ def _prune_native(
                     call_meta[tc_id] = (round_idx, _paths_from_args(tc.get("args")))
                 elif name in _TOOL_EVICT_NAMES and tc_id:
                     tool_meta[tc_id] = round_idx
+                elif name in _SKILL_NAMES and tc_id:
+                    skill_meta[tc_id] = round_idx
 
     result: list = []
     pruned = 0
@@ -335,6 +387,24 @@ def _prune_native(
                 continue
             new_content = (
                 f"{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
+            )
+            saved += len(content) - len(new_content)
+            pruned += 1
+            result.append(_set_text_content(msg, new_content))
+            continue
+        # Skill-инструкция — вытеснение по собственному порогу (окно активности).
+        if msg_name in _SKILL_NAMES:
+            s_round = skill_meta.get(tc_id)
+            if s_round is None or s_round >= current_round:
+                result.append(msg)
+                continue
+            reason = _should_evict_skill(s_round, current_round)
+            if reason is None:
+                result.append(msg)
+                continue
+            new_content = (
+                f"{_EVICT_MARKER} — {reason}. "
+                f"Reload the skill (skill tool) if you still need it.]"
             )
             saved += len(content) - len(new_content)
             pruned += 1
@@ -379,7 +449,7 @@ def prune_messages(messages: list) -> tuple[list, dict]:
     if not messages:
         return list(messages), {"pruned_blocks": 0, "saved_chars": 0}
 
-    current_round = sum(1 for m in messages if isinstance(m, HumanMessage))
+    current_round = sum(1 for m in messages if _is_real_user(m))
     if current_round <= 1:
         return list(messages), {"pruned_blocks": 0, "saved_chars": 0}
 
@@ -393,7 +463,7 @@ def prune_messages(messages: list) -> tuple[list, dict]:
     pruned_blocks = 0
     saved = 0
     for msg in messages:
-        if isinstance(msg, HumanMessage):
+        if _is_real_user(msg):
             round_idx += 1
             if round_idx == current_round:
                 result.append(msg)

@@ -1,6 +1,8 @@
 """Tool call execution with terminal display."""
 
 import asyncio
+import contextvars
+import re
 import time
 from functools import partial
 
@@ -20,6 +22,27 @@ from tools.parser import MAX_TOOL_CALLS_PER_MESSAGE
 from config.themes import t
 
 console = Console()
+
+_WRITE_TIME_RE = re.compile(r"@@WRITE_TIME=([\d.]+)@@")
+
+
+def _extract_write_time(subtitle: str) -> float | None:
+    """Достаёт streaming-время блока из маркера @@WRITE_TIME=N@@ в subtitle.
+
+    Это время, которое модель потратила на стриминг тела tool-блока (тикает в
+    live-индикаторе). Для контентных инструментов оно — осмысленный таймер, в
+    отличие от мгновенного времени исполнения. None, если маркера нет.
+    """
+    if not subtitle:
+        return None
+    m = _WRITE_TIME_RE.search(subtitle)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except (ValueError, TypeError):
+        return None
+
 
 # Инструменты, которые сами рисуют живой мультиплексный UI (свой Rich Live).
 # Для них НЕЛЬЗЯ оборачивать выполнение в спиннер-Live «Tool …s»: два Live на
@@ -81,6 +104,10 @@ def _execute_single(
     subtitle_factory=None,
 ) -> tools.ToolResult:
     if call.tool_name != "poll":
+        from tools.registry import TOOL_REGISTRY
+        if not call.tool_name.startswith("mcp__") and call.tool_name not in TOOL_REGISTRY:
+            logger.warning("unknown tool requested: {} (skipping approval prompt)", call.tool_name)
+            return tools.execute_call(call)
         from config.permissions import get_decision
         decision = get_decision(call.tool_name)
         if decision == "deny":
@@ -188,6 +215,16 @@ def _execute_single(
         except Exception:
             logger.debug("subtitle_factory failed for %s", call.tool_name, exc_info=True)
 
+    # Для контентных инструментов (write/create/patch/docx) реальная «работа» —
+    # это время, пока модель СТРИМИЛА тело блока (тикает в live-индикаторе), а
+    # само исполнение почти мгновенно. Поэтому в финальном статичном выводе
+    # показываем это streaming-время (@@WRITE_TIME=N@@ из subtitle), иначе таймер
+    # схлопывался в 0.0s. Для shell/read оставляем реальное время исполнения.
+    if call.tool_name in ("write_file", "create_file", "patch_file", "create_docx"):
+        wt = _extract_write_time(final_subtitle)
+        if wt is not None and wt > result.elapsed:
+            result.elapsed = wt
+
     if event_handler is not None:
         event_handler.on_tool_result(result)
     else:
@@ -249,9 +286,14 @@ async def execute_and_show_async(
     loop = asyncio.get_running_loop()
     results = []
     for call in calls:
-        result = await loop.run_in_executor(
-            None, partial(_execute_single, call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory),
-        )
+        # ContextVars (рабочая директория — necli_working_dir в tools/_paths)
+        # НЕ переносятся в поток run_in_executor автоматически. Без копирования
+        # контекста инструмент в пуле видит дефолтный cwd процесса, а не
+        # set_working_dir(--workdir) → относительные пути резолвятся не от той
+        # директории. Прокидываем текущий контекст явно через copy_context().run.
+        fn = partial(_execute_single, call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory)
+        ctx = contextvars.copy_context()
+        result = await loop.run_in_executor(None, lambda fn=fn, ctx=ctx: ctx.run(fn))
         results.append(result)
     results.extend(_make_overflow_results(dropped))
     return results

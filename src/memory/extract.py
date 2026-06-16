@@ -37,7 +37,7 @@ def _build_prompt(transcript: str, manifest: str) -> str:
     types = ", ".join(MEMORY_TYPES)
     existing = manifest.strip() or "(no memories saved yet)"
     return (
-        "You maintain the long-term memory of an AI coding agent for ONE project. "
+        "You maintain the long-term memory of an AI coding agent. "
         "Below is a transcript of the latest session and the list of memory files "
         "that already exist. Decide which DURABLE facts (if any) are worth saving "
         "so future sessions behave better.\n\n"
@@ -48,6 +48,11 @@ def _build_prompt(transcript: str, manifest: str) -> str:
         "not in the code (type=project); external facts/links/values useful later "
         "(type=reference).\n"
         f"- type must be one of: {types}.\n"
+        "- scope must be 'global' or 'project'. Use 'global' for facts that are NOT "
+        "tied to this one project — who the user is, their general preferences and "
+        "working style, universal references — so they apply in EVERY project. Use "
+        "'project' for context specific to the current project. When unsure, use "
+        "'project'.\n"
         "- Do NOT duplicate or restate facts already covered by an existing memory "
         "file with the same meaning. If an existing fact changed, emit it again with "
         "the SAME 'name' to overwrite it.\n"
@@ -55,6 +60,7 @@ def _build_prompt(transcript: str, manifest: str) -> str:
         f"- At most {_MAX_ITEMS} items.\n\n"
         "OUTPUT: a JSON array (and nothing else) of objects:\n"
         '  {"name": "short-kebab-name", "type": "<one of the types>", '
+        '"scope": "global|project", '
         '"body": "One concise sentence stating the fact. Optionally add **Why:** and '
         '**How to apply:** lines."}\n\n'
         "EXISTING MEMORIES:\n" + existing + "\n\n"
@@ -126,12 +132,18 @@ async def extract_memories(transcript: str, working_dir: str | None = None) -> i
         name = str(item.get("name", "")).strip()
         body = str(item.get("body", "")).strip()
         mtype = str(item.get("type", "project")).strip() or "project"
+        scope = str(item.get("scope", "project")).strip() or "project"
         if mtype not in MEMORY_TYPES:
             mtype = "project"
+        if scope not in ("project", "global"):
+            scope = "project"
         if not name or not body:
             continue
         try:
-            write_memory(name, body, mtype=mtype, today=today, working_dir=working_dir)
+            write_memory(
+                name, body, mtype=mtype, today=today,
+                working_dir=working_dir, scope=scope,
+            )
             saved += 1
         except Exception as e:
             logger.debug("memory.extract: write '%s' failed: %s", name, e, exc_info=True)

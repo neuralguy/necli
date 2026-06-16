@@ -59,6 +59,14 @@ class MCPServer:
     error: str = ""
     _session: Any = None
     _exit_stack: Any = None
+    # Server-task паттерн: одна долгоживущая задача владеет жизненным циклом
+    # ClientSession/AsyncExitStack (вход контекста, все вызовы и aclose — в
+    # ОДНОЙ задаче). Это обязательное требование anyio cancel scopes: вход и
+    # выход контекста в разных задачах приводит к RuntimeError и утечке
+    # подпроцесса. Все операции к сессии маршрутизируются через _cmd_queue.
+    _task: Any = None              # asyncio.Task — владелец сессии
+    _cmd_queue: Any = None         # asyncio.Queue — (op, args, future)
+    _close_event: Any = None       # asyncio.Event — сигнал завершения
 
 class MCPManager:
     """Singleton: фоновый asyncio loop + список серверов."""
@@ -166,32 +174,50 @@ class MCPManager:
             logger.error("mcp connect '{}' error: {}", sid, e)
         return server
 
-    # WARNING: вход контекста и aclose() в разных задачах — потенциальный RuntimeError в anyio cancel scopes; требует рефакторинга на server-task паттерн
     async def _connect_async(self, server: MCPServer) -> None:
-        try:
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
-        except ImportError as e:
-            raise RuntimeError(
-                "mcp package not installed. Run: uv add mcp"
-            ) from e
+        """Запускает долгоживущую задачу-владельца сессии и ждёт готовности.
 
-        from contextlib import AsyncExitStack
-
+        Сам connect только стартует _server_task и дожидается, пока та войдёт
+        в контексты и проинициализирует сессию. Все последующие операции (и
+        aclose) выполняются ВНУТРИ _server_task — в той же задаче, что вошла в
+        контекст, как того требуют anyio cancel scopes.
+        """
         cfg = server.config
         transport = cfg.get("transport", "stdio")
         if transport != "stdio":
             raise NotImplementedError(
                 f"transport '{transport}' not supported yet (only stdio)"
             )
-
-        command = cfg.get("command")
-        if not command:
+        if not cfg.get("command"):
             raise ValueError("server config missing 'command'")
-        args = cfg.get("args", [])
-        env = cfg.get("env") or None
 
-        params = StdioServerParameters(command=command, args=args, env=env)
+        ready: asyncio.Future = asyncio.get_event_loop().create_future()
+        server._cmd_queue = asyncio.Queue()
+        server._close_event = asyncio.Event()
+        server._task = asyncio.ensure_future(self._server_task(server, ready))
+        # Дожидаемся результата входа в контекст (исключение пробросится сюда).
+        await ready
+
+    async def _server_task(self, server: MCPServer, ready: "asyncio.Future") -> None:
+        """Единственный владелец ClientSession: вход, обработка команд, aclose."""
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except ImportError as e:
+            if not ready.done():
+                ready.set_exception(
+                    RuntimeError("mcp package not installed. Run: uv add mcp")
+                )
+            return
+
+        from contextlib import AsyncExitStack
+
+        cfg = server.config
+        params = StdioServerParameters(
+            command=cfg.get("command"),
+            args=cfg.get("args", []),
+            env=cfg.get("env") or None,
+        )
         stack = AsyncExitStack()
         try:
             read, write = await stack.enter_async_context(stdio_client(params))
@@ -210,9 +236,51 @@ class MCPManager:
                 )
                 for t in tools_resp.tools
             ]
-        except Exception:
-            await stack.aclose()
-            raise
+            if not ready.done():
+                ready.set_result(None)
+        except Exception as e:
+            # Вход в контекст провалился — закрываем то, что успели открыть,
+            # в этой же задаче, и сообщаем об ошибке инициатору.
+            try:
+                await stack.aclose()
+            except Exception:
+                logger.debug("mcp stack aclose after connect failure failed", exc_info=True)
+            if not ready.done():
+                ready.set_exception(e)
+            return
+
+        # ── Цикл обработки команд до сигнала закрытия ──
+        try:
+            while not server._close_event.is_set():
+                get_cmd = asyncio.ensure_future(server._cmd_queue.get())
+                wait_close = asyncio.ensure_future(server._close_event.wait())
+                done, pending = await asyncio.wait(
+                    {get_cmd, wait_close}, return_when=asyncio.FIRST_COMPLETED,
+                )
+                for p in pending:
+                    p.cancel()
+                if get_cmd in done:
+                    op, op_args, fut = get_cmd.result()
+                    try:
+                        if op == "call_tool":
+                            tname, call_args = op_args
+                            res = await self._do_call_tool(session, tname, call_args)
+                            if not fut.done():
+                                fut.set_result(res)
+                        else:
+                            if not fut.done():
+                                fut.set_exception(ValueError(f"unknown op: {op}"))
+                    except Exception as e:
+                        if not fut.done():
+                            fut.set_exception(e)
+        finally:
+            # aclose() ВНУТРИ той же задачи, что вошла в контекст.
+            try:
+                await stack.aclose()
+            except Exception:
+                logger.debug("mcp stack aclose failed", exc_info=True)
+            server._session = None
+            server._exit_stack = None
 
     def disconnect(self, server_id: str) -> None:
         server = self.servers.get(server_id)
@@ -228,8 +296,22 @@ class MCPManager:
         server._exit_stack = None
 
     async def _disconnect_async(self, server: MCPServer) -> None:
-        if server._exit_stack is not None:
-            await server._exit_stack.aclose()
+        # Сигнализируем задаче-владельцу о завершении; она сама вызовет aclose()
+        # в своей задаче. Здесь только ждём её корректного завершения.
+        if server._close_event is not None:
+            server._close_event.set()
+        task = server._task
+        if task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=8.0)
+            except asyncio.TimeoutError:
+                logger.warning("mcp server task '{}' did not exit in time", server.id)
+                task.cancel()
+            except Exception as e:
+                logger.debug("mcp server task '{}' exited with: {}", server.id, e)
+        server._task = None
+        server._cmd_queue = None
+        server._close_event = None
 
     def shutdown(self) -> None:
         for sid in list(self.servers.keys()):
@@ -279,7 +361,17 @@ class MCPManager:
             )
 
     async def _call_tool_async(self, server: MCPServer, tname: str, args: dict) -> str:
-        result = await server._session.call_tool(tname, args or {})
+        # Маршрутизируем вызов в задачу-владельца сессии через очередь команд:
+        # session.call_tool ДОЛЖЕН выполняться в той же задаче, что владеет
+        # потоками сессии (anyio task-scope), иначе RuntimeError.
+        if server._cmd_queue is None or server._task is None or server._task.done():
+            raise RuntimeError(f"MCP server '{server.id}' is not running")
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        await server._cmd_queue.put(("call_tool", (tname, args or {}), fut))
+        return await fut
+
+    async def _do_call_tool(self, session: Any, tname: str, args: dict) -> str:
+        result = await session.call_tool(tname, args or {})
         # CallToolResult.content — список TextContent/ImageContent/EmbeddedResource
         parts = []
         for item in (result.content or []):

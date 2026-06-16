@@ -48,15 +48,24 @@ def _get_real_clipboard_env() -> dict:
     return env
 
 
-def grab_image_from_clipboard() -> Optional[Path]:
+def grab_image_from_clipboard(dest_dir: Optional[Path] = None) -> Optional[Path]:
     """
     Пытается извлечь изображение из системного буфера обмена.
 
+    dest_dir — папка для сохранения (по умолчанию глобальная clipboard_images).
+    Передаётся папка текущей сессии, чтобы картинки лежали рядом с ней.
+
     Возвращает Path к PNG-файлу или None если в буфере нет изображения.
     """
+    target_dir = Path(dest_dir) if dest_dir is not None else _IMAGES_DIR
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning("clipboard.grab: cannot create dir %s: %s", target_dir, e)
+        target_dir = _IMAGES_DIR
     # Генерируем уникальное имя
     ts = int(time.time() * 1000)
-    dest = _IMAGES_DIR / f"clip_{ts}.png"
+    dest = target_dir / f"clip_{ts}.png"
     logger.debug("clipboard.grab: trying tools (xclip/wl-paste/pngpaste/pillow)")
 
     # Linux X11: xclip

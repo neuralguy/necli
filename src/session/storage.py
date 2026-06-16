@@ -25,11 +25,26 @@ def _recalc_model_cost(model: str, mdata: dict) -> float:
     return inp * price_in / 1_000_000 + out * price_out / 1_000_000
 
 
+def _compressed_total_cost(data: dict) -> float:
+    stats = data.get("compressed_stats") or {}
+    if not isinstance(stats, dict):
+        return 0.0
+    try:
+        return float(stats.get("total_cost") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def save(session: Session):
     session.ensure_dir()
     try:
         _save_history(session)
         _save_summary(session)
+        try:
+            from session.notes import save_session_notes
+            save_session_notes(session)
+        except Exception:
+            logger.debug("session notes save failed", exc_info=True)
         logger.debug(
             "session.save: {} messages={} cost=${:.4f}",
             session.id[:16], len(session.messages), session.total_cost,
@@ -230,7 +245,7 @@ def _recalc_summary_total_cost(data: dict) -> float:
     cbm = data.get("cost_by_model") or {}
     if not cbm:
         return float(data.get("total_cost", 0.0) or 0.0)
-    total = 0.0
+    total = _compressed_total_cost(data)
     for model, mdata in cbm.items():
         if model in ("unknown", ""):
             continue
@@ -309,6 +324,9 @@ def _get_period_statistics_from_history(days: int) -> dict:
     for session_dir in config.SESSIONS_DIR.iterdir():
         if not session_dir.is_dir():
             continue
+        # summary.updated_at — авторитетный признак последней активности сессии:
+        # если он раньше cutoff, сессия не относится к периоду (это поведение
+        # зафиксировано тестами — updated_at пишется при каждом save).
         summary_path = session_dir / "summary.json"
         if summary_path.exists():
             try:
@@ -423,7 +441,7 @@ def get_statistics(days: int | None = None) -> dict:
         session_models = set()
         session_input = 0
         session_output = 0
-        session_total_cost = 0.0
+        session_total_cost = _compressed_total_cost(data)
         for model, mdata in data.get("cost_by_model", {}).items():
             if model in ("unknown", ""):
                 continue
@@ -468,8 +486,4 @@ def get_statistics(days: int | None = None) -> dict:
 
 def get_global_statistics() -> dict:
     return get_statistics(days=None)
-
-
-def get_period_statistics(days: int = 5) -> dict:
-    return get_statistics(days=days)
 

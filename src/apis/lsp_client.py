@@ -81,7 +81,7 @@ class LSPServer:
     _opened: dict = field(default_factory=dict)    # path → version
     _capabilities: dict = field(default_factory=dict)
     _diagnostics: dict = field(default_factory=dict)   # uri → list[dict]
-    _diag_events: dict = field(default_factory=dict)   # uri → asyncio.Event
+    _diag_events: dict = field(default_factory=dict)   # uri → list[asyncio.Event] (по одному на ожидающий вызов)
 
 
 def _detect_root(file_path: Path, markers: list[str]) -> Path:
@@ -199,6 +199,31 @@ class LSPManager:
                 logger.error("lsp start '{}' failed: {}", key, e)
                 return None
 
+    def _unavailable_reason(self, file_path: Path) -> str:
+        """Точная причина, почему LSP недоступен + подсказка fallback на grep.
+
+        Раньше всё валилось в одно «нет сервера, проверь конфиг» — но причины
+        разные: нет конфига для расширения / не найден root-маркер / сервер упал
+        при старте. В случае с root-маркером конфиг в порядке, и совет «проверь
+        конфиг» сбивает с толку. Всегда подсказываем grep_files как замену."""
+        suffix = file_path.suffix or "(no extension)"
+        fallback = " Use grep_files to locate the symbol instead."
+        cfg = self._find_config_for(file_path)
+        if not cfg:
+            return (f"No LSP server configured for {suffix} files "
+                    f"(check .data/lsp_servers.json)." + fallback)
+        root = _detect_root(file_path, cfg.get("root_markers") or [])
+        if root is None:
+            markers = ", ".join(cfg.get("root_markers") or []) or "a project root"
+            return (f"LSP server '{cfg['id']}' is configured but no project root was found "
+                    f"for {file_path} (looked for: {markers}). LSP needs a project root to "
+                    f"start." + fallback)
+        # config есть, root есть → сервер не стартовал/упал
+        key = f"{cfg['id']}@{root}"
+        srv = self.servers.get(key)
+        err = (srv.error if srv and srv.error else "failed to start")
+        return (f"LSP server '{cfg['id']}' could not start ({err})." + fallback)
+
     # ── async-имплементация ──
 
     async def _start_async(self, server: LSPServer) -> None:
@@ -296,9 +321,12 @@ class LSPManager:
             uri = params.get("uri", "")
             diags = params.get("diagnostics") or []
             server._diagnostics[uri] = diags
-            ev = server._diag_events.get(uri)
-            if ev is not None and not ev.is_set():
-                ev.set()
+            # Будим ВСЕ ожидающие вызовы для этого uri (их может быть несколько
+            # конкурентно), а не один — иначе параллельный вызов оставался бы
+            # висеть до таймаута.
+            for ev in server._diag_events.get(uri, []):
+                if not ev.is_set():
+                    ev.set()
 
     def _reply_to_server_request(self, server: LSPServer, msg: dict) -> None:
         """Отвечает на server→client запрос минимальным JSON-RPC ответом (null result),
@@ -365,8 +393,7 @@ class LSPManager:
         server = self._ensure_server(path)
         if server is None:
             return ToolResult(name=f"lsp_{action}", status="error",
-                              output=(f"Нет LSP-сервера для {path.suffix} файлов. "
-                                      f"Проверь .data/lsp_servers.json и наличие команды в PATH."),
+                              output=self._unavailable_reason(path),
                               exit_code=1, command=f"lsp_{action}")
         try:
             text = self._submit(self._action_async(server, path, line, character, action), timeout=20.0)
@@ -401,23 +428,37 @@ class LSPManager:
             uri = _uri_for_path(path)
             # Если файл только что открыли — ждём publishDiagnostics.
             # Если уже был открыт — заново откроем чтобы pyright перепарсил актуальное содержимое с диска.
+            #
+            # Регистрируем СВОЙ event в списке ДО didClose/didOpen, чтобы не
+            # пропустить publishDiagnostics, пришедший сразу после re-open.
+            # Свой event на каждый вызов: конкурентные вызовы не затирают друг
+            # друга (раньше единственный слот в dict орфанил чужое событие).
             ev = asyncio.Event()
-            server._diag_events[uri] = ev
-            # Force re-open: closeDoc + didOpen с новой версией
+            waiters = server._diag_events.setdefault(uri, [])
+            waiters.append(ev)
             try:
-                if str(path.resolve()) in server._opened:
-                    await self._notify(server, "textDocument/didClose", {
-                        "textDocument": {"uri": uri},
-                    })
-                    server._opened.pop(str(path.resolve()), None)
-                await self._ensure_open(server, path)
-            except Exception as e:
-                logger.debug("lsp diagnostics re-open failed: {}", e)
-            try:
-                await asyncio.wait_for(ev.wait(), timeout=4.0)
-            except asyncio.TimeoutError:
-                pass
-            server._diag_events.pop(uri, None)
+                # Force re-open: closeDoc + didOpen с новой версией
+                try:
+                    if str(path.resolve()) in server._opened:
+                        await self._notify(server, "textDocument/didClose", {
+                            "textDocument": {"uri": uri},
+                        })
+                        server._opened.pop(str(path.resolve()), None)
+                    await self._ensure_open(server, path)
+                except Exception as e:
+                    logger.debug("lsp diagnostics re-open failed: {}", e)
+                try:
+                    await asyncio.wait_for(ev.wait(), timeout=4.0)
+                except asyncio.TimeoutError:
+                    pass
+            finally:
+                # Удаляем только свой event; чужие ожидающие вызовы не трогаем.
+                try:
+                    waiters.remove(ev)
+                except ValueError:
+                    pass
+                if not waiters:
+                    server._diag_events.pop(uri, None)
             diags = server._diagnostics.get(uri) or []
             return _format_diagnostics(diags, path)
         raise ValueError(f"unknown action {action}")

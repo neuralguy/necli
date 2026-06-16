@@ -41,9 +41,3 @@ class ApiProviderDefinition:
             if m.id == model_id or m.display_name == model_id:
                 return m
         return None
-
-    def list_model_ids(self) -> list[str]:
-        return [m.id for m in self.models]
-
-    def list_display_names(self) -> list[str]:
-        return [m.display_name for m in self.models]

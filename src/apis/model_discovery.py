@@ -56,9 +56,11 @@ async def _fetch_openai_compatible(base_url: str, headers: dict[str, str], timeo
             try:
                 p_in = float(pricing.get("prompt", 0) or 0)
                 p_out = float(pricing.get("completion", 0) or 0)
-                # OpenRouter обычно отдаёт цены per-token (0.000003 = $3/1M).
-                # Если значение выглядит как доллары за 1M, даже если оно < $1,
-                # не масштабируем его в миллион раз.
+                # Разные провайдеры отдают цены в разном формате: OpenRouter —
+                # per-token (0.000003 = $3/1M), другие — уже за 1M токенов.
+                # Эвристика по величине: очень малые значения (< 0.001)
+                # трактуем как per-token и домножаем на 1M; крупные оставляем
+                # как $/1M. (Это сознательный dual-format handler.)
                 input_price = p_in * 1_000_000 if 0 < p_in < 0.001 else p_in
                 output_price = p_out * 1_000_000 if 0 < p_out < 0.001 else p_out
             except (TypeError, ValueError):

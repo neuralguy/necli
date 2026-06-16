@@ -321,12 +321,17 @@ class BaseProvider:
                         usage = chunk.get("usage")
                         usage_metadata = self._convert_usage(usage) if usage else {}
 
+                        # ВАЖНО: reasoning отдаём ТОЛЬКО как per-delta кусок в
+                        # additional_kwargs. При слиянии чанков (final_chunk + chunk)
+                        # langchain конкатенирует строковые additional_kwargs →
+                        # получается полный текст рассуждения. Дублировать его ещё и
+                        # кумулятивно в response_metadata нельзя: при слиянии чанков
+                        # кумулятивные значения складывались бы повторно (double-count).
                         yield AIMessageChunk(
                             content=content,
                             tool_call_chunks=tool_call_chunks,
                             additional_kwargs=({"reasoning_content": reasoning} if reasoning else {}),
                             response_metadata={
-                                "reasoning_content": full_reasoning,
                                 "finish_reason": choices[0].get("finish_reason"),
                             },
                             usage_metadata=usage_metadata,

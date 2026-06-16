@@ -13,6 +13,136 @@ from tools.models import ToolCall
 def _call(args: dict) -> ToolCall:
     return ToolCall(command="subagent", tool_name="subagent", args=args)
 
+
+class TestSubagentContextDiscipline:
+    """The subagent mode_block must tell the agent to locate-then-read-narrow.
+
+    Subagent context is small and unpruned, so reading whole files is the main
+    token sink. We assert the guidance text is present in the source (the inline
+    block is built per-instance, so we check the module source directly).
+    """
+
+    def test_mode_block_teaches_locate_then_narrow(self):
+        import inspect
+        import agent.subagent_api as sa
+
+        src = inspect.getsource(sa._ApiSubagentRunner._build_system_prompt)
+        assert "LOCATE, then read NARROW" in src
+        assert "FIRST tool is LSP" in src
+        # context is flagged as small/lean (no longer the false "NOT auto-pruned":
+        # the runner DOES prune now, so the prompt must not claim otherwise)
+        assert "keep it lean" in src
+        assert "NOT auto-pruned" not in src
+
+    def test_mode_block_forbids_sleep_waiting_for_peer(self):
+        # Regression: subagent did `sleep 40; if [ -f peer-file ]` to wait for a
+        # sibling that didn't exist (it was alone in its wave). The block must ban
+        # poll/sleep-for-peer and reference depends_on as the real mechanism.
+        import inspect
+        import agent.subagent_api as sa
+
+        src = inspect.getsource(sa._ApiSubagentRunner._build_system_prompt)
+        assert "NEVER WAIT, NEVER SLEEP FOR A PEER" in src
+        assert "ALWAYS A BUG" in src
+        assert "depends_on" in src
+        # peer-reference files are explicitly read-once, never poll
+        assert "never poll" in src
+        # solo-wave branch exists
+        assert "ONLY subagent in this wave" in src
+
+    def test_runner_accepts_wave_size(self):
+        # The runner must take wave_size so it can tell the agent it's alone.
+        import inspect
+        import agent.subagent_api as sa
+
+        sig = inspect.signature(sa._ApiSubagentRunner.__init__)
+        assert "wave_size" in sig.parameters
+
+    def test_token_budget_guard_uses_runner_counter_not_buffer(self):
+        # ROOT CAUSE: the runaway backstop read self.buffer.total_tokens, but the
+        # subagent tool builds runners with buffer=None → spent always 0 → the
+        # 350k guard NEVER fired. Now it must read a runner-owned counter that is
+        # fed by _track_usage independent of buffer.
+        import inspect
+        import agent.subagent_api as sa
+
+        run_src = inspect.getsource(sa._ApiSubagentRunner.run)
+        assert "self._spent_tokens" in run_src
+        assert "self.buffer.total_tokens" not in run_src
+
+        track_src = inspect.getsource(sa._ApiSubagentRunner._track_usage)
+        assert "_spent_tokens" in track_src
+        # accumulates even when buffer is None (no `if self.buffer` gate on the count)
+        assert "input_tokens" in track_src or "total_tokens" in track_src
+
+    def test_track_usage_accumulates_without_buffer(self):
+        # Build a bare runner-like object exercising only _track_usage arithmetic.
+        import agent.subagent_api as sa
+
+        class _Bare:
+            buffer = None
+            _spent_tokens = 0
+            _track_usage = sa._ApiSubagentRunner._track_usage
+
+        b = _Bare()
+        b._track_usage({"input_tokens": 100, "output_tokens": 50})
+        b._track_usage({"total_tokens": 200})
+        assert b._spent_tokens == 350
+        # malformed usage doesn't crash or corrupt the counter
+        b._track_usage(None)
+        b._track_usage("garbage")
+        assert b._spent_tokens == 350
+
+    def test_budget_and_iteration_stops_report_error(self):
+        # Исчерпание token-budget или лимита итераций = работа НЕ доведена.
+        # Раньше оба возвращали error=None → workflow/главный агент считали это
+        # полным успехом (видно в super_shop: фаза done при незавершённой работе).
+        # Теперь оба возвращают error-строку (текст работы сохранён в final).
+        import inspect
+        import agent.subagent_api as sa
+
+        run_src = inspect.getsource(sa._ApiSubagentRunner.run)
+        # обе ветки стопа должны возвращать ненулевой error
+        assert "token budget reached (work likely incomplete)" in run_src
+        assert "iteration limit reached (work likely incomplete)" in run_src
+        # нормальное завершение (нет tool calls) остаётся успехом — ровно ОДИН
+        # такой return с error=None допустим, не больше (стопы его не используют)
+        assert run_src.count("return final, iterations + 1, None") == 1
+
+    def test_model_call_has_timeout(self):
+        # A hung onlysq stream must not block a subagent (and the whole pool)
+        # forever. The run loop must wrap _call_model in asyncio.wait_for and
+        # recover from a timeout instead of propagating/hanging.
+        import inspect
+        import agent.subagent_api as sa
+
+        assert hasattr(sa, "MODEL_CALL_TIMEOUT_SEC")
+        run_src = inspect.getsource(sa._ApiSubagentRunner.run)
+        assert "asyncio.wait_for(" in run_src
+        assert "MODEL_CALL_TIMEOUT_SEC" in run_src
+        assert "TimeoutError" in run_src
+
+    def test_subagent_prunes_context_before_model_call(self):
+        # ROOT CAUSE of "subagent hits 350k tokens while main loop stays ~70k":
+        # the main loop calls prune_messages before every model call, the subagent
+        # used to send raw self.session.messages and grow linearly. All 3 model-call
+        # branches must send the pruned copy, and a _pruned_messages helper must exist.
+        import inspect
+        import agent.subagent_api as sa
+
+        assert hasattr(sa._ApiSubagentRunner, "_pruned_messages")
+        helper = inspect.getsource(sa._ApiSubagentRunner._pruned_messages)
+        assert "prune_messages" in helper
+
+        call = inspect.getsource(sa._ApiSubagentRunner._call_model)
+        assert "self._pruned_messages()" in call
+        assert "llm.ainvoke(msgs)" in call
+        assert "llm.astream(msgs)" in call
+        # no branch may send the raw, unpruned message list to the model
+        assert "ainvoke(self.session.messages)" not in call
+        assert "astream(self.session.messages)" not in call
+
+
 class TestParseDependsOn:
     def test_none(self):
         assert _parse_depends_on(None) == []

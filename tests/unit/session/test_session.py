@@ -112,19 +112,6 @@ class TestProperties:
         s.add_assistant_message("b", model="gpt")
         assert s.models_used == ["gpt"]
 
-    def test_output_tokens_since_last_user(self, isolated_data):
-        s = Session()
-        s.add_user_message("u1")
-        s.add_assistant_message("a1", model="gpt")
-        s.add_user_message("u2")
-        s.add_assistant_message("a2", model="gpt")
-        s.add_assistant_message("a3", model="gpt")
-        # Считает только a2 + a3
-        total = s.output_tokens_since_last_user
-        a2_tokens = s.messages[-2].tokens
-        a3_tokens = s.messages[-1].tokens
-        assert total == a2_tokens + a3_tokens
-
     def test_total_duration(self, isolated_data):
         s = Session()
         s.add_assistant_message("a", model="gpt", duration=1.5)

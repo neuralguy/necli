@@ -17,7 +17,7 @@ pip install uv
 uv sync
 
 # CLI (Rich Live в терминале)
-uv run python src/main.py interactive --api onlysq
+uv run python src/main.py cli --api onlysq
 
 # Headless (CI / pipe / cron)
 echo "сосчитай строки .py" | uv run python src/main.py run --quiet --allow-all
@@ -63,10 +63,10 @@ echo "сосчитай строки .py" | uv run python src/main.py run --quiet
 
 | Команда | Назначение |
 |---------|------------|
-| `interactive` | Основной TUI на Rich Live + prompt_toolkit. |
+| `cli` | Основной TUI на Rich Live + prompt_toolkit. |
 | `run` | Headless: один проход агента, результат в stdout, exit code 0/1/2. |
 
-Опции `interactive`:
+Опции `cli`:
 
 | Флаг | Назначение |
 |------|------------|

@@ -474,20 +474,4 @@ def decode_json_string_value(raw: str) -> str:
     return "".join(result)
 
 
-def extract_bool_field(text: str, field: str) -> Optional[bool]:
-    pattern = rf'"{field}"\s*:\s*(true|false)'
-    m = re.search(pattern, text, re.IGNORECASE)
-    if m:
-        return m.group(1).lower() == "true"
-    return None
-
-
-def extract_int_field(text: str, field: str) -> Optional[int]:
-    pattern = rf'"{field}"\s*:\s*(-?\d+)'
-    m = re.search(pattern, text)
-    if m:
-        return int(m.group(1))
-    return None
-
-
 

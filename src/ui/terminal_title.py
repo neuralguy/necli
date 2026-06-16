@@ -41,6 +41,9 @@ def set_terminal_title(title: str) -> None:
     except OSError:
         return
 
+def reset_terminal_title() -> None:
+    set_terminal_title("Терминал")
+
 
 def session_title(session, status: str | None = None) -> str:
     title = (getattr(session, "title", "") or "").strip()

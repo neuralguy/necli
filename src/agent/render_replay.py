@@ -159,6 +159,56 @@ def _replay_item(item, show_tool_combined, show_command, render_md_panel) -> Non
         return
 
 
+def print_session_history(necli_session, *, max_messages: int = 20) -> None:
+    """Печатает последние max_messages сообщений сессии в терминал.
+
+    Используется при смене сессии (/sessions) и при старте с --resume, чтобы
+    пользователь сразу видел недавнюю историю диалога. Рендер тот же, что в
+    live: user-строка, assistant-панель, tool-вызовы из :::call блоков.
+    tool_result-сообщения пропускаются — их вывод уже виден под tool-вызовом.
+    """
+    messages = getattr(necli_session, "messages", None) or []
+    if not messages:
+        return
+
+    # Берём хвост из max_messages не-system сообщений; ведущие/служебные
+    # system-сообщения (compressed-мета и т.п.) в визуальную историю не идут.
+    visible = [m for m in messages if m.role in ("user", "assistant")]
+    if not visible:
+        return
+    if max_messages > 0:
+        visible = visible[-max_messages:]
+
+    from agent.display import set_replay_active, set_expanded_preview, render_md_panel
+    from agent.display import show_command
+    import agent.display as _ad
+    from tools.parser import parse_tool_calls, strip_tool_calls
+
+    _saved_ad = _ad.console
+    _ad.console = console
+    set_replay_active(True)
+    set_expanded_preview(False)
+    try:
+        for msg in visible:
+            content = msg.content or ""
+            if not content.strip():
+                continue
+            if msg.role == "user":
+                console.print()
+                _print_user_line(content)
+                continue
+            # assistant: текст + восстановленные tool-вызовы (без результатов).
+            clean = strip_tool_calls(content)
+            if clean.strip():
+                console.print()
+                console.print(render_md_panel(clean))
+            for call in parse_tool_calls(content):
+                show_command(call.command, tool_name=call.tool_name, args=call.args)
+        console.print()
+    finally:
+        set_replay_active(False)
+        _ad.console = _saved_ad
+
 def _replay_welcome() -> None:
     """Перепечатывает welcome-панель из кэша (быстрый replay)."""
     try:
@@ -203,6 +253,7 @@ def _replay_welcome() -> None:
                 n_lsp=int(args.get("n_lsp", 0) or 0),
                 n_mcp=int(args.get("n_mcp", 0) or 0),
                 mcp_tools=int(args.get("mcp_tools", 0) or 0),
+                tg_info=args.get("tg_info", "") or "",
             )
         finally:
             _h.console = _saved_h

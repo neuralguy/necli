@@ -126,13 +126,13 @@ def _clean_display_text(text: str, strip_calls: bool = True) -> str:
     # Регекс делаем ДО strip-маркеров: иначе они съедят `:::call ` префикс
     # и оставят `<tool> attrs...`, который уже не выглядит как fence.
     result = re.sub(
-        r"\n?[ \t]*:::call[ \t]+[a-zA-Z_]\w*(?:[ \t]+[^\n]*)?\Z",
+        r"\n?[ \t]*:{2,3}call[ \t]+[a-zA-Z_]\w*(?:[ \t]+[^\n]*)?\Z",
         "",
         result,
     )
     # Снимаем самостоятельные маркеры открытия/закрытия (без атрибутов).
-    result = re.sub(r"^\s*(?::::call|call:::)\s*\n?", "", result)
-    result = re.sub(r"\n?\s*(?::::call|call:::)\s*$", "", result)
+    result = re.sub(r"^\s*(?::{2,3}call|call:{2,3})\s*\n?", "", result)
+    result = re.sub(r"\n?\s*(?::{2,3}call|call:{2,3})\s*$", "", result)
     # Голые осколки маркеров на отдельной строке: `:::`, `::`, `call::`, `call:`.
     # Появляются при мелко-чанковом SSE, когда между tool-блоками частично
     # приехавший закрывающий/открывающий маркер не дозрел до полного.

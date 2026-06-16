@@ -91,11 +91,10 @@ class TestListApiModels:
             assert set(m.keys()) >= {"provider_id", "model_id", "display_name", "context_window"}
 
     def test_skips_disabled_providers(self, isolated_data):
-        from apis.config import add_api_config, toggle_api
+        from apis.config import add_api_config
         add_api_config(provider_id="dis", name="Dis", base_url="u",
-                       models=[{"id": "dm1", "display_name": "DM1"}])
-        reload_providers()
-        toggle_api("dis", False)
+                       models=[{"id": "dm1", "display_name": "DM1"}],
+                       enabled=False)
         reload_providers()
         models = list_api_models()
         assert not any(m["provider_id"] == "dis" for m in models)
@@ -129,10 +128,8 @@ class TestResolveApiModel:
 class TestGetProvider:
     def test_disabled_raises(self, isolated_data, monkeypatch):
         from apis import registry as r
-        from apis.config import add_api_config, toggle_api
-        add_api_config(provider_id="dis", name="Dis", base_url="u")
-        reload_providers()
-        toggle_api("dis", False)
+        from apis.config import add_api_config
+        add_api_config(provider_id="dis", name="Dis", base_url="u", enabled=False)
         reload_providers()
         with pytest.raises(ValueError):
             r.get_provider("dis", "any")

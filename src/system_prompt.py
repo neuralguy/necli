@@ -7,13 +7,16 @@ from datetime import datetime
 from prompts import (
     BASE_HEADER,
     TONE_AND_OUTPUT_BLOCK,
+    ORCHESTRATION_TRIGGER_BLOCK,
     EFFICIENCY_BLOCK,
     FENCED_SYNTAX_BLOCK,
-    TOOLS_LIST_BLOCK,
     LSP_TOOLS_BLOCK,
     WEB_SEARCH_BLOCK,
     AGENT_RULES_BLOCK,
     DELIVERABLE_DISCIPLINE_BLOCK,
+    CRAFT_BLOCK,
+    VERIFICATION_GATE_BLOCK,
+    ORCHESTRATION_BLOCK,
     AGENT_MODE_BLOCK,
     PLANNING_MODE_BLOCK,
     SUBAGENTS_BLOCK,
@@ -158,17 +161,11 @@ def _build_skills_block() -> str:
         return ""
     if not skills:
         return ""
-    try:
-        from skills.manager import get_active_skill_names
-        active = get_active_skill_names()
-    except Exception:
-        active = set()
+    # Показываем ВСЕ скиллы в каталоге — модель должна знать обо всех, чтобы
+    # сама решать, что грузить. Флаг disable-model-invocation больше НЕ скрывает
+    # скилл отсюда (раньше из-за него fronted-design был невидим и не применялся).
     entries = []
     for s in skills:
-        # disable-model-invocation скрывает скилл из автокаталога — кроме случая,
-        # когда он уже активирован вручную (тогда модель должна о нём знать).
-        if s.disable_model_invocation and s.name not in active:
-            continue
         desc = (s.description or "").strip()[:250] or "(no description)"
         entries.append(f"  - {s.name}: {desc}")
     if not entries:
@@ -278,10 +275,61 @@ def _resolve_native_tools() -> bool:
         return False
 
 
+# Канонический порядок инструментов в S5.0 (fenced-обзор). Гейтящиеся скиллами
+# имена (web_search/ssh/subagent/workflow) убираются из списка, пока их скилл
+# не загружен — модель не должна видеть инструмент до активации скилла.
+_TOOLS_LIST_ORDER = [
+    "shell", "read_files", "write_file", "patch_file", "create_file",
+    "delete_file", "rename_file", "copy_file", "move_file", "ls", "tree",
+    "mkdir", "rmdir", "find_files", "grep_files", "poll",
+    "ssh", "web_search", "subagent", "workflow", "skill",
+    "create_docx", "docx_screenshot",
+    "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
+    "memory_write", "memory_list", "memory_read",
+]
+
+_TOOLS_LIST_FOOTER = """
+
+Each tool's arguments and behaviour are defined in its schema. Use exactly these names.
+
+memory_write/memory_list/memory_read — persistent memory across sessions. Save with
+memory_write ONLY facts NOT derivable from code/git/AGENTS.md: user role & preferences (type=user),
+how-to-work feedback (type=feedback), current-work context (type=project), external references
+(type=reference). Convert relative dates to absolute (YYYY-MM-DD).
+scope: use scope="global" for facts NOT tied to one project (who the user is, their general
+preferences & working style, universal references) — these are injected in EVERY project. Use
+scope="project" (default) for context specific to the current project."""
+
+
+def _build_tools_list_block(active_skills: set | None) -> str:
+    """S5.0 AVAILABLE TOOLS — список с учётом гейтинга по скиллам.
+
+    Инструменты, гейтящиеся незагруженными скиллами, исключаются из обзора.
+    """
+    try:
+        from skills.registry import is_tool_gated_out as _is_tool_gated_out
+    except Exception:
+        def _is_tool_gated_out(tool: str, active_skills: set | None) -> bool:
+            return False
+    names = [
+        t for t in _TOOLS_LIST_ORDER
+        if not _is_tool_gated_out(t, active_skills)
+    ]
+    # Перенос строк примерно как в исходном статическом блоке.
+    header = (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "S5.0. AVAILABLE TOOLS\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    return header + ", ".join(names) + "." + _TOOLS_LIST_FOOTER
+
+
 def _assemble(
     mode: str,
     think_enabled: bool,
     native_tools: bool,
+    for_subagent: bool = False,
+    active_skills: set | None = None,
 ) -> str:
     # Все блоки с примерами вызова инструментов выбираются ПО native_tools:
     # в native-варианте НЕТ ни одного упоминания fenced (:::call/call:::) —
@@ -295,17 +343,21 @@ def _assemble(
     if not native_tools:
         parts.append(TOOL_FORMAT_TEXT_BLOCK)
 
-    parts += [
-        execution_model_block_for(native_tools),
-        response_structure_block_for(native_tools),
-        TONE_AND_OUTPUT_BLOCK,
-        EFFICIENCY_BLOCK,
-        planning_block_for(native_tools),
-    ]
+    parts.append(execution_model_block_for(native_tools))
+    # S2/S2.1 — структура ответа ПОЛЬЗОВАТЕЛЮ и тон терминала. Субагент пишет не
+    # юзеру, а главному агенту (свой FINAL ANSWER FORMAT в mode_block), поэтому
+    # эти блоки ему лишний повторяющийся вес — пропускаем.
+    if not for_subagent:
+        parts.append(response_structure_block_for(native_tools))
+        parts.append(TONE_AND_OUTPUT_BLOCK)
+        parts.append(ORCHESTRATION_TRIGGER_BLOCK)
+    parts.append(EFFICIENCY_BLOCK)
+    parts.append(planning_block_for(native_tools))
 
     # ── Инструменты: синтаксис vs стратегия — независимые оси ──
-    # Список инструментов — всегда (обзор «что есть»).
-    parts.append(TOOLS_LIST_BLOCK)
+    # Список инструментов — всегда (обзор «что есть»), но гейтящиеся скиллами
+    # инструменты скрыты, пока их скилл не загружен.
+    parts.append(_build_tools_list_block(active_skills))
     # Синтаксис вызова через :::call и LSP-args (дублируют JSON-схемы) —
     # только в fenced. В native схемы у модели уже есть через bind_tools.
     if not native_tools:
@@ -315,13 +367,25 @@ def _assemble(
     # всегда: её НЕТ в JSON-схемах, нужна модели в обоих режимах.
     parts.append(tool_strategy_block_for(native_tools))
 
+    _active = active_skills or set()
+    # S5.2 WEB SEARCH — только когда скилл `web` загружен (web_search/image_search
+    # гейтятся им). Иначе модель не должна знать про web_search до активации.
+    if "web" in _active:
+        parts.append(WEB_SEARCH_BLOCK)
     parts += [
-        WEB_SEARCH_BLOCK,
         docx_block_for(native_tools),
         hard_constraints_block_for(native_tools),
         AGENT_RULES_BLOCK,
         DELIVERABLE_DISCIPLINE_BLOCK,
+        CRAFT_BLOCK,
+        VERIFICATION_GATE_BLOCK,
     ]
+    # S7.3 ORCHESTRATION — решение «соло или оркестрация». Субагент НЕ может
+    # вызывать subagent/workflow (они в _BLOCKED_FOR_SUBAGENTS), так что этот
+    # блок для него — мёртвый вес. Главному агенту — только когда скилл
+    # `subagents` загружен (subagent/workflow гейтятся им).
+    if not for_subagent and "subagents" in _active:
+        parts.append(ORCHESTRATION_BLOCK)
 
     if mode in ("planning", "plan"):
         parts.append(PLANNING_MODE_BLOCK)
@@ -332,8 +396,13 @@ def _assemble(
     if think_enabled:
         parts.append(think_block_for(native_tools))
 
-    parts.append(workflow_block_for(native_tools))
-    parts.append(SUBAGENTS_BLOCK)
+    # S8 WORKFLOWS / S9 SUBAGENTS — как оркестрировать. Субагенту недоступно
+    # (он сам внутри оркестрации); главному — только когда скилл `subagents`
+    # загружен (иначе subagent/workflow скрыты и эти блоки ссылаются на
+    # невидимые инструменты).
+    if not for_subagent and "subagents" in _active:
+        parts.append(workflow_block_for(native_tools))
+        parts.append(SUBAGENTS_BLOCK)
     parts.append(LANGUAGE_BLOCK)
     return "\n\n".join(p for p in parts if p)
 
@@ -356,6 +425,8 @@ def build_system_prompt(
     working_dir: str = "",
     think_enabled: bool | None = None,
     native_tools: bool | None = None,
+    for_subagent: bool = False,
+    active_skills: set | None = None,
 ) -> str:
     """Собирает системный промт заново под ТЕКУЩИЕ настройки.
 
@@ -371,7 +442,8 @@ def build_system_prompt(
     if native_tools is None:
         native_tools = _resolve_native_tools()
 
-    base = _assemble(mode, think_enabled=think_enabled, native_tools=native_tools)
+    base = _assemble(mode, think_enabled=think_enabled, native_tools=native_tools,
+                     for_subagent=for_subagent, active_skills=active_skills)
     env_block = _build_environment_block(working_dir=working_dir, mode=mode)
     base = base.replace("{proof}", proof + ("\n\n" + env_block if env_block else ""))
 

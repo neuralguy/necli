@@ -92,7 +92,7 @@ def _show_hero(step: int, total: int, title_key: str) -> None:
     console.print()
 
 
-def _step_language() -> None:
+def _step_language(start: int = 0) -> tuple[bool, int]:
     _show_hero(1, 3, "onboarding.title_lang")
 
     current = config.get("language", "en")
@@ -100,11 +100,12 @@ def _step_language() -> None:
         {"label": LANG_DISPLAY.get(code, code), "hint": code, "active": code == current}
         for code in SUPPORTED_LANGS
     ]
-    choice = select_menu(items, title=_("lang.subtitle"))
+    choice = select_menu(items, current=start, title=_("lang.subtitle"), allow_forward=True)
     if choice is None:
-        return
-    code = SUPPORTED_LANGS[choice]
-    set_lang(code)
+        return False, start
+    if choice >= 0:
+        set_lang(SUPPORTED_LANGS[choice])
+    return False, max(choice, 0)
 
 
 def _theme_list_panel(names: list[str], selected: int, current: str, width: int) -> str:
@@ -151,31 +152,22 @@ def _theme_list_panel(names: list[str], selected: int, current: str, width: int)
     return buf.getvalue()
 
 
-def _step_theme() -> None:
+def _step_theme(start: int = 0) -> tuple[bool, int]:
     _show_hero(2, 3, "onboarding.title_theme")
 
     names = list_themes()
     current = get_active_theme_name()
 
     term_w = shutil.get_terminal_size((120, 30)).columns
-    # Раскладка: список слева ~38 cols, превью справа — остаток.
     list_w = min(40, max(32, term_w // 3))
     preview_w = min(80, term_w - list_w - 4)
-
-    initial = 0
-    for i, n in enumerate(names):
-        if n == current:
-            initial = i
-            break
 
     def render_fn(sel: int) -> str:
         list_str = _theme_list_panel(names, sel, current, list_w).rstrip("\n")
         preview_str = render_theme_preview(BUILTIN_THEMES[names[sel]], width=preview_w).rstrip("\n")
-        # Склеиваем построчно
         ll = list_str.split("\n")
         pl = preview_str.split("\n")
         h = max(len(ll), len(pl))
-        # дополняем пустотой
         def _pad(lines, target, pad_width):
             out = list(lines)
             blank = " " * pad_width
@@ -190,28 +182,38 @@ def _step_theme() -> None:
     choice = _panel_menu_direct(
         render_fn, sys.stdout,
         _("themes.hint_apply") if _("themes.hint_apply") != "themes.hint_apply" else "↑↓ select · enter apply · esc skip",
-        len(names), initial,
+        len(names), start,
+        allow_back=True,
+        allow_forward=True,
     )
     if choice is None:
-        return
-    chosen = names[choice]
-    if chosen != current:
-        set_theme(chosen)
+        return False, start
+    if choice >= 0:
+        if names[choice] != current:
+            set_theme(names[choice])
+        return False, choice
+    cursor = -(choice + 2)
+    return True, cursor
 
 
-def _step_provider() -> None:
-    from apis.config import add_api_config, set_api_key, list_api_configs
+def _step_provider(start: int = 0) -> tuple[bool, int]:
+    from apis.config import add_api_config, list_api_configs
     from apis.registry import get_definition, reload_providers
 
     _show_hero(3, 3, "onboarding.title_provider")
 
-    items = [{"label": name, "hint": host} for _pid, name, host, *_ in _PROVIDER_PRESETS]
+    items = [
+        {"label": name, "hint": host}
+        for _pid, name, host, *_ in _PROVIDER_PRESETS
+    ]
     items.append({"label": _("onboarding.skip_provider"), "hint": _("onboarding.skip_hint")})
 
-    choice = select_menu(items, title=_("onboarding.pick_provider"))
+    choice = select_menu(items, current=start, title=_("onboarding.pick_provider"), allow_back=True, allow_forward=True)
     if choice is None or choice == len(_PROVIDER_PRESETS):
         _ensure_default_provider()
-        return
+        return False, start if choice is None else choice
+    if choice <= -2:
+        return True, -(choice + 2)
 
     pid, name, _host, base_url, ptype, api_format = _PROVIDER_PRESETS[choice]
     add_api_config(
@@ -221,22 +223,8 @@ def _step_provider() -> None:
     reload_providers()
     console.print(f"  [green]✓[/green] {_('api.added', name=name)}")
 
-    is_local = pid in ("ollama",)
-    if not is_local:
-        console.print()
-        console.print(f"  [dim]{_('onboarding.key_prompt_hint')}[/dim]")
-        try:
-            key = console.input(
-                f"  [bold]{_('api.field_api_key')}[/bold] [dim]({_('onboarding.optional')}):[/dim] "
-            ).strip()
-        except (KeyboardInterrupt, EOFError):
-            key = ""
-            console.print()
-        if key:
-            set_api_key(pid, key)
-            console.print(f"  [green]✓[/green] {_('api.key_set')}")
-        else:
-            console.print(f"  [yellow]⚠[/yellow] {_('onboarding.key_skipped', name=name)}")
+    if pid not in ("ollama",):
+        _ask_api_key(pid, name)
 
     defn = get_definition(pid)
     if defn:
@@ -247,6 +235,25 @@ def _step_provider() -> None:
 
     if not list_api_configs():
         _ensure_default_provider()
+    return False, choice
+
+
+def _ask_api_key(pid: str, name: str) -> None:
+    from apis.config import set_api_key as _set_key
+    console.print()
+    console.print(f"  [dim]{_('onboarding.key_prompt_hint')}[/dim]")
+    try:
+        key = console.input(
+            f"  [bold]{_('api.field_api_key')}[/bold] [dim]({_('onboarding.optional')}):[/dim] "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        key = ""
+        console.print()
+    if key:
+        _set_key(pid, key)
+        console.print(f"  [green]✓[/green] {_('api.key_set')}")
+    else:
+        console.print(f"  [yellow]⚠[/yellow] {_('onboarding.key_skipped', name=name)}")
 
 
 def _ensure_default_provider() -> None:
@@ -282,10 +289,17 @@ def _ensure_default_provider() -> None:
 
 
 def run_onboarding() -> None:
+    steps = [_step_language, _step_theme, _step_provider]
+    cursors = [0] * len(steps)
+    i = 0
     try:
-        _step_language()
-        _step_theme()
-        _step_provider()
+        while i < len(steps):
+            want_back, cursor = steps[i](cursors[i])
+            cursors[i] = cursor
+            if want_back and i > 0:
+                i -= 1
+            else:
+                i += 1
     except (KeyboardInterrupt, EOFError):
         console.print()
         _ensure_default_provider()

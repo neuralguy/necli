@@ -66,6 +66,9 @@ def _build_style():
     )
 
 _EOF = object()
+# Возвращается из read(), когда ожидание ввода прервано завершением фоновой
+# задачи (buffer пуст) — REPL синтезирует continuation-ход для агента.
+_BG_RESUME = object()
 
 
 
@@ -123,7 +126,7 @@ class _ImageHighlighter(Processor):
                 if not part:
                     continue
                 if i % 2 == 1:
-                    fragments.append((t('accent'), part))
+                    fragments.append((f"{t('accent')} underline", part))
                 else:
                     fragments.append((style, part))
         return Transformation(fragments)
@@ -164,12 +167,20 @@ class InputPrompt:
         """Update the working directory for file autocomplete."""
         self._file_completer.set_working_dir(path)
 
+    def _session_images_dir(self) -> Optional[Path]:
+        """Папка для картинок текущей сессии: <session.dir>/clipboard_images."""
+        sess = self.session
+        sess_dir = getattr(sess, "dir", None) if sess is not None else None
+        if sess_dir is None:
+            return None
+        return Path(sess_dir) / "clipboard_images"
+
     def _try_grab_image(self) -> Optional[Path]:
         """Пытается извлечь изображение из системного буфера."""
         try:
             from ui.clipboard import grab_image_from_clipboard
 
-            return grab_image_from_clipboard()
+            return grab_image_from_clipboard(dest_dir=self._session_images_dir())
         except Exception:
             return None
 
@@ -413,14 +424,28 @@ class InputPrompt:
     async def read(
         self,
         status_text: Optional[str] = None,
+        bg_resume: bool = False,
     ):
+        """Читает ввод пользователя.
+
+        bg_resume=True: пока ждём ввод, параллельно следим за завершением
+        фоновых задач. Если задача завершилась И поле ввода ПУСТО (пользователь
+        не печатает — не мешаем ему) — прерываем ожидание и возвращаем
+        _BG_RESUME, чтобы REPL разбудил агента. Если в буфере есть текст —
+        не трогаем, ждём отправки.
+        """
         self._last_status_text = status_text
         try:
             self._print_separator(status_text)
-            result = await self._session.prompt_async(
-                lambda: self._make_prompt_fragments(),
-                bottom_toolbar=None,
-            )
+            if bg_resume:
+                result = await self._read_with_bg_resume(status_text)
+                if result is _BG_RESUME:
+                    return _BG_RESUME
+            else:
+                result = await self._session.prompt_async(
+                    lambda: self._make_prompt_fragments(),
+                    bottom_toolbar=None,
+                )
             cleaned = result.strip() if result else ""
             if cleaned:
                 self._echo_submitted(result)
@@ -429,6 +454,71 @@ class InputPrompt:
             return _EOF
         except KeyboardInterrupt:
             return None
+
+    async def _read_with_bg_resume(self, status_text: Optional[str]):
+        """prompt_async, прерываемый завершением фоновой задачи (если буфер пуст).
+
+        Возвращает строку ввода либо _BG_RESUME. EOFError/KeyboardInterrupt
+        пробрасываются наружу (обрабатываются в read()).
+        """
+        import asyncio
+
+        from tools.background import (
+            clear_finish_event,
+            get_finish_event,
+            has_pending_finished,
+        )
+
+        prompt_task = asyncio.ensure_future(
+            self._session.prompt_async(
+                lambda: self._make_prompt_fragments(),
+                bottom_toolbar=None,
+            )
+        )
+
+        while True:
+            finish_ev = get_finish_event()
+            # Нет моста (Event не привязан) — обычное ожидание ввода.
+            if finish_ev is None:
+                return await prompt_task
+
+            bg_task = asyncio.ensure_future(finish_ev.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {prompt_task, bg_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                for t in (prompt_task, bg_task):
+                    if not t.done():
+                        t.cancel()
+                raise
+
+            if prompt_task in done:
+                # Пользователь отправил ввод — он приоритетнее.
+                if not bg_task.done():
+                    bg_task.cancel()
+                return prompt_task.result()
+
+            # Сработал bg_task: фоновая задача завершилась.
+            clear_finish_event()
+            buffer_has_text = bool(
+                (self._session.app.current_buffer.text or "").strip()
+            )
+            if buffer_has_text or not has_pending_finished():
+                # Пользователь печатает (не мешаем) ИЛИ ложное срабатывание
+                # (всё уже доставлено) — продолжаем ждать ввод, перевзводим Event.
+                continue
+            # Поле пусто и есть что доставить → прерываем ввод, будим агента.
+            if not prompt_task.done():
+                self._session.app.exit(result="")
+                try:
+                    await prompt_task
+                except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+                    pass
+                except Exception:
+                    logger.debug("prompt_task raised on bg-exit", exc_info=True)
+            return _BG_RESUME
 
     def _echo_submitted(self, text: str) -> None:
         """Перепечатывает отправленный ввод белым текстом на сером фоне на всю
@@ -465,12 +555,32 @@ class InputPrompt:
             if bg.startswith("#") and len(bg) == 7:
                 r, g, b = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
                 bg_seq = f"48;2;{r};{g};{b}"
+            # Маппинг [imageN] → путь для OSC 8 file://-гиперссылок (Ctrl+клик).
+            image_paths = {
+                f"[image{idx}]": p
+                for idx, p in enumerate(self.pending_images, start=1)
+            }
+
+            def _linkify(seg: str) -> str:
+                # Оборачивает [imageN] в OSC 8 file://-ссылку + underline.
+                # ширину не меняет (escape-коды невидимы).
+                if not image_paths:
+                    return seg
+                def _repl(m):
+                    ph = m.group(0)
+                    p = image_paths.get(ph)
+                    if p is None:
+                        return ph
+                    uri = Path(p).resolve().as_uri()
+                    return f"\033]8;;{uri}\033\\\033[4m{ph}\033[24m\033]8;;\033\\"
+                return _ImageHighlighter._PATTERN.sub(_repl, seg)
+
             lines = text.split("\n")
             for i, ln in enumerate(lines):
                 prefix = mode_prefix if i == 0 else " "
                 filled = prefix + ln
                 pad = max(0, w - _vw(filled))
-                body = filled + " " * pad
+                body = _linkify(prefix + ln) + " " * pad
                 if bg_seq:
                     out.write(f"\033[1;{fg};{bg_seq}m{body}\033[0m\n")
                 else:

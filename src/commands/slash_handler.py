@@ -72,7 +72,53 @@ async def handle_slash_result(act: SlashResult, state: InteractiveState) -> bool
     if act.switch_api is not None:
         await _handle_switch_api(act, state)
 
+    if act.tg_toggle is not None:
+        await _handle_tg_toggle(act.tg_toggle, state)
+
     return True
+
+
+async def _handle_tg_toggle(enable: bool, state: InteractiveState) -> None:
+    """Запускает/останавливает Telegram-бридж на лету (без перезапуска CLI)."""
+    from apis.telegram import get_bridge
+    bridge = get_bridge()
+
+    if enable:
+        if bridge.is_running:
+            return
+        token = config.get_telegram_bot_token()
+        chat_id = config.get_telegram_chat_id()
+        if not token or not chat_id:
+            console.print(f"  [dim]{tr('boot.telegram_enabled_not_configured')}[/dim]")
+            return
+        try:
+            ok, info = await bridge.start(token, int(chat_id))
+        except Exception as e:
+            logger.error("tg toggle start failed: %s", e, exc_info=True)
+            console.print(f"  [yellow]⚠ Telegram: {e}[/yellow]")
+            return
+        if ok:
+            console.print(f"  [green]✓[/green] Telegram: [dim]{info}[/dim]")
+            from agent.tg_menu import register_tg_menu, _build_reply_keyboard
+            register_tg_menu(state)
+            bridge.send(
+                f"🟢 <b>necli-api</b> bridge enabled\n"
+                f"model: <code>{state.cur_model}</code>\n\n"
+                f"Controls: /menu",
+                reply_markup=_build_reply_keyboard(),
+            )
+        else:
+            console.print(f"  [yellow]⚠ Telegram: {info}[/yellow]")
+    else:
+        if not bridge.is_running:
+            return
+        try:
+            bridge.send("🔴 <b>necli-api</b> bridge disabled")
+            await bridge.stop()
+            console.print(f"  [dim]{tr('tg.bridge_disabled')}[/dim]")
+        except Exception as e:
+            logger.error("tg toggle stop failed: %s", e, exc_info=True)
+            console.print(f"  [yellow]⚠ Telegram: {e}[/yellow]")
 
 
 async def _handle_switch_session(act: SlashResult, state: InteractiveState) -> None:
@@ -92,13 +138,15 @@ async def _handle_switch_session(act: SlashResult, state: InteractiveState) -> N
         state.cur_model = state.session.last_model
 
     from apis.agent_adapter import restore_api_session_history
-    loaded = restore_api_session_history(state.session)
+    restore_api_session_history(state.session)
     state.pending_context = None
     state.msg_num = state.session.message_count
     _print_session_switch(state.session)
-    console.print(
-        f"  [green]✓[/green] [dim]{tr('sh.history_loaded_msgs', n=loaded)}[/dim]"
-    )
+    try:
+        from agent.render_replay import print_session_history
+        print_session_history(state.session, max_messages=20)
+    except Exception:
+        logger.debug("print_session_history failed", exc_info=True)
 
 
 def _handle_change_dir(act: SlashResult, state: InteractiveState) -> None:
@@ -116,16 +164,16 @@ def _handle_change_dir(act: SlashResult, state: InteractiveState) -> None:
             timeout=10, cwd=new_dir,
         )
         if _tree_r.returncode == 0 and _tree_r.stdout.strip():
-            _cd_parts.append(f"$ tree -L 3\n{_tree_r.stdout.strip()}")
+            _cd_parts.append(f"$ tree -L 2\n{_tree_r.stdout.strip()}")
     except Exception as e:
         logger.debug("cd tree snapshot failed: {}", e)
 
-        _cd_context = (
-            f"User changed working directory to: {new_dir}\n\n"
-            + "\n\n".join(_cd_parts)
-        )
-        state.pending_context = [{"role": "system", "content": _cd_context}]
-        console.print(f"  [dim]{tr('sh.dir_context_loaded')}[/dim]")
+    _cd_context = (
+        f"User changed working directory to: {new_dir}\n\n"
+        + "\n\n".join(_cd_parts)
+    )
+    state.pending_context = [{"role": "system", "content": _cd_context}]
+    console.print(f"  [dim]{tr('sh.dir_context_loaded')}[/dim]")
 
 
 async def _handle_compress(state: InteractiveState) -> None:
@@ -162,7 +210,7 @@ async def _handle_compress(state: InteractiveState) -> None:
         await api_new_chat()
         api_sess = get_api_session()
         if api_sess is not None:
-            api_sess.add_system(compressed)
+            api_sess.add_system(compressed, compressed=True)
 
         state.pending_context = None
         state.msg_num = 0

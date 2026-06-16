@@ -193,7 +193,7 @@ def _reconnect_one(sid: str):
         _register_in_tool_registry()
         console.print(f"  [green]✓[/green] {_('mcp.connected_one', name=sid, n=len(srv.tools))}")
     else:
-        console.print(f"  [red]✗[/red] {escape(sid)}: {escape(srv.error)}")
+        console.print(f"  [red]✗[/red] {escape(sid)}: {escape(srv.error or '')}")
 
 
 def _reconnect_all(silent: bool = False):

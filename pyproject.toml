@@ -1,6 +1,6 @@
 [project]
 name = "necli-api"
-version = "0.13.8"
+version = "0.13.9"
 description = "Terminal client for AI chat (API-only, no browser)"
 readme = "README.md"
 license = "Apache-2.0"

@@ -228,7 +228,8 @@ def _compact_content(text: str, head: int | None = None, tail: int | None = None
         return text
     skipped = total - head - tail
     head_lines = lines[:head]
-    tail_lines = lines[-tail:]
+    # lines[-0:] вернул бы ВЕСЬ список (а не пустой хвост) — явно гасим tail==0.
+    tail_lines = lines[-tail:] if tail > 0 else []
     return (
         "\n".join(head_lines)
         + f"\n\n... {skipped} lines\n\n"
@@ -318,6 +319,17 @@ def _file_link_style(raw_path, base_color: str) -> str:
         return f"bold underline {base_color} link file://{p}"
     except Exception:
         return f"bold {base_color}"
+
+
+def _format_elapsed(elapsed: float) -> str:
+    """Строка времени для статуса инструмента, или '' если показывать нечего.
+
+    Скрываем «0.0s»: мгновенные операции (read/list — файл в кеше, мелкое
+    исполнение) округляются до 0.0 и выглядят как баг таймера. Печатаем время
+    только когда оно не схлопнется в 0.0 (порог 0.05s → ≥0.1s после округления).
+    """
+    elapsed = elapsed or 0.0
+    return f" {elapsed:.1f}s" if elapsed >= 0.05 else ""
 
 
 def _compact_title_text(
@@ -586,7 +598,10 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
             out.append(Text("        " + _i18n("compact.more_lines", n=rest), style=f"italic {t('dim_text')}"))
         return out
 
-    # shell — превью stdout (первые N строк) + "… +M lines"
+    # shell — превью вывода. При успехе показываем ПЕРВЫЕ N строк, при падении —
+    # ПОСЛЕДНИЕ N: суть ошибки (напр. `ValueError: 42`) почти всегда в конце
+    # stderr/traceback, а первые строки — это `[stderr]` + начало стека. Раньше
+    # длинный traceback обрезал голову и прятал сам error в «… +M lines».
     if tool_name == "shell" and result is not None:
         output = (result.output or "").rstrip("\n")
         if not output:
@@ -594,13 +609,24 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
         lines = output.split("\n")
         total = len(lines)
         limit = None if _EXPANDED_PREVIEW else COMPACT_PREVIEW_LINES_SHELL()
-        head = lines if limit is None else lines[:limit]
+        failed = result.status != "ok"
+        if limit is None or total <= limit:
+            head = lines
+            offset = 0
+        elif failed:
+            head = lines[-limit:]          # хвост — там сам текст ошибки
+            offset = total - limit
+        else:
+            head = lines[:limit]
+            offset = 0
         num_w = len(str(total))
         out: list = []
-        for i, ln in enumerate(head, start=1):
+        if offset > 0:
+            out.append(Text("        " + _i18n("compact.more_lines", n=offset), style="dim italic"))
+        for i, ln in enumerate(head, start=offset + 1):
             num = Text(f"      {str(i).rjust(num_w)} ", style="white")
             out.append(num + Text(ln))
-        if total > len(head):
+        if offset == 0 and total > len(head):
             rest = total - len(head)
             out.append(Text("        " + _i18n("compact.more_lines", n=rest), style="dim italic"))
         return out
@@ -836,7 +862,7 @@ def _show_tool_compact(
         status_color = "green" if is_ok else "red"
 
     elapsed = (result.elapsed if result else 0.0) or 0.0
-    time_str = f" {elapsed:.1f}s" if elapsed else ""
+    time_str = _format_elapsed(elapsed)
     status_full = f"{icon}{time_str}" if icon else ""
 
     console.print()

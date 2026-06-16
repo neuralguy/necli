@@ -35,7 +35,10 @@ def ssh_interactive():
             _ssh_add_interactive()
             continue
 
-        alias, cfg = next(item for i, item in enumerate(hosts.items()) if i == choice)
+        host_items = list(hosts.items())
+        if not (0 <= choice < len(host_items)):
+            continue
+        alias, cfg = host_items[choice]
         action = _ssh_detail(alias, cfg)
         if action == "back":
             continue

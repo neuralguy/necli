@@ -4,7 +4,7 @@ import pytest
 
 from config.permissions import (
     get_decision, set_decision, reset_tool, reset_session, reset_all,
-    all_effective, get_scope,
+    get_scope,
 )
 
 
@@ -95,17 +95,3 @@ class TestReset:
         assert get_decision("shell") == "ask"
 
 
-class TestAllEffective:
-    def test_lists_all_decisions(self):
-        set_decision("shell", "allow", "forever")
-        set_decision("write_file", "deny", "process")
-        set_decision("read_files", "allow", "session")
-        snapshot = all_effective()
-        assert snapshot["shell"] == ("allow", "forever")
-        assert snapshot["write_file"] == ("deny", "process")
-        assert snapshot["read_files"] == ("allow", "session")
-
-    def test_empty_after_reset(self):
-        set_decision("shell", "allow", "session")
-        reset_all()
-        assert all_effective() == {}

@@ -7,6 +7,7 @@
 ближайшего раунда.
 """
 
+import asyncio
 import subprocess
 import sys
 import threading
@@ -19,6 +20,44 @@ from tools.models import ToolResult
 # Фоновые задачи — для долгих процессов, поэтому таймаут заметно больше
 # обычного shell (_EXECUTION_TIMEOUT). Час с запасом.
 _BG_TIMEOUT = 3600
+
+# ── Мост поток-демон → asyncio ──
+# Фоновые задачи исполняются в daemon-потоках (вне asyncio). Чтобы REPL мог
+# мгновенно проснуться при завершении задачи (а не ждать ввода пользователя),
+# поток сигналит сюда через loop.call_soon_threadsafe. Ввод/цикл ждут на
+# _finish_event и при срабатывании дренируют результаты.
+_event_loop: "asyncio.AbstractEventLoop | None" = None
+_finish_event: "asyncio.Event | None" = None
+
+
+def register_event_loop(loop: "asyncio.AbstractEventLoop") -> None:
+    """Привязывает asyncio-loop, в котором живёт REPL. Создаёт Event в нём."""
+    global _event_loop, _finish_event
+    _event_loop = loop
+    _finish_event = asyncio.Event()
+
+
+def get_finish_event() -> "asyncio.Event | None":
+    """Event, взводимый при завершении любой фоновой задачи (или None если не привязан)."""
+    return _finish_event
+
+
+def clear_finish_event() -> None:
+    """Сбрасывает Event после обработки — чтобы ждать следующего завершения."""
+    if _finish_event is not None:
+        _finish_event.clear()
+
+
+def _signal_finish() -> None:
+    """Будит asyncio-loop из фонового потока (thread-safe)."""
+    loop = _event_loop
+    ev = _finish_event
+    if loop is None or ev is None:
+        return
+    try:
+        loop.call_soon_threadsafe(ev.set)
+    except Exception:  # noqa: BLE001 — loop закрыт/недоступен: не роняем поток
+        logger.debug("background: signal_finish failed", exc_info=True)
 
 
 @dataclass
@@ -36,6 +75,14 @@ class _Job:
 _jobs: dict[str, _Job] = {}
 _lock = threading.Lock()
 _counter = 0
+
+
+def has_pending_finished() -> bool:
+    """True, если есть завершённые, но ещё не доставленные модели задачи."""
+    with _lock:
+        return any(
+            j.status != "running" and not j.delivered for j in _jobs.values()
+        )
 
 
 def _run_job(job: _Job, cwd: str, env: dict) -> None:
@@ -76,6 +123,10 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
             job.status = "error"
             job.finished_at = time.monotonic()
         logger.opt(exception=True).error("background job {} crashed: {}", job.id, e)
+    finally:
+        # Будим REPL/цикл: задача завершилась (в любом исходе) — есть что
+        # доставить модели. Сигнал thread-safe и безопасен при отсутствии loop.
+        _signal_finish()
 
 
 def start_background(command: str, cwd: str, env: dict) -> str:
@@ -93,12 +144,6 @@ def start_background(command: str, cwd: str, env: dict) -> str:
     thread.start()
     logger.info("background job {} started: {!r} (cwd={})", job_id, command[:300], cwd)
     return job_id
-
-
-def has_pending() -> bool:
-    """Есть ли ещё выполняющиеся фоновые задачи."""
-    with _lock:
-        return any(j.status == "running" for j in _jobs.values())
 
 
 def drain_finished_results() -> list[ToolResult]:

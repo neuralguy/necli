@@ -38,6 +38,7 @@ from tools.ssh import execute_ssh
 from tools.subagent import execute_subagent
 from tools.workflow import execute_workflow
 from tools.web_search import execute_web_search
+from tools.image_search import execute_image_search
 from tools.expand_result import execute_expand_tool_result
 from tools.memory_tool import memory_write, memory_list, memory_read
 
@@ -91,6 +92,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "subagent": execute_subagent,
     "workflow": execute_workflow,
     "web_search": execute_web_search,
+    "image_search": execute_image_search,
     "expand_tool_result": execute_expand_tool_result,
     "memory_write": memory_write,
     "memory_list": memory_list,
@@ -235,10 +237,6 @@ PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"read_file"})
 READ_ONLY_TOOLS = PLANNING_TOOLS
 
 _PLANNING_TOOLS_HUMAN = ", ".join(sorted(_READ_ONLY_CANONICAL))
-
-
-def is_read_only(tool_name: str) -> bool:
-    return tool_name in READ_ONLY_TOOLS
 
 
 def is_tool_allowed(tool_name: str, mode: str) -> bool:

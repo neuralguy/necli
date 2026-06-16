@@ -109,12 +109,6 @@ def reload_providers() -> None:
     _loaded = False
     load_all()
 
-def _invalidate_instances(provider_id: str) -> None:
-    """Убирает из кэша инстансы конкретного провайдера (после смены его конфига)."""
-    for key in [k for k in _instances if k[0] == provider_id]:
-        _instances.pop(key, None)
-
-
 def get_definition(provider_id: str) -> Optional[ApiProviderDefinition]:
     load_all()
     return _definitions.get(provider_id)

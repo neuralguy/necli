@@ -339,3 +339,67 @@ class TestPruneNative:
         assert tool_msg.tool_call_id == "r1"
         assert tool_msg.name == "read_files"
         assert isinstance(tool_msg, ToolMessage)
+
+class TestSkillEviction:
+    """Skill-результаты вытесняются после _SKILL_EVICT_ROUNDS раундов."""
+
+    def _ai_skill(self, name="web", cid="s1"):
+        return AIMessage(content="", tool_calls=[{"id": cid, "name": "skill", "args": {"name": name}}])
+
+    def test_native_skill_evicted_after_window(self):
+        from apis._context_pruner import _SKILL_EVICT_ROUNDS
+        msgs = [HumanMessage(content="go"), self._ai_skill(),
+                ToolMessage(content="# WEB skill\n" + "x" * 400, tool_call_id="s1", name="skill")]
+        # rounds 2 .. (1 + _SKILL_EVICT_ROUNDS) → age == _SKILL_EVICT_ROUNDS
+        for i in range(2, _SKILL_EVICT_ROUNDS + 2):
+            msgs += [HumanMessage(content=f"m{i}"), AIMessage(content="ok")]
+        out, stats = prune_messages(msgs)
+        tm = next(m for m in out if isinstance(m, ToolMessage))
+        assert _EVICT_MARKER in tm.content
+        assert "skill instructions expired" in tm.content
+        assert stats["pruned_blocks"] >= 1
+
+    def test_native_skill_kept_within_window(self):
+        from apis._context_pruner import _SKILL_EVICT_ROUNDS
+        msgs = [HumanMessage(content="go"), self._ai_skill(),
+                ToolMessage(content="# WEB skill\n" + "x" * 400, tool_call_id="s1", name="skill")]
+        # age == _SKILL_EVICT_ROUNDS - 1 → kept
+        for i in range(2, _SKILL_EVICT_ROUNDS + 1):
+            msgs += [HumanMessage(content=f"m{i}"), AIMessage(content="ok")]
+        out, _ = prune_messages(msgs)
+        tm = next(m for m in out if isinstance(m, ToolMessage))
+        assert _EVICT_MARKER not in tm.content
+
+    def test_native_small_skill_still_evicted(self):
+        # порог по возрасту, НЕ по размеру: даже маленький skill вытесняется
+        from apis._context_pruner import _SKILL_EVICT_ROUNDS
+        msgs = [HumanMessage(content="go"), self._ai_skill(),
+                ToolMessage(content="# tiny", tool_call_id="s1", name="skill")]
+        for i in range(2, _SKILL_EVICT_ROUNDS + 2):
+            msgs += [HumanMessage(content=f"m{i}"), AIMessage(content="ok")]
+        out, _ = prune_messages(msgs)
+        tm = next(m for m in out if isinstance(m, ToolMessage))
+        assert _EVICT_MARKER in tm.content
+
+    def test_text_mode_skill_evicted(self):
+        from apis._context_pruner import _SKILL_EVICT_ROUNDS
+        msgs = [HumanMessage(content="q1"), AIMessage(content="r1"),
+                HumanMessage(content="$ skill web\n# WEB body " + "y" * 100)]  # round 2
+        for i in range(3, _SKILL_EVICT_ROUNDS + 4):
+            msgs += [AIMessage(content="ok"), HumanMessage(content=f"q{i}")]
+        out, stats = prune_messages(msgs)
+        skill_blocks = [m.content for m in out
+                        if isinstance(m, HumanMessage) and "skill web" in m.content]
+        assert any(_EVICT_MARKER in c for c in skill_blocks)
+
+    def test_current_round_skill_not_touched(self):
+        # скилл загружен в самом свежем раунде → не трогаем
+        msgs = [HumanMessage(content="go"), AIMessage(content="resp")]
+        for i in range(2, 8):
+            msgs += [HumanMessage(content=f"m{i}"), AIMessage(content="ok")]
+        # последний раунд — загрузка скилла
+        msgs += [self._ai_skill(cid="sX"),
+                 ToolMessage(content="# WEB " + "x" * 400, tool_call_id="sX", name="skill")]
+        out, _ = prune_messages(msgs)
+        tm = next(m for m in out if isinstance(m, ToolMessage))
+        assert _EVICT_MARKER not in tm.content

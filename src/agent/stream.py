@@ -540,7 +540,7 @@ class LiveStream:
             # _advance_past_think_blocks; здесь фиксируем мысль в scrollback.
             is_cli_eh_now = (
                 eh is None
-                or type(eh).__name__ in ("RichEventHandler", "NullEventHandler")
+                or type(eh).__name__ == "RichEventHandler"
             )
             if is_cli_eh_now:
                 self._stop_live()
@@ -550,7 +550,7 @@ class LiveStream:
             # дублированию рамки. Пропускаем только web/telegram handlers.
             is_cli_eh = (
                 eh is not None
-                and type(eh).__name__ in ("RichEventHandler", "NullEventHandler")
+                and type(eh).__name__ == "RichEventHandler"
             )
             if eh is not None and not is_cli_eh:
                 for thought in new_thoughts:
@@ -793,7 +793,13 @@ class LiveStream:
         return time.monotonic() - self.start_time
 
     def _start_tg_thinking(self) -> None:
-        """Создаёт thinking-плейсхолдер в TG и запускает typing-индикатор."""
+        """Запускает typing-индикатор в TG (без текстового thinking-плейсхолдера).
+
+        Плейсхолдер «💭 thinking…» больше не отправляется отдельным сообщением:
+        о работе агента сигнализирует typing-индикатор. Если включён
+        telegram_show_thinking — финальный ответ отрисуется в новом сообщении,
+        иначе тоже (placeholder_id остаётся None).
+        """
         try:
             import config as _cfg
             if not _cfg.get_telegram_enabled():
@@ -802,9 +808,7 @@ class LiveStream:
             bridge = get_bridge()
             if not bridge.is_running:
                 return
-            self._tg_placeholder_id = bridge.send_placeholder_threadsafe(
-                "💭 <i>thinking…</i>"
-            )
+            self._tg_placeholder_id = None
             bridge.start_typing()
             bridge.agent_busy = True
             self._tg_typing_started = True
@@ -836,56 +840,27 @@ class LiveStream:
 
             from tools import strip_tool_calls
             from planner import strip_plan_commands
-            from agent.telegram_handler import (
-                TelegramEventHandler, MAX_OUTPUT, _trunc,
-            )
-            from agent.tg_format import md_to_tg_html
+            from agent.telegram_handler import TelegramEventHandler
 
             reasoning = (self.reasoning_buffer or "").strip()
             final_text = strip_tool_calls(strip_plan_commands(self.buffer or "")).strip()
 
-            placeholder_id = self._tg_placeholder_id
-            self._tg_placeholder_id = None
+            handler = self.ctx.event_handler if self.ctx else None
+            if not isinstance(handler, TelegramEventHandler):
+                handler = TelegramEventHandler(handler) if handler else None
 
             # Reasoning логически предшествует ответу — шлём его ПЕРВЫМ
-            # (отдельным сообщением), затем редактируем плейсхолдер в ответ.
-            if reasoning:
-                handler = self.ctx.event_handler if self.ctx else None
-                if not isinstance(handler, TelegramEventHandler):
-                    handler = TelegramEventHandler(handler) if handler else None
-                if handler is not None:
-                    handler.mirror_reasoning(reasoning)
+            # (отдельным сообщением). Зеркалится только если включено в /tg.
+            if reasoning and _cfg.get_telegram_show_thinking() and handler is not None:
+                handler.mirror_reasoning(reasoning)
 
             if final_text:
-                body = final_text
-                prefix = "⏹ <i>[Interrupted]</i>\n" if cancelled else ""
-                rendered = (
-                    f"🤖 <b>Assistant</b>\n"
-                    f"{prefix}{md_to_tg_html(_trunc(body, MAX_OUTPUT))}"
-                )
-                if placeholder_id is not None:
-                    bridge.edit_message_threadsafe(placeholder_id, rendered)
-                else:
-                    handler = self.ctx.event_handler if self.ctx else None
-                    if not isinstance(handler, TelegramEventHandler):
-                        handler = TelegramEventHandler(handler) if handler else None
-                    if handler is not None:
-                        handler.mirror_assistant(body)
+                if handler is not None:
+                    handler.mirror_assistant(final_text, cancelled=cancelled)
             elif cancelled:
-                rendered = "🤖 <b>Assistant</b>\n[Interrupted]"
-                if placeholder_id is not None:
-                    bridge.edit_message_threadsafe(placeholder_id, rendered)
-                else:
-                    handler = self.ctx.event_handler if self.ctx else None
-                    if not isinstance(handler, TelegramEventHandler):
-                        handler = TelegramEventHandler(handler) if handler else None
-                    if handler is not None:
-                        handler.mirror_assistant("[Interrupted]")
-            else:
-                # Нет финального текста (только tool calls без текста) — удалим плейсхолдер
-                if placeholder_id is not None:
-                    bridge.edit_message_threadsafe(
-                        placeholder_id, "⚙️ <i>running tools…</i>",
-                    )
+                if handler is not None:
+                    handler.mirror_assistant("", cancelled=True)
+            # Нет финального текста (только tool calls) — ничего не шлём:
+            # о работе агента уже сообщает typing-индикатор и tool-сообщения.
         except Exception:
             logger.debug("stream tg mirror failed", exc_info=True)

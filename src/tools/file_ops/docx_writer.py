@@ -395,8 +395,12 @@ def _apply_run_format(paragraph, snippet: str, *, rgb=None, font_name=None, size
     def _set_text(run_elem, new_text: str) -> None:
         for t in run_elem.findall(qn("w:t")):
             run_elem.remove(t)
-        for br in run_elem.findall(qn("w:tab")):
-            run_elem.remove(br)
+        # Удаляем не только табы, но и переносы строк (w:br/w:cr) — иначе
+        # при перестроении текста run'а старые разрывы оставались бы и
+        # дублировали/искажали содержимое.
+        for tag in ("w:tab", "w:br", "w:cr"):
+            for el in run_elem.findall(qn(tag)):
+                run_elem.remove(el)
         t_el = OxmlElement("w:t")
         if new_text != new_text.strip():
             t_el.set(qn("xml:space"), "preserve")

@@ -471,7 +471,7 @@ def _render_workflow_partial_preview(body: str, elapsed_seconds: float, spinner_
         Group(*rows),
         border_style=title_color,
         padding=(0, 1),
-        width=min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns),
+        width=max(40, min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns)),
     )
 
 
@@ -556,7 +556,7 @@ def _render_subagent_partial_preview(body: str, elapsed_seconds: float, spinner_
         Group(*rows),
         border_style=title_color,
         padding=(0, 1),
-        width=min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns),
+        width=max(40, min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns)),
     )
 
 

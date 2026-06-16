@@ -348,11 +348,9 @@ class WorkflowTracker:
             seg = Text()
             seg.append(" · ", style="dim")
             shown = _fit_plain(activity, avail - 3)
-            if act_tool:
-                # «<emoji> <tool>» красим акцентом, хвост-аргумент — dim.
-                seg.append(shown, style=act_style)
-            else:
-                seg.append(shown, style="dim")
+            # act_style несёт яркость: running-инструмент / thinking… — bold white,
+            # завершённое/итог — dim. Применяем единообразно для обеих веток.
+            seg.append(shown, style=act_style)
             left.append_text(seg)
 
         gap = width - len(left.plain) - len(metrics.plain)
@@ -394,10 +392,12 @@ class WorkflowTracker:
             else:
                 head = tool
             running = getattr(last, "status", "") == "running"
-            return head, (t("magenta") if running else "dim"), True
+            # Текущее (running) действие — ярким (bold white), чтобы выделялось
+            # на фоне dim-строки. Завершённый последний инструмент — приглушённо.
+            return head, (f"bold {t('text')}" if running else "dim"), True
 
         if status == "streaming":
-            return "thinking…", "dim", False
+            return "thinking…", f"bold {t('text')}", False
         return "starting", "dim", False
 
     def _state_row(self, agent, width: int) -> Text:

@@ -1,17 +1,11 @@
-"""agent/events.py — протокол событий, NullEventHandler, RichEventHandler."""
-
-import logging
+"""agent/events.py — протокол событий, RichEventHandler."""
 
 from agent.events import (
     AgentEventHandler,
-    NullEventHandler,
     RichEventHandler,
 )
 
 class TestProtocol:
-    def test_null_handler_satisfies_protocol(self):
-        assert isinstance(NullEventHandler(), AgentEventHandler)
-
     def test_rich_handler_satisfies_protocol(self):
         assert isinstance(RichEventHandler(), AgentEventHandler)
 
@@ -20,28 +14,6 @@ class TestProtocol:
             pass
 
         assert not isinstance(Empty(), AgentEventHandler)
-
-class TestNullEventHandler:
-    def test_callbacks_are_noops(self, make_tool_call):
-        h = NullEventHandler()
-        call = make_tool_call("ls")
-        # Ни один вызов не должен бросать.
-        h.on_tool_start(call)
-        h.on_tool_start(call, subtitle="sub")
-        h.on_tool_result(object())
-        h.on_plan_update(object())
-        h.on_subagent_start(0, 1, "agent", "prompt")
-        h.on_subagent_start(0, 1, "agent", "prompt", model_label="m")
-        h.on_subagent_status(0, "msg")
-        h.on_subagent_done(0)
-        h.on_subagent_done(0, result="r")
-
-    def test_on_status_logs_debug(self, caplog):
-        h = NullEventHandler()
-        with caplog.at_level(logging.DEBUG, logger="agent.events"):
-            h.on_status("hello", level="warning")
-        assert "hello" in caplog.text
-        assert "warning" in caplog.text
 
 class TestRichEventHandler:
     def test_on_tool_start_stores_pending(self, make_tool_call):

@@ -8,9 +8,6 @@ from apis.config import (
     set_api_key,
     get_api_key,
     get_api_keys,
-    toggle_api,
-    set_tool_format,
-    get_tool_format,
     add_model_to_provider,
     remove_model_from_provider,
 )
@@ -76,48 +73,6 @@ class TestKeys:
     def test_empty_string_no_keys(self, isolated_data):
         set_api_key("x", "")
         assert get_api_keys("x") == []
-
-
-class TestToggle:
-    def test_disable(self, isolated_data):
-        add_api_config(provider_id="x", name="X", base_url="u")
-        assert toggle_api("x", False) is True
-        config = get_api_config("x")
-        assert config["enabled"] is False
-
-    def test_enable_back(self, isolated_data):
-        add_api_config(provider_id="x", name="X", base_url="u")
-        toggle_api("x", False)
-        toggle_api("x", True)
-        assert get_api_config("x")["enabled"] is True
-
-    def test_unknown(self, isolated_data):
-        assert toggle_api("nope", False) is False
-
-
-class TestToolFormat:
-    def test_default_text(self, isolated_data):
-        add_api_config(provider_id="x", name="X", base_url="u")
-        assert get_tool_format("x") == "text"
-
-    def test_unknown_provider_default_text(self, isolated_data):
-        assert get_tool_format("missing") == "text"
-
-    def test_set_native(self, isolated_data):
-        add_api_config(provider_id="x", name="X", base_url="u")
-        assert set_tool_format("x", "native") is True
-        assert get_tool_format("x") == "native"
-
-    def test_set_invalid(self, isolated_data):
-        add_api_config(provider_id="x", name="X", base_url="u")
-        assert set_tool_format("x", "weird") is False
-        assert get_tool_format("x") == "text"
-
-    def test_set_text(self, isolated_data):
-        add_api_config(provider_id="x", name="X", base_url="u")
-        set_tool_format("x", "native")
-        set_tool_format("x", "text")
-        assert get_tool_format("x") == "text"
 
 
 class TestModels:

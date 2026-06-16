@@ -577,6 +577,7 @@ def grep_files(call: ToolCall) -> ToolResult:
     files_searched = 0
     files_matched = 0
     files_skipped_minified = 0
+    files_skipped_large = 0
     files_truncated_count = 0
 
     def _is_skipped_by_name(name: str) -> bool:
@@ -590,14 +591,13 @@ def grep_files(call: ToolCall) -> ToolResult:
         return False
 
     def _search_file(file_path: Path):
-        nonlocal files_searched, files_matched, files_skipped_minified, files_truncated_count
+        nonlocal files_searched, files_matched, files_skipped_minified
+        nonlocal files_skipped_large, files_truncated_count
 
         if file_path.suffix.lower() in _BINARY_EXTENSIONS:
             return
         if _is_skipped_by_name(file_path.name):
             return
-
-        files_searched += 1
 
         # Фикс 6.7: пропускаем огромные файлы (>20MB) до read_text.
         # Иначе grep по 100MB-логу/dump'у сожрёт всю память.
@@ -606,8 +606,12 @@ def grep_files(call: ToolCall) -> ToolResult:
         except OSError:
             return
         if sz > 20 * 1024 * 1024:
-            files_skipped_minified += 1
+            # Отдельный счётчик: большой ≠ минификат. И не инкрементим
+            # files_searched (файл фактически не обыскивался).
+            files_skipped_large += 1
             return
+
+        files_searched += 1
 
         try:
             text = file_path.read_text(
@@ -746,6 +750,8 @@ def grep_files(call: ToolCall) -> ToolResult:
         header += f" (limit {MAX_GREP_RESULTS})"
     if files_skipped_minified:
         header += f" · skipped minified: {files_skipped_minified}"
+    if files_skipped_large:
+        header += f" · skipped large (>20MB): {files_skipped_large}"
     if files_truncated_count:
         header += f" · compressed per file: {files_truncated_count}"
 

@@ -10,6 +10,11 @@ _THROTTLE_CODE = 429
 _RETRY_DELAYS = (1.0, 2.0, 3.0, 10.0, 15.0, 30.0, 60.0)
 _MAX_RETRIES = len(_RETRY_DELAYS) + 1
 _MAX_DELAY = _RETRY_DELAYS[-1]
+# Пол на паузу между ретраями. Прокси (onlysq) присылает Retry-After: 0 →
+# раньше это давало 8 ретраев за ~2мс (видно в логах "retry in 0.0s attempt 7/8"):
+# попытки сгорали впустую, сервер не успевал остыть → запрос всё равно падал.
+# Любую посчитанную паузу поднимаем минимум до этого значения.
+_MIN_RETRY_DELAY = 1.5
 
 _THROTTLE_KEYWORDS = (
     "rate limit",
@@ -65,9 +70,11 @@ def _retry_after_seconds(exc: Exception) -> float | None:
 def _backoff_delay(attempt: int, exc: Exception) -> float:
     hint = _retry_after_seconds(exc)
     if hint is not None:
-        return min(max(hint, 0.0), _MAX_DELAY)
+        # Уважаем Retry-After, но не ниже пола: hint=0 от прокси не должен
+        # превращаться в мгновенный ретрай-впустую.
+        return min(max(hint, _MIN_RETRY_DELAY), _MAX_DELAY)
     idx = min(attempt, len(_RETRY_DELAYS) - 1)
-    return _RETRY_DELAYS[idx]
+    return max(_RETRY_DELAYS[idx], _MIN_RETRY_DELAY)
 
 
 async def with_throttle_retry(coro_factory, on_retry=None):
@@ -85,6 +92,9 @@ async def with_throttle_retry(coro_factory, on_retry=None):
                 await asyncio.sleep(delay)
                 continue
             raise
+    # Защита от неявного возврата None (например, если _MAX_RETRIES <= 0):
+    # вызывающий код ожидает результат корутины, иначе словит NoneType-дереф.
+    raise RuntimeError("with_throttle_retry: retries exhausted without result")
 
 
 def _merge_stream_text(current: str, piece: str) -> str:

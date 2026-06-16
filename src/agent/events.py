@@ -56,38 +56,6 @@ class AgentEventHandler(Protocol):
         """Вызывается при завершении субагента."""
         ...
 
-class NullEventHandler:
-    """Заглушка — ничего не отображает. Для тестов и API."""
-
-    def on_tool_start(self, call: tools.ToolCall, subtitle: str = "") -> None:
-        pass
-
-    def on_tool_result(self, result: tools.ToolResult) -> None:
-        pass
-
-    def on_plan_update(
-        self,
-        plan: Plan,
-        action: str = "",
-        focus_index: int | None = None,
-    ) -> None:
-        pass
-
-    def on_status(self, message: str, level: str = "info") -> None:
-        logger.debug("[%s] %s", level, message)
-
-    def on_subagent_start(
-        self, index: int, total: int, mode: str, prompt: str,
-        model_label: str = "",
-    ) -> None:
-        pass
-
-    def on_subagent_status(self, index: int, message: str) -> None:
-        pass
-
-    def on_subagent_done(self, index: int, result=None) -> None:
-        pass
-
 class RichEventHandler:
     """Реализация для Rich-терминала — делегирует в agent/display.py."""
 

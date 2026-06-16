@@ -51,6 +51,15 @@ def memory_dir_for(working_dir: str | None = None) -> Path:
     digest = hashlib.sha1(str(base).encode("utf-8")).hexdigest()[:10]
     return MEMORY_DIR / f"{slug}-{digest}"
 
+def global_memory_dir() -> Path:
+    """Каталог кросс-проектной (глобальной) памяти.
+
+    Сюда пишутся факты, НЕ привязанные к конкретному проекту: кто пользователь,
+    его общие предпочтения и стиль работы, универсальные референсы. Эта память
+    подмешивается в системный промпт В ЛЮБОМ проекте, в отличие от проектной.
+    """
+    return MEMORY_DIR / "_global"
+
 def _seed_bundled(name: str) -> None:
     """Копирует встроенные skills/agents из бинарника в ~/.necli при первом запуске."""
     if not getattr(sys, "frozen", False):

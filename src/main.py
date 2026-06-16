@@ -1,5 +1,6 @@
 # ruff: noqa: E402
 
+import atexit
 import os
 import sys
 
@@ -29,6 +30,10 @@ if sys.platform != "win32":
         _logger.warning("failed to raise RLIMIT_NOFILE: {}".format(_e))
 
 import click
+
+from ui.terminal_title import reset_terminal_title
+
+atexit.register(reset_terminal_title)
 
 from commands.interactive import interactive
 from commands.headless import run_command

@@ -19,6 +19,7 @@ NAMED_TOOLS = frozenset({
     "grep_files", "poll", "skill", "shell", "web_search",
     "ssh", "subagent", "workflow", "create_docx", "docx_screenshot", "expand_tool_result", "apply_diff",
     "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
+    "memory_write", "memory_list", "memory_read",
 })
 
 _CONTENT_TOOLS = frozenset({"write_file", "create_file", "create_docx"})
@@ -29,30 +30,41 @@ _DIFF_TOOLS = frozenset({"apply_diff"})
 # Open  marker: ::: BEFORE 'call' (colons first).
 # Close marker: ::: AFTER  'call' (colons last).
 # Asymmetric: parser unambiguously distinguishes open from close.
+#
+# Двоеточий допускаем 2-3 (`::call`/`:::call`, `call::`/`call:::`): модель часто
+# роняет одно из трёх. ЕДИНЫЙ ИСТОЧНИК ИСТИНЫ — эти фрагменты; их используют ВСЕ
+# регулярки парсера (полный/truncated/strip/plan/stream), поэтому ::call с двумя
+# двоеточиями исполняется одинаково на всех путях, а не только в финальном
+# разборе. Открытие ОБЯЗАТЕЛЬНО якорим к началу строки (^[ \t]*) — иначе два
+# двоеточия задели бы мид-строчный код вроде `std::call_once`. Три двоеточия
+# исторически матчились в любом месте строки; начало-строки строже и безопаснее.
+_OPEN_MARKER = r"^[ \t]*:{2,3}call"
+_CLOSE_MARKER = r"call:{2,3}"
+
 _CALL_BLOCK_RE = re.compile(
-    r":::call[ \t]+(?P<name>[a-zA-Z_]\w*)"
+    _OPEN_MARKER + r"[ \t]+(?P<name>[a-zA-Z_]\w*)"
     r"(?P<attrs>[^\n]*)\n"
     r"(?P<body>.*?)"
-    r"(?:\n|^)call:::[ \t]*(?:\n|$)",
+    r"(?:\n|^)" + _CLOSE_MARKER + r"[ \t]*(?:\n|$)",
     re.DOTALL | re.MULTILINE,
 )
 
 _CALL_BLOCK_TRUNCATED_RE = re.compile(
-    r":::call[ \t]+(?P<name>[a-zA-Z_]\w*)"
+    _OPEN_MARKER + r"[ \t]+(?P<name>[a-zA-Z_]\w*)"
     r"(?P<attrs>[^\n]*)\n"
     r"(?P<body>.*)\Z",
-    re.DOTALL,
+    re.DOTALL | re.MULTILINE,
 )
 
 _STRIP_CALL_BLOCK_RE = re.compile(
-    r":::call[ \t]+\w+[^\n]*\n"
+    _OPEN_MARKER + r"[ \t]+\w+[^\n]*\n"
     r".*?"
-    r"(?:\n|^)call:::[ \t]*(?:\n|$)",
+    r"(?:\n|^)" + _CLOSE_MARKER + r"[ \t]*(?:\n|$)",
     re.DOTALL | re.MULTILINE,
 )
 _STRIP_CALL_TRUNCATED_RE = re.compile(
-    r":::call[ \t]+\w+[^\n]*\n.*\Z",
-    re.DOTALL,
+    _OPEN_MARKER + r"[ \t]+\w+[^\n]*\n.*\Z",
+    re.DOTALL | re.MULTILINE,
 )
 
 _ATTR_RE = re.compile(
@@ -250,15 +262,62 @@ def _parse_json_body(body):
 def _is_known_tool(tool_name: str) -> bool:
     if tool_name in NAMED_TOOLS:
         return True
-    # Динамически зарегистрированные MCP-инструменты (mcp__<server>__<tool>)
-    if tool_name.startswith("mcp__"):
-        try:
-            from tools.registry import TOOL_REGISTRY
-            return tool_name in TOOL_REGISTRY
-        except Exception:
-            logger.debug("TOOL_REGISTRY lookup failed for %r", tool_name, exc_info=True)
-            return False
-    return False
+    # Фолбэк на реальный реестр — покрывает и динамические MCP-инструменты
+    # (mcp__<server>__<tool>), и любой инструмент, добавленный в TOOL_REGISTRY,
+    # но забытый в NAMED_TOOLS (как было с memory_*). Единый источник истины —
+    # реестр, статический set лишь ускоряет частый путь.
+    try:
+        from tools.registry import TOOL_REGISTRY
+        return tool_name in TOOL_REGISTRY
+    except Exception:
+        logger.debug("TOOL_REGISTRY lookup failed for %r", tool_name, exc_info=True)
+        return False
+
+
+# Кривые открывающие маркеры: модель роняет одно из трёх двоеточий
+# (`::call read_files`). Канонизируем В ТРИ — но ТОЛЬКО когда это явный fence:
+# маркер в начале строки + ИЗВЕСТНЫЙ инструмент. Не задевает код вроде
+# `std::call_once` (мид-строка) и обычную прозу. NB: с тех пор как _CALL_BLOCK_RE
+# сам матчит 2-3 двоеточия, исполнение ::call больше НЕ зависит от этой функции —
+# она лишь приводит маркеры к каноничным `:::` перед записью в историю/диспелй,
+# чтобы хранимый текст был единообразным.
+_MALFORMED_OPEN_FIX_RE = re.compile(
+    r"(?m)^([ \t]*):{2,3}call([ \t]+)([a-zA-Z_]\w*)"
+)
+# Кривое закрытие: голый маркер `call::` на своей строке → `call:::`. Требуем
+# 2-3 двоеточия (не голое слово `call`, чтобы не задеть прозу/код, где `call`
+# может стоять отдельной строкой).
+_MALFORMED_CLOSE_FIX_RE = re.compile(
+    r"(?m)^([ \t]*)call:{2,3}([ \t]*)$"
+)
+
+
+def normalize_call_markers(text: str) -> str:
+    """Канонизирует fence-маркеры (2-3 двоеточия) → ровно три.
+
+    Исполнение ::call обеспечивают сами регулярки (_OPEN_MARKER/_CLOSE_MARKER,
+    2-3 двоеточия) — эта функция нужна лишь чтобы хранить/показывать единообразный
+    `:::`. Открытие правим только перед ИЗВЕСТНЫМ инструментом — чтобы не задеть
+    код/прозу. Закрытие — только bare-строку `call::`.
+    """
+    if not text or "call" not in text:
+        return text
+
+    def _open(m):
+        indent, gap, name = m.group(1), m.group(2), m.group(3)
+        if not _is_known_tool(name):
+            return m.group(0)  # не наш инструмент — не трогаем (код/проза)
+        return f"{indent}:::call{gap}{name}"
+
+    def _close(m):
+        # Не трогаем строку, которая уже ровно `call:::` (быстрый путь).
+        if m.group(0).strip() == "call:::":
+            return m.group(0)
+        return f"{m.group(1)}call:::{m.group(2)}"
+
+    text = _MALFORMED_OPEN_FIX_RE.sub(_open, text)
+    text = _MALFORMED_CLOSE_FIX_RE.sub(_close, text)
+    return text
 
 
 def parse_call_block(tool_name, attrs_header, body, raw):
@@ -367,6 +426,10 @@ def iter_call_blocks(text):
         yield real, call
 
 def parse_call_calls(text):
+    # Чиним кривые маркеры (::call → :::call) перед финальным разбором, чтобы
+    # near-miss модели всё равно ИСПОЛНИЛСЯ, а не потерялся. Только здесь —
+    # в нестриминговом пути, где offset'ы не режут живой буфер.
+    text = normalize_call_markers(text)
     calls = []
     for _m, call in iter_call_blocks(text):
         if call is not None:

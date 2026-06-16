@@ -165,11 +165,15 @@ class ApiSession:
         self._llm = None
         self._llm_kwargs = {}
 
-    def add_system(self, content: str) -> None:
-        self.messages.append(SystemMessage(content=content))
+    def add_system(self, content: str, compressed: bool = False) -> None:
+        kw = {"compressed": True} if compressed else None
+        self.messages.append(SystemMessage(content=content, additional_kwargs=kw))
 
-    def add_user(self, content: str) -> None:
-        self.messages.append(HumanMessage(content=content))
+    def add_user(self, content: str, synthetic: bool = False) -> None:
+        kwargs: dict[str, Any] = {"content": content}
+        if synthetic:
+            kwargs["additional_kwargs"] = {"synthetic": True}
+        self.messages.append(HumanMessage(**kwargs))
 
     def add_assistant(self, content: str, tool_calls: list | None = None, reasoning_content: str = "") -> None:
         kwargs: dict[str, Any] = {"content": content}
@@ -190,6 +194,26 @@ _api_session: Optional[ApiSession] = None
 
 def get_api_session() -> Optional[ApiSession]:
     return _api_session
+
+
+def current_active_skills() -> set:
+    """Скиллы, активные СЕЙЧАС по истории текущей ApiSession (для гейтинга).
+
+    Активность = скилл загружен в пределах окна последних раундов
+    (skills.registry.ACTIVE_WINDOW_ROUNDS). Используется при сборке системного
+    промпта и native-схем, чтобы гейтящиеся инструменты были видны только пока
+    их скилл «живёт» в контексте. Пустое множество — ничего не активно.
+    """
+    sess = _api_session
+    if sess is None:
+        return set()
+    try:
+        from skills.registry import active_skills_from_messages
+
+        return active_skills_from_messages(sess.messages)
+    except Exception:
+        logger.debug("current_active_skills failed", exc_info=True)
+        return set()
 
 
 def set_api_session(session: Optional[ApiSession]) -> None:
@@ -456,11 +480,30 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
     # промта (system_prompt.build_system_prompt → TOOL_FORMAT_TEXT_BLOCK по
     # _resolve_native_tools()). Здесь больше ничего не дописываем, чтобы не
     # дублировать. Единственный источник правды — build_system_prompt.
-    if effective_prompt and not any(isinstance(m, SystemMessage) for m in messages):
-        messages.insert(0, SystemMessage(content=effective_prompt))
+    #
+    # ВАЖНО: учитываем ТОЛЬКО «настоящий» системный промпт. После /compress в
+    # истории появляются system-сообщения с compress-summary (помечены
+    # additional_kwargs["compressed"]). Они НЕ являются системным промптом —
+    # если их считать за SystemMessage, реальный промпт (правила, формат
+    # tool-calls) перестаёт инжектиться и модель «забывает» как работать.
+    def _is_real_system(m) -> bool:
+        return (
+            isinstance(m, SystemMessage)
+            and not (getattr(m, "additional_kwargs", None) or {}).get("compressed")
+        )
+
+    if effective_prompt and not any(_is_real_system(m) for m in messages):
+        # Вставляем реальный промпт ПЕРЕД любым compress-summary, чтобы порядок
+        # был: системный промпт → summary истории → диалог.
+        insert_at = 0
+        for i, m in enumerate(messages):
+            if isinstance(m, SystemMessage):
+                insert_at = i
+                break
+        messages.insert(insert_at, SystemMessage(content=effective_prompt))
     mm_content_cached = None
     has_images = False
-    pending_tool_calls = _pending_native_tool_calls(session.messages) if use_tools else []
+    pending_tool_calls = _pending_native_tool_calls(messages) if use_tools else []
     tool_result_messages: list[ToolMessage] = []
     extras_message: HumanMessage | None = None
     images_message: HumanMessage | None = None
@@ -489,14 +532,18 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
             img_content = _build_multimodal_content("", images)
             has_images = any(p.get("type") == "image_url" for p in img_content)
             if has_images:
-                images_message = HumanMessage(content=img_content)
+                images_message = HumanMessage(
+                    content=img_content, additional_kwargs={"synthetic": True},
+                )
                 messages.append(images_message)
                 logger.info(
                     "API send: %d tool image(s) attached as multimodal HumanMessage",
                     sum(1 for p in img_content if p.get("type") == "image_url"),
                 )
         if extras and str(extras).strip():
-            extras_message = HumanMessage(content=str(extras))
+            extras_message = HumanMessage(
+                content=str(extras), additional_kwargs={"synthetic": True},
+            )
             messages.append(extras_message)
         log_event(
             "native_tool_results_as_tool_messages",
@@ -518,11 +565,27 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
             payload = (payload + "\n\n" + str(extras)).strip()
         messages.append(HumanMessage(content=payload))
         text = payload  # для записи в ApiSession ниже (session.add_user)
+        # Изображения от инструментов в гибрид-режиме тоже нужно прикрепить
+        # отдельным multimodal HumanMessage — иначе модель их молча не увидит
+        # (раньше в этой ветке images терялись, в отличие от native-ветки).
+        if images:
+            img_content = _build_multimodal_content("", images)
+            has_images = any(p.get("type") == "image_url" for p in img_content)
+            if has_images:
+                images_message = HumanMessage(
+                    content=img_content, additional_kwargs={"synthetic": True},
+                )
+                messages.append(images_message)
+                logger.info(
+                    "API send: %d tool image(s) attached as multimodal HumanMessage (hybrid)",
+                    sum(1 for p in img_content if p.get("type") == "image_url"),
+                )
         log_event(
             "native_tool_results_fallback_text",
             results=len(tool_results),
             extras_len=len(str(extras or "")),
             payload_len=len(payload),
+            images=len(images or []),
         )
     elif images:
         mm_content_cached = _build_multimodal_content(text, images)
@@ -553,9 +616,17 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         if extras_message is not None:
             session.messages.append(extras_message)
     elif has_images and mm_content_cached is not None:
-        session.messages.append(HumanMessage(content=mm_content_cached))
+        session.messages.append(
+            HumanMessage(
+                content=mm_content_cached, additional_kwargs={"synthetic": True},
+            )
+        )
     else:
-        session.add_user(text)
+        # Гибрид-ветка: текстовый payload + (опционально) отдельное
+        # multimodal-сообщение с изображениями инструментов.
+        session.add_user(text, synthetic=True)
+        if images_message is not None:
+            session.messages.append(images_message)
 
     log_event(
         "api_session_after_user",
@@ -636,6 +707,15 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
                 if a is None or not isinstance(a, dict):
                     need_fallback = True
                     break
+                # Пустой `{}` у инструмента с обязательными параметрами =
+                # потерянные при стриминге аргументы (прокси-баг). Напр.
+                # memory_write требует name/body — пустой dict valid НЕ бывает.
+                # Безаргументные тулы (memory_list) сюда не попадают.
+                if not a:
+                    from apis.tool_schemas import tool_requires_args
+                    if tool_requires_args(tc.get("name") or ""):
+                        need_fallback = True
+                        break
             if need_fallback:
                 logger.warning(
                     "API native tool_calls have empty args after stream — "
@@ -939,6 +1019,43 @@ async def api_extract_memory(prompt: str) -> str:
     return text
 
 
+async def api_insights(prompt: str) -> str:
+    """One-shot анализ всего общения в чистом контексте.
+
+    Как api_extract_memory: отдельный provider-инстанс активной модели, одно
+    сообщение, без tools, история ApiSession не трогается. Возвращает СЫРОЙ
+    текст ответа модели (ожидается JSON) — парсинг и рендер делает
+    memory.insights.
+    """
+    session = get_api_session()
+    if session is None:
+        raise RuntimeError("API session not active")
+
+    llm = get_provider(session.provider_id, session.model_id, **_provider_kwargs())
+    t0 = time.monotonic()
+    logger.info(
+        "API insights: provider=" + str(session.provider_id)
+        + " model=" + str(session.model_id)
+        + " prompt_chars=" + str(len(prompt))
+    )
+    try:
+        result = await with_throttle_retry(lambda: llm.ainvoke([HumanMessage(content=prompt)]))
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        logger.error(
+            "API insights failed after " + str(round(elapsed, 1)) + "s: "
+            + type(e).__name__ + ": " + str(e)
+        )
+        raise
+    text = _content_to_text(getattr(result, "content", result)).strip()
+    logger.info(
+        "API insights done: " + str(len(text)) + " chars in "
+        + str(round(time.monotonic() - t0, 1)) + "s"
+    )
+    return text
+
+
+
 def _split_tool_result_segments(content: str, count: int) -> list[str]:
     """Режет плоский tool_result-блок на `count` сегментов по `$ ` заголовкам.
 
@@ -997,6 +1114,8 @@ def restore_api_session_history(necli_session):
     # обработке assistant, потребляется при обработке tool_result.
     pending_restore_calls: list[dict] = []
 
+    source_messages = necli_session.messages
+
     api_sess.messages.clear()
     loaded = 0
     head_system: list[str] = []          # system-сообщения ДО первого user
@@ -1005,7 +1124,17 @@ def restore_api_session_history(necli_session):
 
     def _flush_head():
         if head_system:
-            api_sess.messages.append(SystemMessage(content="\n\n".join(head_system)))
+            joined = "\n\n".join(head_system)
+            # Если в head попала compress-мета ([compressed...] + summary),
+            # помечаем сообщение флагом, чтобы api_send_message не принял его
+            # за настоящий системный промпт и всё равно вставил build_system_prompt.
+            is_compressed = any(
+                s.lstrip().startswith("[compressed") for s in head_system
+            )
+            kw = {"compressed": True} if is_compressed else None
+            api_sess.messages.append(
+                SystemMessage(content=joined, additional_kwargs=kw)
+            )
             head_system.clear()
 
     def _flush_pending_calls():
@@ -1021,7 +1150,7 @@ def restore_api_session_history(necli_session):
             ))
         pending_restore_calls = []
 
-    for msg in necli_session.messages:
+    for msg in source_messages:
         role = msg.role
         content = msg.content
         if not content:

@@ -154,13 +154,17 @@ def activate_skill(name: str) -> None:
     if skill is None:
         logger.warning("skill activate: not found %s", name)
         return
-    _active_skills.add(name)
-    logger.info("skill activate: %s", name)
+    # Используем каноничное skill.name (из frontmatter), а не имя-аргумент:
+    # при загрузке по имени директории они могут расходиться, и тогда
+    # _active_skills/gating (is_skill_active, registry) рассинхронизировались бы.
+    canonical = skill.name
+    _active_skills.add(canonical)
+    logger.info("skill activate: %s", canonical)
     msg = (
-        f"━━━ СКИЛЛ АКТИВИРОВАН: {name} ━━━\n"
+        f"━━━ СКИЛЛ АКТИВИРОВАН: {canonical} ━━━\n"
         f"Следуй этим инструкциям до деактивации:\n\n"
         f"{skill.body}\n"
-        f"━━━ КОНЕЦ СКИЛЛА: {name} ━━━"
+        f"━━━ КОНЕЦ СКИЛЛА: {canonical} ━━━"
     )
     _pending_messages.append(msg)
 

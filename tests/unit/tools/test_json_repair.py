@@ -3,8 +3,6 @@
 from tools.json_repair import (
     robust_json_loads,
     extract_field_value,
-    extract_bool_field,
-    extract_int_field,
     decode_json_string_value,
     greedy_extract_content_json,
 )
@@ -109,26 +107,6 @@ class TestExtractFieldValue:
 
     def test_missing_field_returns_none(self):
         assert extract_field_value('{"a": 1}', "missing") is None
-
-
-class TestExtractBoolInt:
-    def test_bool_true(self):
-        assert extract_bool_field('{"force": true}', "force") is True
-
-    def test_bool_false(self):
-        assert extract_bool_field('{"force": false}', "force") is False
-
-    def test_bool_missing(self):
-        assert extract_bool_field('{}', "force") is None
-
-    def test_int_positive(self):
-        assert extract_int_field('{"line": 42}', "line") == 42
-
-    def test_int_negative(self):
-        assert extract_int_field('{"depth": -1}', "depth") == -1
-
-    def test_int_missing(self):
-        assert extract_int_field('{}', "line") is None
 
 
 class TestDecodeJsonStringValue:

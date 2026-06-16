@@ -38,6 +38,7 @@ class SlashResult:
     switch_api_model: Optional[str] = None
     toggle_think: bool = False
     toggle_tool_format: bool = False
+    tg_toggle: Optional[bool] = None
 
 
 def _add_grouped_model_rows(table: Table, by_model: dict) -> None:
@@ -261,6 +262,11 @@ def _handle_slash(
         _print_stats(period_days)
         return r
 
+    if head == "/insights":
+        from commands.menus.insights import insights_interactive
+        insights_interactive()
+        return r
+
     if head == "/copy":
         n = int(rest) if rest.strip().isdigit() else 1
         if n < 1:
@@ -345,7 +351,7 @@ def _handle_slash(
 
     if head == "/tg":
         from commands.menus.telegram import telegram_interactive
-        telegram_interactive()
+        r.tg_toggle = telegram_interactive()
         return r
 
     if head == "/mcp":

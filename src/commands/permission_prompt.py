@@ -153,6 +153,38 @@ def confirm_tool_call(call: tools.ToolCall) -> bool:
     Побочно: может записать decision на выбранный scope.
     В headless-режиме (нет TTY) сразу возвращает False.
     """
+    emoji, label, color_role = _tool_display(call)
+    preview = _smart_preview(call)
+
+    # Telegram-режим: спрашиваем разрешение инлайн-кнопками в чате. Это работает
+    # даже в headless (нет TTY) — решение приходит из TG. None (таймаут/нет
+    # ответа) → отказ.
+    try:
+        import config as _cfg
+        if _cfg.get_telegram_enabled() and _cfg.get_telegram_approve():
+            from apis.telegram import get_bridge
+            import html as _html
+            bridge = get_bridge()
+            if bridge.is_running:
+                q = (
+                    f"⚠ <b>{_html.escape(label)}</b>\n"
+                    f"<code>{_html.escape(preview)}</code>\n\n"
+                    f"{_t('perm.run_q', tool=label)}"
+                )
+                decision = bridge.request_approval(q)
+                allowed = bool(decision)
+                if not _is_headless():
+                    icon = "✓" if allowed else "✗"
+                    console.print(
+                        f"  [{t('success') if allowed else t('error')}]"
+                        f"{icon} TG: {label} {'allowed' if allowed else 'denied'}"
+                        f"[/{t('success') if allowed else t('error')}]"
+                    )
+                return allowed
+    except Exception:
+        import logging as _lg
+        _lg.getLogger(__name__).debug("tg approval failed, falling back", exc_info=True)
+
     if _is_headless():
         console.print(
             f"  [{t('error')}]"
@@ -160,9 +192,6 @@ def confirm_tool_call(call: tools.ToolCall) -> bool:
             f"[/{t('error')}]"
         )
         return False
-
-    emoji, label, color_role = _tool_display(call)
-    preview = _smart_preview(call)
 
     # Однострочная шапка: ⚠  <emoji> <label>  <умное превью>
     console.print()

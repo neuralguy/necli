@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from config.paths import memory_dir_for
+from config.paths import global_memory_dir, memory_dir_for
 from logger import logger
 
 MEMORY_TYPES: tuple[str, ...] = ("user", "feedback", "project", "reference")
@@ -87,9 +87,7 @@ def _safe_filename(name: str) -> str:
     return name
 
 
-def scan_memories(working_dir: str | None = None) -> list[MemoryFile]:
-    """Сканирует все memory-файлы проекта."""
-    mdir = memory_dir_for(working_dir)
+def _scan_dir(mdir: Path) -> list[MemoryFile]:
     if not mdir.exists():
         return []
     out: list[MemoryFile] = []
@@ -98,6 +96,22 @@ def scan_memories(working_dir: str | None = None) -> list[MemoryFile]:
         if mf is not None:
             out.append(mf)
     return out
+
+
+def scan_memories(
+    working_dir: str | None = None, *, scope: str = "project"
+) -> list[MemoryFile]:
+    """Сканирует memory-файлы.
+
+    scope="project" — память текущего проекта (working_dir).
+    scope="global"  — кросс-проектная память (_global).
+    scope="all"     — обе, глобальная первой.
+    """
+    if scope == "global":
+        return _scan_dir(global_memory_dir())
+    if scope == "all":
+        return _scan_dir(global_memory_dir()) + _scan_dir(memory_dir_for(working_dir))
+    return _scan_dir(memory_dir_for(working_dir))
 
 
 def read_memory(path: Path) -> Optional[MemoryFile]:
@@ -125,15 +139,17 @@ def write_memory(
     mtype: str = "project",
     today: str = "",
     working_dir: str | None = None,
+    scope: str = "project",
 ) -> MemoryFile:
     """Создаёт или перезаписывает memory-файл. Возвращает MemoryFile.
 
     today — абсолютная дата (передаётся снаружи; модуль не дёргает системные
     часы намеренно, чтобы быть детерминированным в тестах/воркфлоу).
+    scope="project" пишет в память проекта, scope="global" — в кросс-проектную.
     """
     if mtype not in MEMORY_TYPES:
         mtype = "project"
-    mdir = memory_dir_for(working_dir)
+    mdir = global_memory_dir() if scope == "global" else memory_dir_for(working_dir)
     mdir.mkdir(parents=True, exist_ok=True)
     path = mdir / _safe_filename(name)
 
@@ -153,40 +169,53 @@ def write_memory(
 
 
 def format_memory_block(working_dir: str | None = None, *, max_chars: int = 6_000) -> str:
-    """Собирает память проекта в блок для системного промпта.
+    """Собирает память (глобальную + проекта) в блок для системного промпта.
 
-    Возвращает пустую строку, если памяти нет.
+    Глобальная (кросс-проектная) память идёт первой и помечается [global …],
+    затем память текущего проекта. Возвращает пустую строку, если памяти нет.
     """
-    files = scan_memories(working_dir)
-    if not files:
+    global_files = scan_memories(working_dir, scope="global")
+    project_files = scan_memories(working_dir, scope="project")
+    if not global_files and not project_files:
         return ""
 
-    # Группируем по типу в осмысленном порядке.
+    # Группируем по типу в осмысленном порядке (внутри каждой области).
     order = {t: i for i, t in enumerate(MEMORY_TYPES)}
-    files.sort(key=lambda f: (order.get(f.type, 99), f.name))
+    sort_key = lambda f: (order.get(f.type, 99), f.name)  # noqa: E731
+    global_files.sort(key=sort_key)
+    project_files.sort(key=sort_key)
 
     parts: list[str] = [
         "<persistent_memory>",
-        "Долговременная память из прошлых сессий этого проекта. "
-        "Используй её, чтобы учитывать предпочтения пользователя и контекст. "
-        "Если факт устарел — обнови соответствующий memory-файл.",
+        "Долговременная память из прошлых сессий. Используй её, чтобы учитывать "
+        "предпочтения пользователя и контекст. Записи [global …] относятся ко "
+        "ВСЕМ проектам (кто пользователь, общие предпочтения/стиль работы); "
+        "остальные — к текущему проекту. Если факт устарел — обнови файл "
+        "(тем же scope).",
         "",
     ]
     used = 0
-    for f in files:
-        chunk = f"### [{f.type}] {f.name}\n{f.body}\n"
-        if used + len(chunk) > max_chars:
-            parts.append("… (память усечена по лимиту)")
+    truncated = False
+    for scope_label, files in (("global", global_files), ("project", project_files)):
+        for f in files:
+            tag = f"{scope_label}/{f.type}" if scope_label == "global" else f.type
+            chunk = f"### [{tag}] {f.name}\n{f.body}\n"
+            if used + len(chunk) > max_chars:
+                truncated = True
+                break
+            parts.append(chunk)
+            used += len(chunk)
+        if truncated:
             break
-        parts.append(chunk)
-        used += len(chunk)
+    if truncated:
+        parts.append("… (память усечена по лимиту)")
     parts.append("</persistent_memory>")
     return "\n".join(parts)
 
 
 def format_manifest(working_dir: str | None = None) -> str:
     """Краткий перечень существующих memory-файлов (для extract-промпта)."""
-    files = scan_memories(working_dir)
+    files = scan_memories(working_dir, scope="all")
     if not files:
         return ""
     lines = [f"- {f.name} (type={f.type}): {f.body.splitlines()[0][:80] if f.body else ''}" for f in files]

@@ -125,13 +125,3 @@ def reset_all() -> None:
     config.set_value("tool_permissions", {})
 
 
-def all_effective() -> dict[str, tuple[Decision, Scope | None]]:
-    """Снимок: {tool: (decision, scope)} для всех инструментов с не-ask значением."""
-    out: dict[str, tuple[Decision, Scope | None]] = {}
-    for k, v in _forever_all().items():
-        out[k] = (v, "forever")
-    for k, v in _PROCESS.items():
-        out[k] = (v, "process")
-    for k, v in _SESSION.items():
-        out[k] = (v, "session")
-    return out

@@ -213,9 +213,21 @@ class AnthropicProvider(BaseProvider):
         msgs = params.get("messages")
         if isinstance(msgs, list) and len(msgs) >= 2:
             target = msgs[-2]
-            blocks = target.get("content") if isinstance(target, dict) else None
-            if isinstance(blocks, list) and blocks and isinstance(blocks[-1], dict):
-                blocks[-1]["cache_control"] = mark
+            if isinstance(target, dict):
+                blocks = target.get("content")
+                if isinstance(blocks, str) and blocks:
+                    # Строковый content нормализуем в список блоков, иначе
+                    # breakpoint на границе истории терялся бы (хуже cache-hit).
+                    blocks = [{"type": "text", "text": blocks}]
+                    target["content"] = blocks
+                if isinstance(blocks, list) and blocks:
+                    # Берём ПОСЛЕДНИЙ dict-блок (сканируем с конца): последний
+                    # элемент не всегда dict (например tool_result-структуры),
+                    # а раньше в таком случае breakpoint молча не ставился.
+                    for blk in reversed(blocks):
+                        if isinstance(blk, dict):
+                            blk["cache_control"] = mark
+                            break
 
     @staticmethod
     def _convert_usage_anthropic(usage: Dict[str, Any]) -> Dict[str, Any]:
@@ -571,7 +583,7 @@ def create_anthropic_provider(
     if not api_key and definition.requires_auth:
         raise ValueError(
             f"API key not set for provider '{definition.id}'. "
-            f"Use /api-key {definition.id} <key>"
+            "Use /api → provider → Set key."
         )
 
     model_info = definition.get_model_info(model_id)

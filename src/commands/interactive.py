@@ -20,7 +20,7 @@ import config
 from config.i18n import t as tr
 import models as app_models
 from session import Session
-from ui.prompt import InputPrompt, _EOF
+from ui.prompt import InputPrompt, _EOF, _BG_RESUME
 from ui.clipboard import cleanup_old_images
 from ui.file_context import expand_at_references
 from tools.ssh import close_all_connections
@@ -169,12 +169,10 @@ def interactive(model, workdir, resume, api_provider):
                 state.cur_model = _minfo.display_name if _minfo else _api_model
             elif _api_model:
                 state.cur_model = _api_model
+            _resume_loaded = 0
             if resume and session.message_count > 0:
-                loaded = restore_api_session_history(session)
+                _resume_loaded = restore_api_session_history(session)
                 state.msg_num = session.message_count
-                console.print(
-                    f"  [green]✓[/green] [dim]{tr('boot.history_loaded', n=loaded)}[/dim]"
-                )
 
             # ── LSP servers (инициализация до welcome — счётчик идёт в панель) ──
             n_lsp = 0
@@ -198,10 +196,40 @@ def interactive(model, workdir, resume, api_provider):
             except Exception as e:
                 logger.error("mcp init failed: %s", e, exc_info=True)
 
+            # ── Telegram bridge (если включён) — стартуем ДО welcome, чтобы
+            # статус бота попал в шапку рядом с lsp/mcp ──
+            tg_bridge = _get_tg_bridge()
+            tg_info = ""
+            tg_warn = ""
+            if config.get_telegram_enabled():
+                tg_token = config.get_telegram_bot_token()
+                tg_chat = config.get_telegram_chat_id()
+                if tg_token and tg_chat:
+                    try:
+                        ok, info = await tg_bridge.start(tg_token, int(tg_chat))
+                        if ok:
+                            tg_info = info
+                            from agent.tg_menu import register_tg_menu, _build_reply_keyboard
+                            register_tg_menu(state)
+                            tg_bridge.send(
+                                f"🟢 <b>necli-api</b> started\n"
+                                f"<i>{escape(workdir)}</i>\n"
+                                f"model: <code>{escape(state.cur_model)}</code>\n\n"
+                                f"Controls: /menu",
+                                reply_markup=_build_reply_keyboard(),
+                            )
+                        else:
+                            tg_warn = f"  [yellow]⚠ Telegram: {escape(info)}[/yellow]"
+                    except Exception as e:
+                        tg_warn = f"  [yellow]⚠ Telegram: {escape(str(e))}[/yellow]"
+                        logger.error("tg start failed: %s", e, exc_info=True)
+                else:
+                    tg_warn = f"  [dim]{tr('boot.telegram_enabled_not_configured')}[/dim]"
+
             # Captureим welcome в строку, сохраняем для replay, печатаем в stdout
             with console.capture() as _wcap:
                 _print_welcome(state.cur_model, session, workdir=workdir, n_lsp=n_lsp,
-                               n_mcp=n_mcp, mcp_tools=mcp_tools)
+                               n_mcp=n_mcp, mcp_tools=mcp_tools, tg_info=tg_info)
             _welcome_text = _wcap.get()
             if _welcome_text:
                 console.print(_welcome_text, end="", highlight=False, markup=False)
@@ -214,32 +242,15 @@ def interactive(model, workdir, resume, api_provider):
             for _sid, _err in mcp_errors:
                 console.print(f"  [yellow]⚠ MCP/{_sid}:[/yellow] [dim]{escape(_err)}[/dim]")
 
-            # ── Telegram bridge (если включён) ──
-            tg_bridge = _get_tg_bridge()
-            if config.get_telegram_enabled():
-                tg_token = config.get_telegram_bot_token()
-                tg_chat = config.get_telegram_chat_id()
-                if tg_token and tg_chat:
-                    try:
-                        ok, info = await tg_bridge.start(tg_token, int(tg_chat))
-                        if ok:
-                            console.print(f"  [green]✓[/green] Telegram: [dim]{escape(info)}[/dim]")
-                            from agent.tg_menu import register_tg_menu, _build_reply_keyboard
-                            register_tg_menu(state)
-                            tg_bridge.send(
-                                f"🟢 <b>necli-api</b> started\n"
-                                f"<i>{escape(workdir)}</i>\n"
-                                f"model: <code>{escape(state.cur_model)}</code>\n\n"
-                                f"Controls: /menu",
-                                reply_markup=_build_reply_keyboard(),
-                            )
-                        else:
-                            console.print(f"  [yellow]⚠ Telegram: {escape(info)}[/yellow]")
-                    except Exception as e:
-                        console.print(f"  [yellow]⚠ Telegram: {escape(str(e))}[/yellow]")
-                        logger.error("tg start failed: %s", e, exc_info=True)
-                else:
-                    console.print(f"  [dim]{tr('boot.telegram_enabled_not_configured')}[/dim]")
+            if tg_warn:
+                console.print(tg_warn)
+
+            if resume and _resume_loaded:
+                try:
+                    from agent.render_replay import print_session_history
+                    print_session_history(session, max_messages=20)
+                except Exception:
+                    logger.debug("print_session_history failed", exc_info=True)
 
             def _toggle_mode(new_mode):
                 state.mode_state["mode"] = new_mode
@@ -251,6 +262,13 @@ def interactive(model, workdir, resume, api_provider):
             state.prompt_input = InputPrompt(working_dir=workdir, on_mode_toggle=_toggle_mode)
             state.prompt_input.session = state.session
             _set_activity_status(state, "idle")
+            # Привязываем asyncio-loop к фоновым задачам: завершившаяся в фоне
+            # задача сможет разбудить ожидание ввода (авто-резюм агента).
+            try:
+                from tools.background import register_event_loop
+                register_event_loop(asyncio.get_running_loop())
+            except Exception:
+                logger.debug("background event-loop register failed", exc_info=True)
             # Привязываем prompt к текущему ctx (для reprint separator после Ctrl+O replay).
             try:
                 _ctx0 = get_current_ctx()
@@ -285,6 +303,14 @@ def interactive(model, workdir, resume, api_provider):
                 if user is _EOF:
                     console.print(f"\n  [dim]{tr('common.bye')}[/dim]")
                     break
+
+                if user is _BG_RESUME:
+                    # Фоновая задача завершилась, пока ждали ввода — будим агента
+                    # с её результатом, без участия пользователя.
+                    if await _resume_agent_for_background(state, tg_bridge):
+                        _print_response_separator()
+                        await _print_recap_if_ready(state)
+                    continue
 
                 if user is None or not user:
                     continue
@@ -334,6 +360,19 @@ def interactive(model, workdir, resume, api_provider):
                 message_images = state.prompt_input.get_and_clear_images()
 
                 state.session.add_user_message(user, model=state.cur_model)
+
+                # add_user_message может переименовать (переместить) папку сессии
+                # при первом сообщении — картинки лежат внутри session.dir, их
+                # абсолютные пути устаревают. Перенаправляем на актуальную папку.
+                if message_images:
+                    from pathlib import Path as _Path
+                    sess_imgs = _Path(state.session.dir) / "clipboard_images"
+                    fixed = []
+                    for p in message_images:
+                        p = _Path(p)
+                        candidate = sess_imgs / p.name
+                        fixed.append(candidate if candidate.exists() else p)
+                    message_images = fixed
                 try:
                     from agent.loop import set_current_ctx
                     from agent.context import AgentContext
@@ -347,6 +386,19 @@ def interactive(model, workdir, resume, api_provider):
                     _lg.getLogger("agent.render_store").exception("add_user failed")
 
                 agent_message = user
+                # Маппинг [imageN] → реальный путь, чтобы агент мог открыть
+                # вставленные картинки как файлы через инструменты (read_files и др.).
+                if message_images:
+                    image_lines = [
+                        f"[image{i}] = {p}"
+                        for i, p in enumerate(message_images, start=1)
+                    ]
+                    image_block = (
+                        "--- inserted images (open with file tools by path) ---\n"
+                        + "\n".join(image_lines)
+                        + "\n--- end inserted images ---"
+                    )
+                    agent_message = image_block + "\n\n" + agent_message
                 _, file_context_block, file_refs = expand_at_references(user, state.workdir)
                 if file_context_block:
                     ref_names = [r.raw for r in file_refs if not r.error]
@@ -611,19 +663,80 @@ async def _maybe_auto_compress(state: InteractiveState) -> None:
         console.print(f"  [red]✗ {tr('send.auto_compress_failed', error=str(e))}[/red]")
 
 
+async def _resume_agent_for_background(state: InteractiveState, tg_bridge) -> bool:
+    """Будит агента, когда фоновая задача завершилась во время ожидания ввода.
+
+    Дренирует уведомления о завершённых задачах и запускает ход агента с ними
+    как сообщением. Возвращает True, если ход был запущен.
+    """
+    from agent.loop import _format_background_notice
+    from tools.background import clear_finish_event, drain_finished_results
+
+    clear_finish_event()
+    notice = _format_background_notice(drain_finished_results())
+    if not notice:
+        return False
+
+    console.print()
+    console.print(f"  [dim]⚙ {tr('background.autoresume')}[/dim]")
+
+    if tg_bridge.is_running:
+        try:
+            tg_bridge.send("⚙ <i>background task finished — resuming…</i>")
+        except Exception:
+            logger.debug("tg notify bg-resume failed", exc_info=True)
+
+    _set_activity_status(state, "working")
+    state.msg_num += 1
+
+    # Уведомление идёт в историю как пользовательский ход — агент видит его и
+    # продолжает работу (loop сам умеет реагировать на bg-notice).
+    state.session.add_user_message(notice, model=state.cur_model)
+    try:
+        _ctx = get_current_ctx()
+        if _ctx is not None and getattr(_ctx, "render_store", None) is not None:
+            _ctx.render_store.add_user(notice, status=build_status_line(state))
+    except Exception:
+        logger.debug("bg-resume render_store add_user failed", exc_info=True)
+
+    coro = gsagent.run_agent_interactive(
+        notice, model=state.cur_model, working_dir=state.workdir,
+        is_continuation=True,
+        session=state.session,
+        mode=state.mode_state["mode"],
+    )
+    try:
+        state.last_elapsed, _cancelled = await _run_with_interrupt(coro, state.session)
+        _set_activity_status(state, "idle" if _cancelled else "done")
+    except Exception as e:
+        _set_activity_status(state, "idle")
+        console.print(f"\n  [red]{tr('send.error_run', error=str(e))}[/red]")
+    return True
+
+
+def _bg_autoresume_enabled() -> bool:
+    """Флаг авто-резюма агента при завершении фоновой задачи (default True)."""
+    try:
+        from config.settings import get as _settings_get
+        return bool(_settings_get("background_autoresume", True))
+    except Exception:
+        return True
+
+
 async def _read_user_with_tg(state: InteractiveState, status: str, tg_bridge):
     """Читает следующий ввод либо из stdin, либо из Telegram (что придёт раньше).
 
-    Возвращает строку, _EOF или None (Ctrl+C).
+    Возвращает строку, _EOF, _BG_RESUME или None (Ctrl+C).
     """
+    bg_resume = _bg_autoresume_enabled()
     # Если TG не запущен — простой путь
     if not tg_bridge.is_running or tg_bridge.incoming_queue is None:
         with patch_stdout():
-            return await state.prompt_input.read(status_text=status)
+            return await state.prompt_input.read(status_text=status, bg_resume=bg_resume)
 
     async def _stdin():
         with patch_stdout():
-            return await state.prompt_input.read(status_text=status)
+            return await state.prompt_input.read(status_text=status, bg_resume=bg_resume)
 
     async def _tg():
         msg = await tg_bridge.incoming_queue.get()

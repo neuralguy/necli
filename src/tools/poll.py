@@ -22,12 +22,15 @@ def execute_poll(call: ToolCall) -> ToolResult:
             command="poll",
         )
 
-    results = run_poll(steps)
+    results = run_poll(steps[:10])
 
     lines = []
     for r in results:
+        answer = r["answer"]
+        if isinstance(answer, list):
+            answer = ", ".join(answer)
         lines.append(f"Q: {r['question']}")
-        lines.append(f"A: {r['answer']}")
+        lines.append(f"A: {answer}")
         lines.append("")
 
     return ToolResult(

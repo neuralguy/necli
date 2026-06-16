@@ -76,6 +76,63 @@ class WorkflowContext:
         merged.update(kwargs)
         return WorkflowAgentCall(self, prompt, merged)
 
+    def verify(
+        self,
+        original_request: str,
+        evidence: Any = "",
+        checks: list[str] | None = None,
+        label: str = "verify",
+        **kwargs: Any,
+    ) -> WorkflowAgentCall:
+        checks_text = "\n".join(f"- {c}" for c in (checks or [])) or "- Run the relevant checks you identify."
+        prompt = (
+            "Independently verify the work against the ORIGINAL user request. "
+            "Prove behavior, do not rubber-stamp implementation claims.\n\n"
+            f"ORIGINAL REQUEST:\n{original_request}\n\n"
+            f"EVIDENCE / IMPLEMENTATION CONTEXT:\n{evidence}\n\n"
+            f"CHECKS TO RUN OR ASSESS:\n{checks_text}\n\n"
+            "Return exactly these sections:\n"
+            "VERDICT: PASS|FAIL|PARTIAL\n"
+            "EVIDENCE:\n- commands/checks run and observed results\n"
+            "FINDINGS:\n- file:line — issue, or '(none)'\n"
+            "NEXT_FIX:\n- concrete next fix if verdict is not PASS, or '(none)'"
+        )
+        opts = {"label": label, "role": "reviewer"}
+        opts.update(kwargs)
+        return self.agent(prompt, opts)
+
+    async def loop_until_pass(
+        self,
+        implement: Any,
+        verify: Any,
+        max_rounds: int = 3,
+    ) -> dict[str, Any]:
+        attempts: list[dict[str, Any]] = []
+        findings: Any = None
+        for round_index in range(1, max(1, int(max_rounds)) + 1):
+            impl_call = implement(findings, round_index) if callable(implement) else implement
+            if isinstance(impl_call, WorkflowAgentCall) or inspect.isawaitable(impl_call):
+                implementation = await impl_call
+            else:
+                implementation = impl_call
+            verify_call = verify(implementation, round_index) if callable(verify) else verify
+            if isinstance(verify_call, WorkflowAgentCall) or inspect.isawaitable(verify_call):
+                verification = await verify_call
+            else:
+                verification = verify_call
+            verdict = _extract_verdict(verification)
+            attempt = {
+                "round": round_index,
+                "implementation": implementation,
+                "verification": verification,
+                "verdict": verdict,
+            }
+            attempts.append(attempt)
+            if verdict == "PASS":
+                return {"verdict": "PASS", "attempts": attempts}
+            findings = verification
+        return {"verdict": attempts[-1]["verdict"] if attempts else "PARTIAL", "attempts": attempts}
+
     async def parallel(self, calls: list[Any]) -> list[dict[str, Any] | None]:
         agent_calls: list[WorkflowAgentCall] = []
         other = []
@@ -213,10 +270,19 @@ class WorkflowRunner:
             self.save_state()
             save_json(os.path.join(self.run_dir, "result.json"), result)
             return self._format_output()
-        except Exception as e:
-            if ctx.current_phase and ctx.current_phase.status == "running":
-                ctx.current_phase.status = "failed"
-                ctx.current_phase.finished_at = utc_now()
+        except BaseException as e:
+            # Ловим BaseException, а не только Exception: KeyboardInterrupt (Ctrl-C)
+            # и asyncio.CancelledError (отмена по таймауту) — это BaseException и
+            # раньше проходили мимо, оставляя state и фазу навсегда в "running"
+            # (мёртвый ран выглядел живым в /workflows). Финализируем и пробрасываем.
+            for ph in self.state.phases:
+                if ph.status == "running":
+                    ph.status = "failed"
+                    ph.finished_at = utc_now()
+                for ag in ph.agents:
+                    if ag.status == "running":
+                        ag.status = "failed"
+                        ag.finished_at = utc_now()
             self.state.status = "failed"
             self.state.finished_at = utc_now()
             self.state.error = f"{type(e).__name__}: {e}"
@@ -295,10 +361,13 @@ class WorkflowRunner:
         if os.path.isabs(value):
             candidates.append(value)
         else:
+            template_dir = os.path.join(os.path.dirname(__file__), "templates")
             candidates.extend([
                 os.path.join(self.working_dir, value),
                 os.path.join(self.working_dir, ".data", "workflows", value),
                 os.path.join(self.working_dir, ".data", "workflows", value + ".py"),
+                os.path.join(template_dir, value),
+                os.path.join(template_dir, value + ".py"),
             ])
         for path in candidates:
             if os.path.isfile(path):
@@ -363,7 +432,12 @@ class WorkflowRunner:
                 raise ValueError("workflow agent prompt is required")
             label = str(call.opts.get("label") or short_agent_label(prompt))
             cache_key = self._agent_cache_key(phase.title, prompt, call.opts)
+            # id выделяется синхронно (без await до append ниже), поэтому
+            # конкурентные pipeline/parallel-вызовы не коллизятся. Страховка на
+            # случай будущей вставки await в эту секцию: гарантируем уникальность.
             agent_id = f"agent-{len(phase.agents) + 1}"
+            if any(a.id == agent_id for a in phase.agents):
+                agent_id = f"agent-{len(phase.agents) + 1}-{pos}"
             artifact_dir = os.path.join(self.run_dir, "agents", agent_id)
             state = WorkflowAgentState(
                 id=agent_id,
@@ -388,6 +462,9 @@ class WorkflowRunner:
                 state.cached = True
                 state.finished_at = utc_now()
                 state.result = dict(cached)
+                verdict = _extract_verdict(state.result)
+                if verdict:
+                    state.result["verdict"] = verdict
                 self._write_agent_artifacts(state)
                 out[pos] = state.result
                 continue
@@ -453,6 +530,9 @@ class WorkflowRunner:
             state.status = "failed" if result.error else "done"
             state.finished_at = utc_now()
             state.result = _result_to_dict(result)
+            verdict = _extract_verdict(state.result)
+            if verdict:
+                state.result["verdict"] = verdict
             self._write_agent_artifacts(state)
             out[idx] = state.result
             if result.error and self.fail_fast:
@@ -508,7 +588,8 @@ class WorkflowRunner:
                 lines.append(f"- log: {log}")
             for agent in phase.agents:
                 err = agent.result.get("error") if isinstance(agent.result, dict) else ""
-                mark = "ERROR" if err else "OK"
+                verdict = agent.result.get("verdict") if isinstance(agent.result, dict) else ""
+                mark = "ERROR" if err else (f"VERDICT:{verdict}" if verdict else "OK")
                 cached = " cached" if agent.cached else ""
                 artifact = f" ({agent.artifact_dir})" if agent.artifact_dir else ""
                 lines.append(f"- {agent.label}: {mark}{cached}{artifact}")
@@ -517,6 +598,31 @@ class WorkflowRunner:
         lines.append(str(state.result))
         return "\n".join(lines)
 
+
+def _extract_verdict(value: Any) -> str:
+    text = ""
+    if isinstance(value, dict):
+        text = str(value.get("response") or value.get("output") or value.get("result") or "")
+    else:
+        text = str(value or "")
+    upper = text.upper()
+    for verdict in ("PASS", "FAIL", "PARTIAL"):
+        if f"VERDICT: {verdict}" in upper or f"VERDICT:{verdict}" in upper:
+            return verdict
+    return ""
+
+
+def _extract_verdict(value: Any) -> str:
+    text = ""
+    if isinstance(value, dict):
+        text = str(value.get("response") or value.get("output") or value.get("result") or "")
+    else:
+        text = str(value or "")
+    upper = text.upper()
+    for verdict in ("PASS", "FAIL", "PARTIAL"):
+        if f"VERDICT: {verdict}" in upper or f"VERDICT:{verdict}" in upper:
+            return verdict
+    return ""
 
 def _git_head(working_dir: str) -> str:
     try:
@@ -534,7 +640,10 @@ def _git_head(working_dir: str) -> str:
 
 
 def _safe_builtins() -> dict[str, Any]:
-    allowed_modules = {"json", "math", "re", "datetime", "pathlib", "itertools", "functools"}
+    # NOTE: keep this allowlist to pure data/computation modules only.
+    # pathlib/os/subprocess (and anything that transitively exposes them) must
+    # never be importable from a workflow script, since scripts may be untrusted.
+    allowed_modules = {"json", "math", "re", "datetime"}
 
     def _limited_import(name, globals=None, locals=None, fromlist=(), level=0):
         root = str(name).split(".", 1)[0]
@@ -553,7 +662,6 @@ def _safe_builtins() -> dict[str, Any]:
         "enumerate": enumerate,
         "Exception": Exception,
         "float": float,
-        "getattr": getattr,
         "hasattr": hasattr,
         "int": int,
         "isinstance": isinstance,

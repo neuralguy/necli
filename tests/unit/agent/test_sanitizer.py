@@ -342,3 +342,30 @@ class TestOpus48Hallucination:
         assert "Цена услуги" in result
         assert "Готово" in result
         assert ":::call read_files" in result
+
+class TestMalformedCallFence:
+    """Модель иногда пишет fence с 1-2 двоеточиями вместо трёх — это не
+    валидный вызов, должен вырезаться, а не утекать как `⏺ Tool (no args)`."""
+
+    def test_strips_two_colon_open(self):
+        text = "Память:\n::call memory_list\n{}\nГотово."
+        result = sanitize_response(text)
+        assert "::call" not in result
+        assert "memory_list" not in result
+        assert "Память:" in result and "Готово." in result
+
+    def test_strips_one_colon_with_close(self):
+        text = 'До\n:call memory_read\n{"name": "x"}\ncall::\nПосле'
+        result = sanitize_response(text)
+        assert "call" not in result.replace("После", "")  # никаких осколков
+        assert "До" in result and "После" in result
+
+    def test_preserves_valid_triple_colon(self):
+        text = "Текст\n:::call memory_list\n{}\ncall:::\nконец"
+        result = sanitize_response(text)
+        assert ":::call memory_list" in result
+        assert "call:::" in result
+
+    def test_prose_call_word_untouched(self):
+        text = "One patch_file call: do it. recall: yes."
+        assert sanitize_response(text) == text

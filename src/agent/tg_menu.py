@@ -136,7 +136,7 @@ def _format_plan(state) -> str:
     for i, st in enumerate(plan.steps):
         icon = icons.get(st.status, "•")
         title = st.title[:200]
-        line = f"{icon} <b>{i}.</b> {html.escape(title)}"
+        line = f"{icon} <b>{i + 1}.</b> {html.escape(title)}"
         if st.notes:
             line += f" — <i>{html.escape(st.notes[:100])}</i>"
         lines.append(line)

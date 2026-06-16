@@ -87,7 +87,7 @@ DEFAULTS: dict[str, Any] = {
         "response.title_format": "Формат заголовка response-панели. {num} = ' 5' / '' (для первой).",
         "response.title_format_compact_bullet": "Bullet перед заголовком в compact (не используется напрямую, для совместимости).",
 
-        "subagent.max_width": "Аналог limits.max_width, но только для панелей субагентов.",
+        "subagent.max_width": "Максимальная ширина панелей субагентов = min(значение, ширина_терминала). 0 — на всю ширину терминала.",
         "subagent.max_concurrency": "Сколько субагентов внутри одной волны исполняются ОДНОВРЕМЕННО. Остальные ждут в очереди. Защита от rate-limit провайдера и пика по диску/FD при сотнях задач. 0/отрицательное = без лимита.",
         "subagent.block_threshold": "Если активных субагентов БОЛЬШЕ этого числа — все рисуются однострочно (компактно), иначе каждый занимает многострочный блок. Защита от разрыва терминала при десятках агентов. 0 = всегда блочный вид.",
         "subagent.block_separator": "Символ горизонтальной линии-разделителя между блоками субагентов (по умолчанию '─').",
@@ -184,6 +184,7 @@ DEFAULTS: dict[str, Any] = {
         "find_files":    {"label": "Find",       "emoji": "🔍", "color_role": "info"},
         "grep_files":    {"label": "Grep",       "emoji": "🔎", "color_role": "magenta"},
         "web_search":    {"label": "Search",     "emoji": "🌐", "color_role": "accent"},
+        "image_search":  {"label": "Images",     "emoji": "🖼 ", "color_role": "accent"},
         "ssh":           {"label": "SSH",        "emoji": "🔗", "color_role": "magenta"},
         "subagent":      {"label": "Subagent",   "emoji": "🤖", "color_role": "magenta"},
         "plan":          {"label": "Plan",       "emoji": "📋", "color_role": "accent"},
@@ -197,6 +198,10 @@ DEFAULTS: dict[str, Any] = {
         "lsp_diagnostics":{"label": "Diagnostics","emoji": "🩺", "color_role": "warning"},
         "apply_diff":    {"label": "Diff",       "emoji": "🔧", "color_role": "warning"},
         "expand_tool_result": {"label": "Expand","emoji": "🔍", "color_role": "info"},
+        "workflow":      {"label": "Workflow",   "emoji": "🧩", "color_role": "magenta"},
+        "memory_write":  {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},
+        "memory_list":   {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},
+        "memory_read":   {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},
         "_default":      {"label": "Tool",       "emoji": "⏺",  "color_role": "warning"},
         "_mcp":          {"label": "{server}.{tool}", "emoji": "🔌", "color_role": "magenta"},
     },
@@ -221,7 +226,7 @@ DEFAULTS: dict[str, Any] = {
     },
 
     "subagent": {
-        "max_width": 100,
+        "max_width": 0,
         "header_emoji": "🤖",
         "done_emoji": "✓",
         "error_emoji": "✗",

@@ -204,6 +204,16 @@ def _read_docx_via_pandoc(path: Path) -> str | None:
 
     media_key = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
     media_dir = Path(tempfile.gettempdir()) / f"necli_docx_media_{media_key}"
+    # Каталог НАМЕРЕННО переживает вызов: _rewrite_media_paths переписывает
+    # src картинок на абсолютные пути в нём, чтобы последующий create_docx нашёл
+    # их на диске. Но перед извлечением чистим его, иначе при изменении того же
+    # файла осталась бы устаревшая media от прошлой версии.
+    if media_dir.exists():
+        import shutil as _shutil
+        try:
+            _shutil.rmtree(media_dir)
+        except OSError:
+            logger.debug("docx media dir cleanup failed: %s", media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)
 
     try:

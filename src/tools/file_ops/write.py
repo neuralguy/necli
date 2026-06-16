@@ -11,7 +11,7 @@ from tools.file_ops.read import invalidate_read_cache
 
 _resolve = resolve_path
 
-_FENCE_LINE_RE = re.compile(r"^\s*(?::::call\b|call:::\s*$).*$", re.MULTILINE)
+_FENCE_LINE_RE = re.compile(r"^\s*(?::{2,3}call\b|call:{2,3}\s*$).*$", re.MULTILINE)
 
 
 def _check_unbalanced_fences(content: str) -> str:

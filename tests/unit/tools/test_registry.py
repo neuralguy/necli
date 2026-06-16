@@ -3,12 +3,10 @@
 from tools.registry import (
     TOOL_REGISTRY,
     execute_call,
-    is_read_only,
     is_tool_allowed,
     build_blocked_result,
     list_tools,
     PLANNING_TOOLS,
-    READ_ONLY_TOOLS,
 )
 from tools.models import ToolCall
 
@@ -77,14 +75,6 @@ class TestExecuteCall:
 
 
 class TestReadOnlyAndAllowed:
-    def test_is_read_only_positive(self):
-        for t in READ_ONLY_TOOLS:
-            assert is_read_only(t) is True
-
-    def test_is_read_only_negative(self):
-        assert is_read_only("write_file") is False
-        assert is_read_only("shell") is False
-
     def test_is_tool_allowed_agent_mode_all(self):
         assert is_tool_allowed("write_file", "agent") is True
         assert is_tool_allowed("shell", "agent") is True

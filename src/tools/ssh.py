@@ -249,11 +249,14 @@ def _run_scp(host_cfg: dict, alias: str, src: str, dest: str, upload: bool) -> T
 
     remote_prefix = f"{host_cfg.get('user', 'root')}@{host_cfg['host']}"
 
+    # Удалённый путь scp прогоняет через шелл на той стороне, поэтому его
+    # нужно экранировать (пробелы/метасимволы иначе ломают передачу или
+    # раскрываются удалённым шеллом). Локальный путь — обычный argv-токен.
     if upload:
-        scp_cmd.extend([src, f"{remote_prefix}:{dest}"])
+        scp_cmd.extend([src, f"{remote_prefix}:{shlex.quote(dest)}"])
         action = f"upload {src} -> {alias}:{dest}"
     else:
-        scp_cmd.extend([f"{remote_prefix}:{src}", dest])
+        scp_cmd.extend([f"{remote_prefix}:{shlex.quote(src)}", dest])
         action = f"download {alias}:{src} -> {dest}"
 
     logger.info("SCP %s", action)

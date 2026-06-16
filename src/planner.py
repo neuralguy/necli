@@ -254,16 +254,19 @@ class Plan:
 
         return "\n".join(lines)
 
+# Двоеточий допускаем 2-3 (`::call`/`:::call`, `call::`/`call:::`) — модель часто
+# роняет одно. Открытие якорим к началу строки, чтобы два двоеточия не задели
+# мид-строчный код. Согласовано с tools/call_parser._OPEN_MARKER/_CLOSE_MARKER.
 _PLAN_BLOCK_RE = re.compile(
-    r':::call[ \t]+plan[^\n]*\n'
+    r'^[ \t]*:{2,3}call[ \t]+plan[^\n]*\n'
     r'(?P<body>.*?)'
-    r'(?:\n|^)call:::[ \t]*(?:\n|$)',
+    r'(?:\n|^)call:{2,3}[ \t]*(?:\n|$)',
     re.DOTALL | re.MULTILINE,
 )
 _PLAN_STRIP_RE = re.compile(
-    r':::call[ \t]+plan[^\n]*\n'
+    r'^[ \t]*:{2,3}call[ \t]+plan[^\n]*\n'
     r'.*?'
-    r'(?:\n|^)call:::[ \t]*(?:\n|$)',
+    r'(?:\n|^)call:{2,3}[ \t]*(?:\n|$)',
     re.DOTALL | re.MULTILINE,
 )
 # Литеральная строка прогресса плана, которую модель эхо-повторяет из
@@ -342,8 +345,17 @@ def strip_plan_commands(text: str) -> str:
     return result.strip()
 
 
-def has_plan_commands(text: str) -> bool:
-    return bool(_PLAN_BLOCK_RE.search(text))
+def _first_present(data: dict, *keys):
+    """Возвращает значение первого присутствующего ключа.
+
+    В отличие от цепочки ``or``, корректно обрабатывает falsy-значения
+    (например, 0-based индекс ``0``) — учитывается само наличие ключа и
+    то, что значение не ``None``.
+    """
+    for key in keys:
+        if key in data and data[key] is not None:
+            return data[key]
+    return None
 
 
 def _resolve_step_index(plan: Plan, data: dict) -> Optional[int]:
@@ -356,9 +368,8 @@ def _resolve_step_index(plan: Plan, data: dict) -> Optional[int]:
     if not plan.steps:
         return None
 
-    raw = (data.get("step") or data.get("index") or data.get("step_index")
-           or data.get("step_number") or data.get("n")
-           or data.get("id") or data.get("step_id"))
+    raw = _first_present(data, "step", "index", "step_index",
+                          "step_number", "n", "id", "step_id")
     if raw is not None:
         try:
             idx = int(raw)
@@ -406,17 +417,23 @@ def resolve_plan_command_focus(plan: Optional[Plan], cmd: PlanCommand) -> Option
                 return idx
         return len(plan.steps)
     if cmd.action == "remove_step":
-        raw = cmd.data.get("step") or cmd.data.get("index")
-        if raw is None:
-            return None
-        try:
-            idx = int(raw)
-        except (TypeError, ValueError):
-            return None
-        if 1 <= idx <= len(plan.steps):
-            return idx - 1
-        if 0 <= idx < len(plan.steps):
-            return idx
+        return _resolve_remove_index(plan, cmd.data)
+    return None
+
+
+def _resolve_remove_index(plan: Plan, data: dict) -> Optional[int]:
+    """0-based индекс шага для удаления (поддерживает step/index, 1- и 0-based)."""
+    raw = _first_present(data, "step", "index", "step_index", "step_number", "n")
+    if raw is None:
+        return None
+    try:
+        idx = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if 1 <= idx <= len(plan.steps):
+        return idx - 1
+    if 0 <= idx < len(plan.steps):
+        return idx
     return None
 
 
@@ -460,16 +477,24 @@ def apply_plan_commands(
             elif cmd.action == "add_step":
                 title = cmd.data.get("title", "")
                 index = cmd.data.get("index")
+                insert_index = None
+                if index is not None:
+                    try:
+                        idx = int(index)
+                    except (TypeError, ValueError):
+                        idx = None
+                    if idx is not None:
+                        if 1 <= idx <= len(plan.steps) + 1:
+                            insert_index = idx - 1
+                        elif 0 <= idx <= len(plan.steps):
+                            insert_index = idx
                 if title:
-                    plan.add_step(
-                        title,
-                        index=int(index) if index is not None else None,
-                    )
+                    plan.add_step(title, index=insert_index)
 
             elif cmd.action == "remove_step":
-                step_idx = cmd.data.get("step")
+                step_idx = _resolve_remove_index(plan, cmd.data)
                 if step_idx is not None:
-                    plan.remove_step(int(step_idx))
+                    plan.remove_step(step_idx)
 
     return plan
 
@@ -566,16 +591,6 @@ def _truncate_goal(goal: str, max_len: int = 60) -> str:
     if len(goal) > max_len:
         return goal[:max_len - 1] + "…"
     return goal
-
-
-def show_plan(plan: Optional[Plan]):
-    """Показывает план в терминале (статичный вывод)."""
-    if plan is None or not plan.steps:
-        console.print("  [dim]No active plan[/dim]")
-        return
-    console.print()
-    console.print(render_plan_panel(plan, compact=False))
-    console.print()
 
 
 PLAN_FILENAME = ".plan.md"

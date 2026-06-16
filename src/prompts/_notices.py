@@ -4,6 +4,11 @@ CONTINUE_MESSAGE = (
     "results next. Keep text short. Reply in the user's language."
 )
 
+# Маркер, дописываемый в текст ответа ассистента, когда пользователь остановил
+# выполнение (Ctrl+C — мягко или жёстко). Модель видит его в истории на
+# следующем ходу и понимает, что её прервали, а не она сама завершила работу.
+INTERRUPTED_NOTICE = "[Execution stopped by the user.]"
+
 REPROMPT_SUFFIX = """IMPORTANT: You lost focus. Here is the plan you created earlier and have NOT finished:
 {plan_context}
 Continue with the remaining steps RIGHT NOW. Call the tools you need. Do NOT ask questions. Do NOT stop. Reply in the user's language."""

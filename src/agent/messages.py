@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from system_prompt import build_system_prompt, build_tool_results
+from system_prompt import build_tool_results
 from planner import Plan
 
 _TREE_IGNORE = frozenset({
@@ -144,19 +144,32 @@ async def build_first_message(
     working_dir: str,
     history: list[dict] | None = None,
     plan: "Plan | None" = None,
+    session_dir: str | None = None,
 ) -> str:
-    """Строит первое сообщение: system prompt + dir context + [plan] + [history] + user text."""
-    proof, dir_context = await asyncio.gather(
-        gather_proof(working_dir),
-        gather_dir_context(working_dir),
-    )
-    system = build_system_prompt(proof=proof)
-    parts = [system]
+    """Строит первое сообщение: dir context + [plan] + [history] + user text.
+
+    ВАЖНО: системный промпт сюда НЕ включается. Единственный источник правды для
+    SystemMessage — apis.agent_adapter.api_send_message (через system_prompt=...).
+    Раньше build_system_prompt подмешивался в начало user-сообщения, и на первом
+    ходу промпт уходил ДВАЖДЫ: как role=system (из адаптера) и как role=user
+    (отсюда). Теперь тело первого сообщения — только контекст директории, план,
+    история и собственно текст пользователя.
+    """
+    dir_context = await gather_dir_context(working_dir)
+    parts: list[str] = []
     if dir_context:
-        parts.append("\n" + dir_context)
+        parts.append(dir_context)
     if plan and plan.steps and not plan.is_complete:
         from prompts import ACTIVE_PLAN_NOTICE
         parts.append("\n" + ACTIVE_PLAN_NOTICE.format(plan=plan.render_for_context()))
+    if session_dir:
+        try:
+            from session.notes import format_session_notes_block
+            notes = format_session_notes_block(session_dir)
+            if notes:
+                parts.append("\n" + notes)
+        except Exception:
+            logger.debug("session notes load failed", exc_info=True)
     if history:
         from prompts import CONVERSATION_CONTEXT_HEADER, CONVERSATION_CONTEXT_FOOTER
         parts.append("\n" + CONVERSATION_CONTEXT_HEADER)
@@ -173,7 +186,10 @@ async def build_first_message(
         parts.append("\n" + "\n\n".join(skill_msgs))
 
     parts.append("\n" + (user_text or ""))
-    return "\n".join(parts)
+    # lstrip: первый блок (dir_context) может отсутствовать, тогда остальные
+    # секции начинаются с "\n" — убираем ведущий перевод строки, чтобы тело
+    # не открывалось пустой строкой.
+    return "\n".join(parts).lstrip("\n")
 
 
 def _result_dicts(results) -> list[dict]:

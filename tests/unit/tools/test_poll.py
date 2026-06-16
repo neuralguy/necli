@@ -86,3 +86,15 @@ def test_output_stripped_single(make_tool_call, stub_run_poll):
     res = execute_poll(call)
     assert res.output == "Q: Only\nA: 42"
     assert not res.output.endswith("\n")
+
+def test_limits_steps_to_ten(make_tool_call, stub_run_poll):
+    steps = [{"question": f"Q{i}", "options": ["A"]} for i in range(12)]
+    captured = stub_run_poll(lambda passed: [{"question": s["question"], "answer": "A"} for s in passed])
+    res = execute_poll(make_tool_call("poll", args={"steps": steps}))
+    assert res.status == "ok"
+    assert len(captured["steps"]) == 10
+
+def test_multi_select_answer_list_is_printed(make_tool_call, stub_run_poll):
+    stub_run_poll([{"question": "Pick many?", "answer": ["A", "C"]}])
+    res = execute_poll(make_tool_call("poll", args={"steps": [{"question": "Pick many?", "multiple": True}]}))
+    assert res.output == "Q: Pick many?\nA: A, C"
