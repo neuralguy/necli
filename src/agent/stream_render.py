@@ -396,86 +396,6 @@ def _shorten_subagent_text(value: object, limit: int = 72) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _extract_workflow_preview_for_stream(body: str) -> dict:
-    stripped = (body or "").strip()
-    info = {"name": "", "phases": [], "agents": 0, "isolate": None}
-    if not stripped:
-        return info
-    try:
-        data = json.loads(stripped)
-    except json.JSONDecodeError:
-        name_m = re.search(r'"name"\s*:\s*"([^"]+)"', stripped)
-        if name_m:
-            info["name"] = name_m.group(1)
-        info["agents"] = len(re.findall(r"\bctx\.agent\s*\(", stripped))
-        phase_names = re.findall(r"\bctx\.phase\s*\(\s*['\"]([^'\"]+)", stripped)
-        if phase_names:
-            info["phases"] = phase_names[:8]
-        return info
-    if not isinstance(data, dict):
-        return info
-    info["name"] = str(data.get("name") or data.get("goal") or "")
-    if "isolate" in data:
-        info["isolate"] = bool(data.get("isolate"))
-    phases = data.get("phases")
-    if isinstance(phases, list):
-        names = []
-        agents = 0
-        for i, phase in enumerate(phases, start=1):
-            if isinstance(phase, str):
-                names.append(f"Phase {i}")
-                agents += 1
-            elif isinstance(phase, dict):
-                names.append(str(phase.get("title") or phase.get("name") or f"Phase {i}"))
-                raw_agents = phase.get("agents") or phase.get("tasks") or []
-                if isinstance(raw_agents, list):
-                    agents += len(raw_agents)
-        info["phases"] = names[:8]
-        info["agents"] = agents
-    script = data.get("script")
-    if isinstance(script, str):
-        info["agents"] = info["agents"] or len(re.findall(r"\bctx\.agent\s*\(", script))
-        if not info["phases"]:
-            info["phases"] = re.findall(r"\bctx\.phase\s*\(\s*['\"]([^'\"]+)", script)[:8]
-    return info
-
-
-def _render_workflow_partial_preview(body: str, elapsed_seconds: float, spinner_frame: str):
-    info = _extract_workflow_preview_for_stream(body)
-    title_color = TOOL_DISPLAY.get("workflow", ("Workflow", t("magenta")))[1]
-
-    header = Text()
-    if spinner_frame:
-        header.append(f"{spinner_frame} ", style=f"bold {title_color}")
-    header.append("Workflow", style=f"bold {title_color}")
-    if info.get("name"):
-        header.append(f" · {info['name']}", style="dim")
-    if elapsed_seconds > 0:
-        header.append(f" · {elapsed_seconds:.1f}s", style="dim")
-
-    rows: list[Text] = [header]
-    phases = info.get("phases") or []
-    if phases:
-        rows.append(Text(f"  phases: {', '.join(phases)}", style=t("accent")))
-    else:
-        rows.append(Text("  phases: preparing…", style="dim"))
-    agents = int(info.get("agents") or 0)
-    if agents:
-        rows.append(Text(f"  agents: {agents}", style="dim"))
-    isolate = info.get("isolate")
-    if isolate is not None:
-        rows.append(Text(f"  isolate: {str(isolate).lower()}", style="dim"))
-    rows.append(Text("  Python workflow over subagents", style=t("dim_text")))
-
-    return Panel(
-        Group(*rows),
-        border_style=title_color,
-        padding=(0, 1),
-        width=max(40, min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns)),
-    )
-
-
-
 def _extract_subagent_tasks_for_stream(body: str) -> list[dict]:
     stripped = (body or "").strip()
     if not stripped:
@@ -570,8 +490,6 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
     # дублируем generic-панель с сырым JSON {"thought": "..."}.
     if tool_name == "think":
         return None
-    if tool_name == "workflow":
-        return _render_workflow_partial_preview(body, elapsed_seconds, spinner_frame)
     if tool_name == "subagent":
         return _render_subagent_partial_preview(body, elapsed_seconds, spinner_frame)
     _, color = TOOL_DISPLAY.get(tool_name, ("Tool", "yellow"))

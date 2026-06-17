@@ -326,11 +326,6 @@ def _handle_slash(
         agents_interactive()
         return r
 
-    if head == "/workflows":
-        from commands.menus.workflows import workflows_interactive
-        workflows_interactive(rest)
-        return r
-
     if head == "/permissions":
         from commands.menus.permissions import permissions_interactive
         permissions_interactive()

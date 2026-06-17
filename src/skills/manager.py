@@ -12,6 +12,11 @@ from config.paths import BASE_DIR
 logger = logging.getLogger(__name__)
 
 SKILLS_DIR = BASE_DIR / "skills"
+# Дефолтные скиллы версионируются в git, пользовательские — нет (gitignore).
+# discover читает обе папки; пользовательский скилл перекрывает дефолтный по имени.
+# Новые скиллы (create/add) пишутся ТОЛЬКО в user, чтобы не попадать в git.
+DEFAULT_SKILLS_DIR = SKILLS_DIR / "default"
+USER_SKILLS_DIR = SKILLS_DIR / "user"
 SKILL_FILENAME = "SKILL.md"
 
 _active_skills: set[str] = set()
@@ -36,7 +41,7 @@ class SkillInfo:
 
 
 def get_skills_dir() -> Path:
-    return SKILLS_DIR
+    return USER_SKILLS_DIR
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -84,15 +89,18 @@ def _load_skill_info(skill_dir: Path) -> Optional[SkillInfo]:
 
 
 def discover_skills() -> list[SkillInfo]:
-    if not SKILLS_DIR.exists():
-        return []
-    skills = []
-    for d in sorted(SKILLS_DIR.iterdir()):
-        if d.is_dir():
-            info = _load_skill_info(d)
-            if info:
-                skills.append(info)
-    return skills
+    # Дефолтные сначала, пользовательские поверх — одноимённый user-скилл
+    # перекрывает дефолтный. Имя для дедупликации — каноничное skill.name.
+    by_name: dict[str, SkillInfo] = {}
+    for base in (DEFAULT_SKILLS_DIR, USER_SKILLS_DIR):
+        if not base.exists():
+            continue
+        for d in sorted(base.iterdir()):
+            if d.is_dir():
+                info = _load_skill_info(d)
+                if info:
+                    by_name[info.name] = info
+    return sorted(by_name.values(), key=lambda s: s.name)
 
 
 def list_skills() -> list[SkillInfo]:
@@ -103,15 +111,16 @@ def load_skill(name: str) -> Optional[SkillInfo]:
     for skill in discover_skills():
         if skill.name == name:
             return skill
-    skill_dir = SKILLS_DIR / name
-    if skill_dir.exists():
-        return _load_skill_info(skill_dir)
+    for base in (USER_SKILLS_DIR, DEFAULT_SKILLS_DIR):
+        skill_dir = base / name
+        if skill_dir.exists():
+            return _load_skill_info(skill_dir)
     return None
 
 
 def create_skill(name: str, description: str, content: str) -> Optional[SkillInfo]:
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-    skill_dir = SKILLS_DIR / name
+    USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    skill_dir = USER_SKILLS_DIR / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_md = skill_dir / SKILL_FILENAME
     text = f"---\nname: {name}\ndescription: {description}\n---\n\n{content}\n"
@@ -120,7 +129,7 @@ def create_skill(name: str, description: str, content: str) -> Optional[SkillInf
 
 
 def add_skill(source_path: Path) -> SkillInfo:
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     if source_path.is_file() and source_path.name == SKILL_FILENAME:
         source_path = source_path.parent
     if not source_path.is_dir():
@@ -128,7 +137,7 @@ def add_skill(source_path: Path) -> SkillInfo:
     skill_md = source_path / SKILL_FILENAME
     if not skill_md.exists():
         raise FileNotFoundError(f"Не найден {SKILL_FILENAME} в {source_path}")
-    dest = SKILLS_DIR / source_path.name
+    dest = USER_SKILLS_DIR / source_path.name
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(source_path, dest)

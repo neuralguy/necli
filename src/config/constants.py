@@ -8,11 +8,6 @@ RESPONSE_TIMEOUT = int(os.getenv("NECLI_TIMEOUT", str(get("response_timeout", 18
 
 TARGET_MODEL: str = os.getenv("NECLI_MODEL", get("model", "Claude Opus 4.6"))
 
-# Максимум суб-агентов в ОДНОЙ фазе воркфлоу. Фаза накапливает агентов по всем
-# своим parallel()/pipeline()-вызовам; при превышении — ошибка (а не тихий
-# срез), чтобы автор скрипта дробил фазу явно.
-MAX_WORKFLOW_AGENTS_PER_PHASE = 25
-
 # Канонический набор игнорируемых директорий для всех обходов ФС:
 # tree, grep_files, find_files, fs_watcher snapshot, project_stats.
 IGNORE_DIRS: frozenset[str] = frozenset({

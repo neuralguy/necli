@@ -16,12 +16,10 @@ from prompts import (
     DELIVERABLE_DISCIPLINE_BLOCK,
     CRAFT_BLOCK,
     VERIFICATION_GATE_BLOCK,
-    ORCHESTRATION_BLOCK,
     AGENT_MODE_BLOCK,
     PLANNING_MODE_BLOCK,
     SUBAGENTS_BLOCK,
     LANGUAGE_BLOCK,
-    workflow_block_for,
     TOOL_FORMAT_TEXT_BLOCK,
     tool_format_block_for,
     execution_model_block_for,
@@ -276,52 +274,105 @@ def _resolve_native_tools() -> bool:
 
 
 # Канонический порядок инструментов в S5.0 (fenced-обзор). Гейтящиеся скиллами
-# имена (web_search/ssh/subagent/workflow) убираются из списка, пока их скилл
+# имена (web_search/ssh/subagent) убираются из списка, пока их скилл
 # не загружен — модель не должна видеть инструмент до активации скилла.
 _TOOLS_LIST_ORDER = [
     "shell", "read_files", "write_file", "patch_file", "create_file",
     "delete_file", "rename_file", "copy_file", "move_file", "ls", "tree",
     "mkdir", "rmdir", "find_files", "grep_files", "poll",
-    "ssh", "web_search", "subagent", "workflow", "skill",
+    "ssh", "web_search", "subagent", "skill",
     "create_docx", "docx_screenshot",
     "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
     "memory_write", "memory_list", "memory_read",
 ]
 
-_TOOLS_LIST_FOOTER = """
-
-Each tool's arguments and behaviour are defined in its schema. Use exactly these names.
-
-memory_write/memory_list/memory_read — persistent memory across sessions. Save with
-memory_write ONLY facts NOT derivable from code/git/AGENTS.md: user role & preferences (type=user),
-how-to-work feedback (type=feedback), current-work context (type=project), external references
-(type=reference). Convert relative dates to absolute (YYYY-MM-DD).
-scope: use scope="global" for facts NOT tied to one project (who the user is, their general
-preferences & working style, universal references) — these are injected in EVERY project. Use
-scope="project" (default) for context specific to the current project."""
+_TOOLS_LIST_FOOTER = ""
 
 
-def _build_tools_list_block(active_skills: set | None) -> str:
-    """S5.0 AVAILABLE TOOLS — список с учётом гейтинга по скиллам.
+def _short_arg_desc(text: str, limit: int = 80) -> str:
+    """Сжимает описание аргумента до одной короткой строки."""
+    one_line = " ".join((text or "").split())
+    if len(one_line) > limit:
+        one_line = one_line[: limit - 1].rstrip() + "…"
+    return one_line
 
-    Инструменты, гейтящиеся незагруженными скиллами, исключаются из обзора.
+
+def _tool_signature(schema: dict) -> str:
+    """Компактная сигнатура: tool(req1, req2, [opt1], [opt2]) из JSON-схемы.
+
+    Обязательные параметры — без скобок, опциональные — в [ ]. Порядок:
+    сначала required в порядке объявления, затем остальные.
+    """
+    fn = schema.get("function", {})
+    name = fn.get("name", "")
+    params = (fn.get("parameters") or {}).get("properties") or {}
+    required = (fn.get("parameters") or {}).get("required") or []
+    req_set = set(required)
+    ordered = list(required) + [p for p in params if p not in req_set]
+    parts = [p if p in req_set else f"[{p}]" for p in ordered]
+    return f"{name}({', '.join(parts)})"
+
+
+def _build_tools_list_block(active_skills: set | None, native_tools: bool = True) -> str:
+    """S5 TOOLS — единый блок про инструменты.
+
+    В fenced-режиме модель НЕ получает JSON-схемы через bind_tools, поэтому имена
+    аргументов берутся ОТСЮДА — единый источник правды (TOOL_SCHEMAS). Каждый
+    инструмент: `tool(req, [opt]) — краткое описание`. Гейтящиеся незагруженными
+    скиллами инструменты исключаются.
+
+    Чтобы всё про инструменты не было раскидано по секциям, в fenced-режиме этот
+    блок собирает в ОДНУ секцию S5: синтаксис вызова через :::call (FENCED_SYNTAX_BLOCK)
+    + список инструментов с сигнатурами + LSP-заметки (LSP_TOOLS_BLOCK). В native
+    синтаксис не нужен (его роль выполняет function calling), а LSP-args дублируют
+    схемы из bind_tools — поэтому там только список.
     """
     try:
         from skills.registry import is_tool_gated_out as _is_tool_gated_out
     except Exception:
         def _is_tool_gated_out(tool: str, active_skills: set | None) -> bool:
             return False
-    names = [
-        t for t in _TOOLS_LIST_ORDER
-        if not _is_tool_gated_out(t, active_skills)
+
+    from apis.tool_schemas import TOOL_SCHEMAS
+
+    by_name = {s["function"]["name"]: s for s in TOOL_SCHEMAS}
+    # Канонический порядок S5.0 + хвост из тех схем, что не перечислены в нём
+    # (apply_diff, expand_tool_result, plan, think и т.п. — кроме гейтящихся).
+    listed = list(_TOOLS_LIST_ORDER)
+    extra = [
+        n for n in by_name
+        if n not in listed and n not in ("plan", "think")
     ]
-    # Перенос строк примерно как в исходном статическом блоке.
-    header = (
+    order = listed + extra
+
+    lines = []
+    for tool in order:
+        if _is_tool_gated_out(tool, active_skills):
+            continue
+        schema = by_name.get(tool)
+        if schema is None:
+            continue
+        sig = _tool_signature(schema)
+        desc = _short_arg_desc(schema["function"].get("description", ""))
+        lines.append(f"  {sig}{(' — ' + desc) if desc else ''}")
+
+    list_section = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "S5.0. AVAILABLE TOOLS\n"
+        "S5.1. AVAILABLE TOOLS\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Each tool with its arguments — required first, [optional] in brackets. "
+        "Use EXACTLY these argument names.\n\n"
+        + "\n".join(lines)
     )
-    return header + ", ".join(names) + "." + _TOOLS_LIST_FOOTER
+
+    # В native всё про инструменты — только список: синтаксис вызова обеспечивает
+    # function calling, а аргументы дублируются JSON-схемами через bind_tools.
+    if native_tools:
+        return list_section
+
+    # В fenced весь tool-материал склеиваем в ОДНУ секцию S5: формат вызова
+    # (:::call) → список инструментов с сигнатурами → LSP-заметки.
+    return "\n\n".join([FENCED_SYNTAX_BLOCK, list_section, LSP_TOOLS_BLOCK])
 
 
 def _assemble(
@@ -354,15 +405,12 @@ def _assemble(
     parts.append(EFFICIENCY_BLOCK)
     parts.append(planning_block_for(native_tools))
 
-    # ── Инструменты: синтаксис vs стратегия — независимые оси ──
-    # Список инструментов — всегда (обзор «что есть»), но гейтящиеся скиллами
-    # инструменты скрыты, пока их скилл не загружен.
-    parts.append(_build_tools_list_block(active_skills))
-    # Синтаксис вызова через :::call и LSP-args (дублируют JSON-схемы) —
-    # только в fenced. В native схемы у модели уже есть через bind_tools.
-    if not native_tools:
-        parts.append(FENCED_SYNTAX_BLOCK)
-    parts.append(LSP_TOOLS_BLOCK)
+    # ── Инструменты ──
+    # Единый блок S5: в fenced он включает синтаксис вызова (:::call), список
+    # инструментов с сигнатурами и LSP-заметки; в native — только список (схемы
+    # и синтаксис даёт function calling). Гейтящиеся скиллами инструменты скрыты,
+    # пока их скилл не загружен.
+    parts.append(_build_tools_list_block(active_skills, native_tools))
     # Кросс-инструментальная стратегия (lsp-vs-grep, pipeline, не дублируй) —
     # всегда: её НЕТ в JSON-схемах, нужна модели в обоих режимах.
     parts.append(tool_strategy_block_for(native_tools))
@@ -380,12 +428,6 @@ def _assemble(
         CRAFT_BLOCK,
         VERIFICATION_GATE_BLOCK,
     ]
-    # S7.3 ORCHESTRATION — решение «соло или оркестрация». Субагент НЕ может
-    # вызывать subagent/workflow (они в _BLOCKED_FOR_SUBAGENTS), так что этот
-    # блок для него — мёртвый вес. Главному агенту — только когда скилл
-    # `subagents` загружен (subagent/workflow гейтятся им).
-    if not for_subagent and "subagents" in _active:
-        parts.append(ORCHESTRATION_BLOCK)
 
     if mode in ("planning", "plan"):
         parts.append(PLANNING_MODE_BLOCK)
@@ -396,12 +438,10 @@ def _assemble(
     if think_enabled:
         parts.append(think_block_for(native_tools))
 
-    # S8 WORKFLOWS / S9 SUBAGENTS — как оркестрировать. Субагенту недоступно
-    # (он сам внутри оркестрации); главному — только когда скилл `subagents`
-    # загружен (иначе subagent/workflow скрыты и эти блоки ссылаются на
-    # невидимые инструменты).
+    # S8 SUBAGENTS — как оркестрировать. Субагенту недоступно (он сам внутри
+    # оркестрации); главному — только когда скилл `subagents` загружен (иначе
+    # subagent скрыт и этот блок ссылается на невидимый инструмент).
     if not for_subagent and "subagents" in _active:
-        parts.append(workflow_block_for(native_tools))
         parts.append(SUBAGENTS_BLOCK)
     parts.append(LANGUAGE_BLOCK)
     return "\n\n".join(p for p in parts if p)

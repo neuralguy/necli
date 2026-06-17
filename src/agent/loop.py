@@ -255,7 +255,7 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         from system_prompt import _resolve_native_tools
         api_proof = await _gather_proof(ctx.working_dir)
         # Активные скиллы определяют видимость гейтящихся инструментов
-        # (web_search/image_search/ssh/subagent/workflow) — и в промте, и в схемах.
+        # (web_search/image_search/ssh/subagent) — и в промте, и в схемах.
         active_skills = current_active_skills()
         api_sys = build_system_prompt(
             proof=api_proof, mode=ctx.mode, working_dir=ctx.working_dir,

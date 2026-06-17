@@ -17,7 +17,7 @@ NAMED_TOOLS = frozenset({
     "create_file", "delete_file", "rename_file", "copy_file",
     "move_file", "ls", "tree", "mkdir", "rmdir", "find_files",
     "grep_files", "poll", "skill", "shell", "web_search",
-    "ssh", "subagent", "workflow", "create_docx", "docx_screenshot", "expand_tool_result", "apply_diff",
+    "ssh", "subagent", "create_docx", "docx_screenshot", "expand_tool_result", "apply_diff",
     "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
     "memory_write", "memory_list", "memory_read",
 })

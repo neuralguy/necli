@@ -94,7 +94,7 @@ class TestAgentMode:
 class TestSkillGating:
     """Гейтящиеся скиллами тулы скрыты, пока скилл не активен."""
 
-    GATED = {"web_search", "image_search", "ssh", "subagent", "workflow"}
+    GATED = {"web_search", "image_search", "ssh", "subagent"}
 
     def test_gated_hidden_by_default(self):
         names = set(_names(get_tool_schemas("agent")))
@@ -120,7 +120,6 @@ class TestSkillGating:
     def test_subagents_skill_exposes_orchestration(self):
         names = set(_names(get_tool_schemas("agent", {"subagents"})))
         assert "subagent" in names
-        assert "workflow" in names
 
     def test_all_skills_active_exposes_all_gated(self):
         names = set(_names(get_tool_schemas("agent", {"web", "ssh", "subagents"})))

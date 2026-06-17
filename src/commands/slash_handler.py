@@ -62,7 +62,7 @@ async def handle_slash_result(act: SlashResult, state: InteractiveState) -> bool
         return True
 
     if act.toggle_tool_format:
-        _handle_toggle_tool_format(state)
+        await _handle_toggle_tool_format(state)
         return True
 
     if act.do_reflect:
@@ -453,11 +453,19 @@ def _handle_toggle_think(state: InteractiveState) -> None:
         console.print(f"  [dim]💭 {tr('sh.think_off')}[/dim]")
 
 
-def _handle_toggle_tool_format(state: InteractiveState) -> None:
+async def _handle_toggle_tool_format(state: InteractiveState) -> None:
     """Переключает глобальный force-native флаг для tool calls.
 
     True  → все API-запросы принудительно используют native function calling.
     False → используется per-provider настройка (default).
+
+    После смены формата ПЕРЕсобираем API-историю из necli-сессии под новый
+    формат: restore_api_session_history сериализует assistant/tool-сообщения
+    по api_sess.use_native_tools (native → fenced :::call парсятся обратно в
+    native tool_calls+ToolMessage; fenced → tool_calls не восстанавливаются).
+    Без этого в api_sess.messages оставались сообщения В СТАРОМ формате, и
+    модель продолжала имитировать их, игнорируя свежий системный промт —
+    «починить» помогал только перезапуск CLI (пустая история).
     """
     current = bool(config.get("tool_format_force_native", False))
     new_val = not current
@@ -466,6 +474,11 @@ def _handle_toggle_tool_format(state: InteractiveState) -> None:
         console.print(f"  [cyan]⚙[/cyan] [bold cyan]{tr('sh.tool_format_native')}[/bold cyan]")
     else:
         console.print(f"  [dim]⚙ {tr('sh.tool_format_default')}[/dim]")
+
+    from apis.agent_adapter import get_api_session, restore_api_session_history
+    if get_api_session() is not None:
+        restore_api_session_history(state.session)
+        state.pending_context = None
 
 
 

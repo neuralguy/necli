@@ -14,7 +14,14 @@ wheels/
 .venv
 *.txt
 .env
-.data/
+.data/*
+# Версионируем ТОЛЬКО дефолтные скиллы и пресеты агентов (без секретов/сессий).
+# Пользовательские скиллы (.data/skills/user/) в git НЕ попадают.
+# re-include требует, чтобы каждый родитель пути был заново включён.
+!.data/skills/
+.data/skills/*
+!.data/skills/default/
+!.data/agents/
 .ruff_cache/
 .pytest_cache/
 .prev_git/

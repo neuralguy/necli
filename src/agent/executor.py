@@ -47,9 +47,9 @@ def _extract_write_time(subtitle: str) -> float | None:
 # Инструменты, которые сами рисуют живой мультиплексный UI (свой Rich Live).
 # Для них НЕЛЬЗЯ оборачивать выполнение в спиннер-Live «Tool …s»: два Live на
 # одной консоли дерутся за нижнюю строку терминала и дают мерцание. У subagent
-# своя ветка в loop.py, workflow же идёт через _execute_single — поэтому гасим
+# своя ветка в loop.py — поэтому гасим
 # индикатор здесь по имени инструмента.
-_SELF_RENDERING_TOOLS = frozenset({"workflow", "subagent"})
+_SELF_RENDERING_TOOLS = frozenset({"subagent"})
 
 
 def _make_exec_indicator(tool_name: str, args: dict, elapsed: float, frame: str) -> Text:

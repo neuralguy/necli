@@ -36,7 +36,6 @@ from tools.poll import execute_poll
 from tools.skill_tool import execute_skill
 from tools.ssh import execute_ssh
 from tools.subagent import execute_subagent
-from tools.workflow import execute_workflow
 from tools.web_search import execute_web_search
 from tools.image_search import execute_image_search
 from tools.expand_result import execute_expand_tool_result
@@ -90,7 +89,6 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "skill": execute_skill,
     "ssh": execute_ssh,
     "subagent": execute_subagent,
-    "workflow": execute_workflow,
     "web_search": execute_web_search,
     "image_search": execute_image_search,
     "expand_tool_result": execute_expand_tool_result,

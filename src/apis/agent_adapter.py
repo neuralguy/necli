@@ -944,7 +944,7 @@ async def api_recap(conversation_text: str) -> str:
 
     Использует активную модель ApiSession, но НЕ трогает её историю —
     отдельный provider-инстанс, одно сообщение, без tools. Возвращает
-    короткое (несколько предложений) напоминание о содержании чата на
+    очень короткое (1-2 предложения) напоминание о теме чата на
     языке диалога. Вызывается в фоне на каждом N-м пользовательском
     сообщении; вывод печатает вызывающий код.
     """
@@ -955,11 +955,11 @@ async def api_recap(conversation_text: str) -> str:
     llm = get_provider(session.provider_id, session.model_id, **_provider_kwargs())
     prompt = (
         "Below is the transcript of an ongoing coding session between a user "
-        "and an AI agent. Write a SHORT recap (2-4 sentences) of what this "
-        "conversation has been about so far: the goal, key decisions, and the "
-        "current state. Write it as a neutral reminder, in the SAME language "
-        "the conversation is in. No preamble, no headings, no bullet points — "
-        "just the sentences.\n\n"
+        "and an AI agent. Write a VERY SHORT recap (1-2 short sentences, max ~40 words) "
+        "that just reminds what the conversation is about — the topic and current focus. "
+        "Don't list details, decisions or steps. Write it as a brief neutral reminder, "
+        "in the SAME language the conversation is in. No preamble, no headings, no bullet "
+        "points — just the sentence(s).\n\n"
         "--- TRANSCRIPT ---\n" + conversation_text + "\n--- END ---"
     )
 

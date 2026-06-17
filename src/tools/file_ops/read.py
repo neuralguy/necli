@@ -156,8 +156,8 @@ def clear_read_cache(session_id: str | None = None) -> int:
 
 
 def _parse_lines_range(lines_range: str, total_lines: int) -> tuple[int, int] | None:
-    """Парсит 'A-B' или 'A' в (start, end). None если невалидно."""
-    lines_range = (lines_range or "").strip()
+    """Парсит 'A-B'/'A:B' или 'A' в (start, end). None если невалидно."""
+    lines_range = (lines_range or "").strip().replace(":", "-")
     if not lines_range:
         return None
     try:
@@ -357,6 +357,7 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
 
     # ── Явный диапазон ──
     if lines_range:
+        lines_range = lines_range.replace(":", "-")
         all_lines = content.split("\n")
         try:
             if "-" in lines_range:
@@ -397,7 +398,7 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
 
 def _apply_lines_filter(content: str, lines_range: str, path_str: str) -> str:
     """Apply a line-range filter to content. Returns filtered or original text."""
-    lines_range = lines_range.strip()
+    lines_range = lines_range.strip().replace(":", "-")
     if not lines_range:
         return content
     all_lines = content.split("\n")

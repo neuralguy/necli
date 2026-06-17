@@ -26,7 +26,7 @@ import re
 SKILL_TOOLS: dict[str, set[str]] = {
     "web": {"web_search", "image_search"},
     "ssh": {"ssh"},
-    "subagents": {"subagent", "workflow"},
+    "subagents": {"subagent"},
 }
 
 # Все инструменты, которые вообще гейтятся скиллами.

@@ -95,15 +95,3 @@ class TestRenderPartialTool:
         assert "Subagent" in plain
         assert "coder" in plain
         assert '"tasks"' not in plain
-
-    def test_workflow_preview_hides_raw_json(self):
-        body = '{"name":"wf","isolate":true,"phases":[{"title":"Research","tasks":[{"prompt":"x"}]},{"title":"Verify","tasks":[]}]}'
-        rendered = render_partial_tool(body, "workflow", spinner_frame="⠋")
-        assert rendered is not None
-        console = Console(record=True, width=120)
-        console.print(rendered)
-        plain = console.export_text()
-        assert "Workflow" in plain
-        assert "Research" in plain
-        assert "Verify" in plain
-        assert '"phases"' not in plain

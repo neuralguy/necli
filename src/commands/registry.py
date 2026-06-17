@@ -62,7 +62,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/lsp",         "tools",   "help.lsp"),
     SlashCommand("/skills",      "tools",   "help.skills"),
     SlashCommand("/agents",      "tools",   "help.agents"),
-    SlashCommand("/workflows",   "tools",   "help.workflows",   args_hint="[RUN_ID]"),
     SlashCommand("/ssh",         "tools",   "help.ssh"),
 
     # ── display ─────────────────────────────────────────────

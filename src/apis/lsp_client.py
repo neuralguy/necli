@@ -474,6 +474,14 @@ class LSPManager:
         self.servers.clear()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
+        # Дожидаемся завершения loop-потока, чтобы loop.close() произошёл здесь,
+        # а не в гонке с GC уже после выхода из shutdown (как у MCPManager).
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                logger.warning("lsp loop thread did not stop within timeout")
+        self._thread = None
+        self._loop = None
 
     async def _shutdown_async(self, server: LSPServer) -> None:
         try:
@@ -510,6 +518,16 @@ class LSPManager:
                 except (OSError, ProcessLookupError) as e:
                     logger.warning("lsp proc kill failed pid=%s: %s",
                                    getattr(server._proc, "pid", None), e)
+            # Явно закрываем subprocess-transport, ПОКА фоновый loop ещё жив.
+            # Иначе BaseSubprocessTransport.__del__ дёрнет loop.call_soon уже
+            # после loop.close() → "RuntimeError: Event loop is closed" при GC.
+            transport = getattr(server._proc, "_transport", None)
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception as e:
+                    logger.debug("lsp[{}] transport close failed: {}", server.id, e)
+            server._proc = None
 
     def list_servers_info(self) -> list[dict]:
         out = []
@@ -579,7 +597,7 @@ _DIAG_SEVERITY = {1: "ERROR", 2: "WARN", 3: "INFO", 4: "HINT"}
 
 def _format_diagnostics(diags: list[dict], path: Path) -> str:
     if not diags:
-        return f"{path}: нет диагностики ✓"
+        return "Всё корректно ✓"
     lines = [f"{path}: {len(diags)} диагностик"]
     for d in diags:
         sev = _DIAG_SEVERITY.get(d.get("severity"), "?")
@@ -676,7 +694,7 @@ def get_diagnostics_for_path(path: str) -> str | None:
             return None
         text = mgr._submit(mgr._action_async(server, p, 1, 0, "diagnostics"), timeout=6.0)
         # Возвращаем только если есть реальные проблемы
-        if text and "нет диагностики" not in text:
+        if text and "Всё корректно" not in text:
             return text
         return None
     except Exception as e:

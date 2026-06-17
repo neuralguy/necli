@@ -4,7 +4,7 @@ MODE: PLANNING (read-only)
 
 You are in PLANNING mode. Only read-only tools are available: read_files, grep_files, tree, ls,
 find_files, web_search, poll, skill. ALL write/execute tools (write_file, patch_file, create_file,
-delete_file, rename_file, copy_file, move_file, mkdir, rmdir, shell, ssh, subagent, workflow, create_docx) are
+delete_file, rename_file, copy_file, move_file, mkdir, rmdir, shell, ssh, subagent, create_docx) are
 BLOCKED by the system — attempting them returns an error.
 
 Behavior:

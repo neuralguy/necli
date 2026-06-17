@@ -33,7 +33,7 @@ DAY = 86400
 # ── Пороги (безопасная политика) ─────────────────────────────────────────────
 SESSION_MAX_AGE_DAYS = 30      # сессии старше — кандидаты на удаление…
 KEEP_RECENT_SESSIONS = 100     # …но последние N по времени всегда храним
-RUNS_MAX_AGE_DAYS = 14         # subagents/ и workflow_runs/
+RUNS_MAX_AGE_DAYS = 14         # subagents/
 TEMP_MAX_AGE_DAYS = 7          # clipboard_images/ docx_shots/ docx_sources/ uploads/
 SOCKET_MAX_AGE_DAYS = 1        # ssh_sockets/ — мёртвые сокеты
 UNDO_MAX_AGE_DAYS = 60         # чужие (не текущие) undo-репы старше — удалить
@@ -62,7 +62,6 @@ def run_cleanup() -> int:
     freed = 0
     freed += _clean_sessions()
     freed += _clean_runs("subagents", RUNS_MAX_AGE_DAYS)
-    freed += _clean_runs("workflow_runs", RUNS_MAX_AGE_DAYS)
     for name in ("clipboard_images", "docx_shots", "docx_sources", "uploads"):
         freed += _clean_temp_files(name, TEMP_MAX_AGE_DAYS)
     freed += _clean_ssh_sockets()
@@ -116,7 +115,7 @@ def _pinned_session_ids() -> set[str]:
     return set()
 
 
-# ── subagents / workflow_runs ────────────────────────────────────────────────
+# ── subagents ────────────────────────────────────────────────────────────────
 
 def _clean_runs(name: str, max_age_days: int) -> int:
     base = BASE_DIR / name

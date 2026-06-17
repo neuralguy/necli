@@ -144,7 +144,7 @@ def _project_context(working_dir: str) -> str:
 
 # Инструменты, недоступные субагентам (poll — нет интерактива, subagent — нет
 # вложенности). web_search разрешён: субагент должен уметь искать в сети.
-_BLOCKED_FOR_SUBAGENTS = frozenset({"poll", "subagent", "workflow"})
+_BLOCKED_FOR_SUBAGENTS = frozenset({"poll", "subagent"})
 
 
 def resolve_subagent_model(
@@ -676,7 +676,7 @@ class _ApiSubagentRunner:
                     if self.buffer:
                         self.buffer.on_done(final)
                     # Контекст переполнен = РАБОТА, скорее всего, НЕ ДОВЕДЕНА до конца.
-                    # Возвращаем error (а не None), чтобы главный агент/workflow
+                    # Возвращаем error (а не None), чтобы главный агент
                     # узнали о неполноте, а не считали это полным успехом. Сделанный
                     # текст сохраняется в final — он не теряется.
                     return final, iterations + 1, "stopped: context size limit reached (work likely incomplete)"
@@ -745,7 +745,7 @@ class _ApiSubagentRunner:
                     self._append_tool_results_text(results)
 
             # Лимит итераций исчерпан — как и бюджет, это сигнал неполноты:
-            # помечаем error, чтобы главный агент/workflow знали (текст сохранён).
+            # помечаем error, чтобы главный агент знал (текст сохранён).
             final = strip_tool_calls(raw_text).strip() + "\n\n[Subagent iteration limit]"
             if self.buffer:
                 self.buffer.on_done(final)

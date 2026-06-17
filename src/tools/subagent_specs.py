@@ -114,6 +114,17 @@ def _append_task(tasks: list[dict[str, Any]], task: dict[str, Any] | None) -> bo
     return len(tasks) < 100
 
 
+def _fill_default_phase(tasks: list[dict[str, Any]], default_phase: str) -> None:
+    """Проставляет фазу задачам, у которых её нет. Главный агент ОБЯЗАН задавать
+    phase, но если не задал — используем имя запуска (name/goal) как единую
+    фазу, чтобы панель всегда показывала осмысленное название, а не «Agents»."""
+    if not default_phase:
+        return
+    for task in tasks:
+        if not task.get("phase"):
+            task["phase"] = default_phase
+
+
 def _pipeline_tasks(
     args: dict[str, Any],
     *,
@@ -165,6 +176,7 @@ def build_subagent_task_specs(args: dict[str, Any]) -> tuple[list[dict[str, Any]
         task = normalize_task(args)
         if task:
             tasks.append(task)
+        _fill_default_phase(tasks, name)
         return tasks[:100], f"{name} · single · {len(tasks[:100])} task(s)"
 
     phases = args.get("phases")
@@ -201,10 +213,12 @@ def build_subagent_task_specs(args: dict[str, Any]) -> tuple[list[dict[str, Any]
             previous_phase = list(range(start_len + 1, len(tasks) + 1))
             if len(tasks) >= 100:
                 break
+        _fill_default_phase(tasks, name)
         return tasks[:100], f"{name} · phases · {len(tasks[:100])} task(s)"
 
     if isinstance(args.get("items"), list) and isinstance(args.get("stages"), list):
         tasks = _pipeline_tasks(args)
+        _fill_default_phase(tasks, name)
         return tasks[:100], f"{name} · pipeline · {len(tasks[:100])} task(s)"
 
     raw_tasks = args.get("tasks")
@@ -212,4 +226,5 @@ def build_subagent_task_specs(args: dict[str, Any]) -> tuple[list[dict[str, Any]
         for raw in raw_tasks:
             if not _append_task(tasks, normalize_task(raw)):
                 break
+    _fill_default_phase(tasks, name)
     return tasks[:100], f"{name} · parallel · {len(tasks[:100])} task(s)"

@@ -198,7 +198,6 @@ DEFAULTS: dict[str, Any] = {
         "lsp_diagnostics":{"label": "Diagnostics","emoji": "🩺", "color_role": "warning"},
         "apply_diff":    {"label": "Diff",       "emoji": "🔧", "color_role": "warning"},
         "expand_tool_result": {"label": "Expand","emoji": "🔍", "color_role": "info"},
-        "workflow":      {"label": "Workflow",   "emoji": "🧩", "color_role": "magenta"},
         "memory_write":  {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},
         "memory_list":   {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},
         "memory_read":   {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},

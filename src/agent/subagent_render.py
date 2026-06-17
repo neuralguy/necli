@@ -202,7 +202,7 @@ class SubagentBuffer:
             return "\u2713", f"bold {t('success')}"
         if self.status == "error":
             return "\u2717", "bold red"
-        return _spinner_frame(), f"bold {t('magenta')}"
+        return "\u25ef", "dim"
 
     def _head_left(self) -> Text:
         """Левая часть шапки: глиф · SubN · роль/preset · модель · deps."""
@@ -260,8 +260,34 @@ class SubagentBuffer:
             elif ev.status == "error":
                 trail.append(f"\u2717{ev.emoji} ", style="red")
             else:
-                trail.append(f"{_spinner_frame()}{ev.emoji} ", style=t("magenta"))
+                trail.append(f"\u25ef{ev.emoji} ", style="dim")
         return trail
+
+    def _current_action(self) -> str:
+        """Одно текущее действие компактно: `create(test.py)`, `$ pytest`.
+
+        Приоритет: бегущий инструмент → последний завершённый (✓/✗) →
+        «streaming…» только когда инструментов ещё не было вовсе. Иначе между
+        вызовами status==streaming затирал бы инструменты голым «streaming…»."""
+        if self.status in ("done", "error", "starting"):
+            return ""
+        last = self.tool_events[-1] if self.tool_events else None
+        if last is not None:
+            arg = (last.command or "").strip()
+            if last.tool_name == "shell":
+                body = f"$ {arg}" if arg else "$ shell"
+            elif arg:
+                body = f"{last.tool_name}({arg})"
+            else:
+                body = last.tool_name
+            if last.status == "running":
+                return body
+            mark = "\u2717" if last.status == "error" else "\u2713"
+            return f"{mark}{body}"
+        # Ещё ни одного инструмента — значит модель только пишет текст.
+        if self.status == "streaming":
+            return "streaming…"
+        return ""
 
     def _action_line(self) -> Text:
         """Третья строка: что субагент делает сейчас / итог."""
@@ -353,7 +379,7 @@ class SubagentBuffer:
             metrics.append(f" · {n_tools} tool{'s' if n_tools != 1 else ''}", style="dim")
         metrics.append(f" · {self.elapsed:.0f}s", style="dim")
 
-        # Левая часть — глиф + label + модель.
+        # Левая часть — глиф + label + модель + текущее действие.
         name = self.label or f"Sub{self.index + 1}"
         left = Text()
         left.append(f"{glyph} ", style=gstyle)
@@ -366,10 +392,21 @@ class SubagentBuffer:
         if self.model_label:
             left.append(f"  {self.model_label}", style="dim")
 
+        # Текущее действие — справа от модели. Усекается ПЕРВЫМ при нехватке
+        # ширины (имя и метрики важнее), под него берём остаток строки.
+        action = self._current_action()
+        if action:
+            fixed = len(left.plain) + len(metrics.plain) + 2  # +2 разделителя
+            avail_action = width - fixed
+            if avail_action >= 4:
+                if len(action) > avail_action:
+                    action = action[: avail_action - 1] + "\u2026"
+                left.append(f"  {action}", style=t("magenta"))
+
         # Собираем с выравниванием метрик вправо.
         gap = width - len(left.plain) - len(metrics.plain)
         if gap < 1:
-            # Не влезает — режем label, оставляя место под метрики и 1 пробел.
+            # Не влезает — режем хвост левой части, оставляя место под метрики.
             avail = max(4, width - len(metrics.plain) - 1)
             left.truncate(avail, overflow="ellipsis")
             gap = max(1, width - len(left.plain) - len(metrics.plain))
@@ -526,24 +563,37 @@ class SubagentTracker:
         # Левая панель: список фаз. Каждая фаза — ровно одна строка:
         # "<маркер><номер> <имя…>   done/total" — имя усекается под ширину.
         frame_width = max(40, width - 4)
-        left_w = max(24, int(frame_width * 0.32))
+        left_w = max(18, int(frame_width * 0.22))
         inner = left_w - 4  # минус рамка(2) и padding(2)
         phase_lines: list[Text] = []
         for i, ph in enumerate(phases):
             ph_bufs = phase_buffers(ph)
             ph_done = sum(1 for b in ph_bufs if b.status in ("done", "error"))
-            marker = "› " if ph == active else "  "
-            mstyle = f"bold {t('accent')}" if ph == active else "dim"
+            # Состояние фазы: пройденная (все агенты завершены и фаза не активна) →
+            # зелёная галочка; активная → «›»; будущая → пробел.
+            is_done = bool(ph_bufs) and ph_done == len(ph_bufs) and ph != active
+            if is_done:
+                marker = "\u2713 "
+                mstyle = f"bold {t('success')}"
+                name_style = t("success")
+            elif ph == active:
+                marker = "\u203a "
+                mstyle = f"bold {t('accent')}"
+                name_style = f"bold {t('accent')}"
+            else:
+                marker = "  "
+                mstyle = "dim"
+                name_style = "dim"
             count = f"{ph_done}/{len(ph_bufs)}"
-            prefix = f"{marker}{i + 1} "
+            prefix = f"{marker}{i + 1}. "
             # Бюджет под имя = inner − префикс − счётчик − разделитель(1 пробел).
             name_budget = max(3, inner - len(prefix) - len(count) - 1)
             name = ph if len(ph) <= name_budget else ph[: name_budget - 1] + "…"
             gap = max(1, inner - len(prefix) - len(name) - len(count))
             row = Text()
             row.append(marker, style=mstyle)
-            row.append(f"{i + 1} ", style=mstyle)
-            row.append(name, style=(f"bold {t('accent')}" if ph == active else ""))
+            row.append(f"{i + 1}. ", style=mstyle)
+            row.append(name, style=name_style)
             row.append(" " * gap)
             row.append(count, style="dim")
             phase_lines.append(row)
@@ -558,13 +608,14 @@ class SubagentTracker:
 
         # Правая панель: агенты активной фазы.
         active_bufs = phase_buffers(active)
+        active_done = sum(1 for b in active_bufs if b.status in ("done", "error"))
         right_w = max(28, frame_width - left_w - 3)
         agent_lines = [b.render_agent_row(max(20, right_w - 4)) for b in active_bufs]
         if not agent_lines:
             agent_lines = [Text("(no agents)", style="dim")]
         right_panel = Panel(
             Group(*agent_lines),
-            title=f"{active} · {len(active_bufs)} agents",
+            title=f"{active} {active_done}/{len(active_bufs)}",
             title_align="left",
             border_style=t("accent"),
             padding=(0, 1),

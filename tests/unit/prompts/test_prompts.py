@@ -32,7 +32,7 @@ def _build(**kw):
     # По умолчанию активируем все гейтящие скиллы — тесты ниже проверяют
     # СОДЕРЖИМОЕ блоков (web/orchestration/workflows), которые теперь гейтятся
     # скиллами. Сам гейтинг проверяется отдельно в TestSkillGatingInPrompt.
-    kw.setdefault("active_skills", {"web", "ssh", "subagents"})
+    kw.setdefault("active_skills", {"web", "ssh", "subagents"})  # noqa
     return build_system_prompt(**kw)
 
 class TestBuildSystemPrompt:
@@ -55,8 +55,7 @@ class TestBuildSystemPrompt:
             "S6. HARD CONSTRAINTS",
             "S7. AGENT RULES",
             "S7.3. ORCHESTRATION DECISION",
-            "S8. WORKFLOWS",
-            "S9. SUBAGENTS",
+            "S8. SUBAGENTS",
             "LANGUAGE",
         ):
             assert anchor in result, anchor
@@ -70,11 +69,10 @@ class TestBuildSystemPrompt:
         tools_list = bare.split("S5.0")[1].split("S5.1")[0]
         assert "web_search" not in tools_list
         assert "S5.2. WEB SEARCH" not in bare
-        # orchestration/workflows/subagents скрыты
+        # orchestration/subagents скрыты
         assert "ORCHESTRATION DECISION" not in bare
-        assert "S8. WORKFLOWS" not in bare
-        assert "S9. SUBAGENTS" not in bare
-        # ssh/subagent/workflow отсутствуют в списке инструментов
+        assert "S8. SUBAGENTS" not in bare
+        # ssh/subagent отсутствуют в списке инструментов
         assert "ssh" not in tools_list
         assert "subagent" not in tools_list
         # но базовые инструменты на месте
@@ -89,15 +87,14 @@ class TestBuildSystemPrompt:
         assert "web_search" in tools_list
         assert "S5.2. WEB SEARCH" in p
         # но subagents-блоки всё ещё скрыты
-        assert "S8. WORKFLOWS" not in p
+        assert "S8. SUBAGENTS" not in p
 
     def test_skill_gating_subagents_exposes_orchestration(self):
         p = build_system_prompt(
             native_tools=False, think_enabled=False, active_skills={"subagents"},
         )
         assert "ORCHESTRATION DECISION" in p
-        assert "S8. WORKFLOWS" in p
-        assert "S9. SUBAGENTS" in p
+        assert "S8. SUBAGENTS" in p
         # web остаётся скрытым
         assert "S5.2. WEB SEARCH" not in p
 
@@ -143,25 +140,14 @@ class TestBuildSystemPrompt:
             assert "TARGETED range" in result
             assert "Read files WHOLE." not in result
 
-    def test_workflows_block_teaches_pipeline_vs_barrier(self):
-        # The single abstract example was the cause of mis-built workflows.
-        # Both modes must spell out pipeline-as-default and barrier-as-exception.
-        for mode in (True, False):
-            result = _build(native_tools=mode)
-            assert "pipeline" in result
-            assert "barrier" in result
-            assert "adversarial verify" in result
-            assert "loop-until-dry" in result
-
     def test_for_subagent_drops_orchestration_and_user_blocks(self):
-        # Субагент не может звать subagent/workflow и пишет не юзеру, а главному
+        # Субагент не может звать subagent и пишет не юзеру, а главному
         # агенту. Эти блоки — повторяющийся мёртвый вес на каждой итерации.
         for native in (True, False):
             main = _build(native_tools=native, for_subagent=False)
             sub = _build(native_tools=native, for_subagent=True)
             # у главного есть, у субагента нет
-            assert "S8. WORKFLOWS" in main and "S8. WORKFLOWS" not in sub
-            assert "S9. SUBAGENTS" in main and "S9. SUBAGENTS" not in sub
+            assert "S8. SUBAGENTS" in main and "S8. SUBAGENTS" not in sub
             assert "ORCHESTRATION DECISION" in main
             assert "ORCHESTRATION DECISION" not in sub
             # субагент заметно короче
@@ -241,7 +227,7 @@ class TestDefaultSystemPrompt:
     def test_assemble_default_contains_header_and_anchors(self):
         result = _assemble_default_system_prompt()
         assert BASE_HEADER in result
-        assert "S9. SUBAGENTS" in result
+        assert "S8. SUBAGENTS" in result
         assert "{proof}" in result
 
 class TestBlockSelectors:

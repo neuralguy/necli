@@ -608,77 +608,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "workflow",
-            "description": (
-                "Run a Python workflow over subagents with real phases. "
-                "Use `phases` for inline workflows, or `script`/`path`/`name` for a Python "
-                "workflow file defining `async def run(ctx)`. Python DSL: ctx.phase(title), "
-                "ctx.log(text), ctx.agent(prompt, opts), await ctx.parallel([...]), "
-                "await ctx.pipeline(items, ...). Subagents always run in agent mode."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Workflow name or saved workflow name."},
-                    "goal": {"type": "string", "description": "Alias for workflow name."},
-                    "description": {"type": "string"},
-                    "isolate": {
-                        "type": "boolean",
-                        "description": "Default true: run workflow subagents in isolated git worktrees.",
-                    },
-                    "cache": {
-                        "type": "boolean",
-                        "description": "Default true. Reuse matching agent results when resume_from_run_id is set.",
-                    },
-                    "resume_from_run_id": {
-                        "type": "string",
-                        "description": "Previous workflow run id to reuse cached successful agent results from.",
-                    },
-                    "fail_fast": {
-                        "type": "boolean",
-                        "description": "If true, abort workflow on the first failed agent. Default false.",
-                    },
-                    "args": {
-                        "type": "object",
-                        "description": "User arguments exposed to Python workflow scripts as global `args`.",
-                    },
-                    "script": {
-                        "type": "string",
-                        "description": "Inline Python workflow script with meta dict and async def run(ctx).",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Path to a Python workflow file, or name under .data/workflows/.",
-                    },
-                    "meta": {"type": "object"},
-                    "phases": {
-                        "type": "array",
-                        "description": "Inline real phases. Each phase has title/name and tasks[] or agents[].",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {"type": "string"},
-                                "title": {"type": "string"},
-                                "detail": {"type": "string"},
-                                "tasks": {"type": "array", "items": {"type": "object"}},
-                                "agents": {"type": "array", "items": {"type": "object"}},
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "subagent",
             "description": (
                 "Run one subagent, a parallel fan-out, or a phased/pipeline orchestration "
                 "over many isolated subagents (git worktree each). For a simple task pass "
-                "`prompt`. For fan-out pass `tasks`. For workflow-style orchestration pass "
-                "`items`+`stages` or `phases`. Each task/stage can set role, preset, model, "
-                "label, phase, and depends_on. Subagents always run in agent mode."
+                "`prompt`. For fan-out pass `tasks`. For phased/pipeline orchestration pass "
+                "`items`+`stages` or `phases`. ⚠ When the work has SEVERAL sequential phases "
+                "(e.g. Scout → Synthesis → Implement → Verify), pass them ALL AT ONCE in a "
+                "single call via `phases`: [{name, tasks}, ...]. Do NOT call subagent once per "
+                "phase and wait — one call runs every phase in order automatically (phase N+1 "
+                "starts only after phase N finishes, agents inside a phase run in parallel) and "
+                "the live panel shows the whole pipeline, ticking each finished phase green. "
+                "Each task/stage can set role, preset, model, "
+                "label, phase, and depends_on. ALWAYS give each task BOTH: a `phase` (the "
+                "stage/group it belongs to, e.g. 'Scout', 'Implement', 'Verify') AND a `label` "
+                "(1-2 word name of WHAT it does, e.g. 'Auth API', 'Landing'). The panel groups "
+                "agents by phase and shows each by its label — without them it shows a bland "
+                "'Agents'/'Sub1'. Think in levels: phases → agents → per-agent config. "
+                "Subagents always run in agent mode."
             ),
             "parameters": {
                 "type": "object",
@@ -703,7 +650,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "enum": ["coder", "researcher", "reviewer", "planner", "coordinator"],
                     },
                     "preset": {"type": "string", "description": "Preset role name from .data/agents/."},
-                    "label": {"type": "string", "description": "Short display label for this subagent."},
+                    "label": {"type": "string", "description": "Required 1-2 word name of WHAT this subagent does (e.g. 'Auth API', 'Landing'), shown in the live panel."},
                     "phase": {"type": "string", "description": "Display phase name."},
                     "depends_on": {
                         "type": "array",
@@ -723,7 +670,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                     "enum": ["coder", "researcher", "reviewer", "planner", "coordinator"],
                                 },
                                 "preset": {"type": "string"},
-                                "label": {"type": "string"},
+                                "label": {"type": "string", "description": "1-2 word name of WHAT this task does (e.g. 'Auth API'), shown in the live panel."},
                                 "phase": {"type": "string"},
                                 "depends_on": {"type": "array", "items": {"type": "integer"}},
                             },
@@ -754,7 +701,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                     "enum": ["coder", "researcher", "reviewer", "planner", "coordinator"],
                                 },
                                 "preset": {"type": "string"},
-                                "label": {"type": "string"},
+                                "label": {"type": "string", "description": "1-2 word name of WHAT this stage does, shown in the live panel."},
                                 "phase": {"type": "string"},
                             },
                         },
@@ -762,8 +709,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "phases": {
                         "type": "array",
                         "description": (
-                            "Dependency-ordered phases. Each phase can have tasks[] and/or "
-                            "items[]+stages[]. By default each phase depends on the previous one."
+                            "Dependency-ordered phases run sequentially in ONE call — pass the "
+                            "whole pipeline here at once, never one phase per call. Each phase "
+                            "can have tasks[] (parallel agents inside it) and/or items[]+stages[]. "
+                            "By default each phase depends on the previous one (phase N+1 waits "
+                            "for phase N to finish), so order them as the execution order."
                         ),
                         "items": {
                             "type": "object",
@@ -986,7 +936,7 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
     звала бы его без надобности. plan доступен всегда (структурирование задач).
 
     active_skills — множество загруженных скиллов. Инструменты, гейтящиеся
-    скиллом (web_search/image_search→web, ssh→ssh, subagent/workflow→subagents),
+    скиллом (web_search/image_search→web, ssh→ssh, subagent→subagents),
     исключаются из схем, пока соответствующий скилл не активен. Так модель не
     видит инструмент, пока не загрузит его скилл.
     """

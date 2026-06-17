@@ -60,13 +60,13 @@ def global_memory_dir() -> Path:
     """
     return MEMORY_DIR / "_global"
 
-def _seed_bundled(name: str) -> None:
-    """Копирует встроенные skills/agents из бинарника в ~/.necli при первом запуске."""
+def _seed_bundled(rel: str) -> None:
+    """Копирует встроенные ресурсы из бинарника в ~/.necli при первом запуске."""
     if not getattr(sys, "frozen", False):
         return
     import shutil
-    src = resource_path("_bundle", name)
-    dst = BASE_DIR / name
+    src = resource_path("_bundle", *rel.split("/"))
+    dst = BASE_DIR / rel
     if not src.exists() or dst.exists():
         return
     try:
@@ -78,7 +78,10 @@ def _seed_bundled(name: str) -> None:
 def ensure_dirs() -> None:
     BASE_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    _seed_bundled("skills")
+    _seed_bundled("skills/default")
     _seed_bundled("agents")
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    # Дефолтные скиллы версионируются/поставляются с приложением; пользовательские
+    # лежат отдельно (создаются юзером, не попадают в git).
+    (SKILLS_DIR / "default").mkdir(parents=True, exist_ok=True)
+    (SKILLS_DIR / "user").mkdir(parents=True, exist_ok=True)
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
