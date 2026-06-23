@@ -231,8 +231,8 @@ def execute_call(call: ToolCall) -> ToolResult:
 
 # Канонический набор — config.READ_ONLY_TOOLS. Алиас "read_file" для
 # обратной совместимости с моделями, которые иногда называют его так.
-PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"read_file"})
-READ_ONLY_TOOLS = PLANNING_TOOLS
+PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"read_file", "poll", "skill", "web_search"})
+AUTONOMOUS_TOOLS = frozenset(PLANNING_TOOLS | {"shell", "subagent"})
 
 _PLANNING_TOOLS_HUMAN = ", ".join(sorted(_READ_ONLY_CANONICAL))
 
@@ -240,17 +240,21 @@ _PLANNING_TOOLS_HUMAN = ", ".join(sorted(_READ_ONLY_CANONICAL))
 def is_tool_allowed(tool_name: str, mode: str) -> bool:
     if mode == "agent":
         return True
+    if mode in ("autonomous", "auto"):
+        return tool_name in AUTONOMOUS_TOOLS
     return tool_name in PLANNING_TOOLS
 
 
-def build_blocked_result(call: ToolCall) -> ToolResult:
-    """Создаёт ToolResult для инструмента, запрещённого в planning mode."""
+def build_blocked_result(call: ToolCall, mode: str = "planning") -> ToolResult:
+    """Создаёт ToolResult для инструмента, запрещённого текущим режимом."""
+    allowed = AUTONOMOUS_TOOLS if mode in ("autonomous", "auto") else PLANNING_TOOLS
+    allowed_human = ", ".join(sorted(allowed - {"read_file"}))
     return ToolResult(
         name=call.tool_name,
         status="error",
         output=(
-            f"Tool '{call.tool_name}' is not allowed in planning mode. "
-            f"Only {_PLANNING_TOOLS_HUMAN} are available."
+            f"Tool '{call.tool_name}' is not allowed in {mode} mode. "
+            f"Only {allowed_human} are available."
         ),
         exit_code=1,
         command=call.command,

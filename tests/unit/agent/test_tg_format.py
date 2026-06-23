@@ -59,6 +59,15 @@ class TestItalic:
     def test_underscore_inside_word_not_italic(self):
         assert "<i>" not in md_to_tg_html("foo_bar_baz")
 
+    def test_multiplication_stars_not_italic(self):
+        assert md_to_tg_html("5 * 3 and 2 * 4") == "5 * 3 and 2 * 4"
+
+    def test_spaced_stray_stars_not_italic(self):
+        assert "<i>" not in md_to_tg_html("a * b and c * d here")
+
+    def test_spaced_stray_underscores_not_italic(self):
+        assert "<i>" not in md_to_tg_html("5 _ 3 and 2 _ 4")
+
 class TestCode:
     def test_inline_code(self):
         assert md_to_tg_html("`x = 1`") == "<code>x = 1</code>"

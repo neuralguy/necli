@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from tools.models import ToolCall, ToolResult
-from tools.subagent_specs import build_subagent_task_specs, parse_depends_on
+from tools.subagent_specs import build_subagent_task_specs
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +21,6 @@ def set_subagent_context(model: str, working_dir: str, event_handler=None):
     _model = model
     _working_dir = working_dir
     _event_handler = event_handler
-
-
-def get_subagent_context():
-    return _model, _working_dir, _event_handler
-
-
-def _parse_depends_on(raw):
-    return parse_depends_on(raw)
 
 
 def _task_from_spec(spec):

@@ -19,7 +19,7 @@ from logger import logger
 
 # Анти-перезапись цен: модели в этом списке имеют ручные цены в JSON-определениях,
 # при синке цены НЕ обновляются (источник истины — JSON).
-_PRESERVE_PRICES_PROVIDERS = {"openai", "anthropic", "google", "deepseek", "mistral", "xai"}
+_PRESERVE_PRICES_PROVIDERS = {"openai", "anthropic", "google", "xai"}
 
 
 async def _fetch_openai_compatible(base_url: str, headers: dict[str, str], timeout: int) -> list[dict]:
@@ -111,7 +111,7 @@ async def _fetch_ollama(base_url: str, timeout: int) -> list[dict]:
     return result
 
 
-_LOCAL_PROVIDER_IDS = {"ollama", "lmstudio", "llamacpp", "vllm"}
+_LOCAL_PROVIDER_IDS = {"ollama", "lmstudio"}
 
 
 def _is_local_url(base_url: str) -> bool:

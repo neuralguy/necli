@@ -16,8 +16,6 @@ class TestDefaults:
         assert ctx.interrupted is False
         assert ctx.hard_interrupted is False
         assert ctx.mode == "agent"
-        assert ctx.site_id == ""
-        assert ctx.page_mode == "chat"
         assert ctx.session_id == ""
         assert ctx.last_fs_snapshot is None
 
@@ -67,12 +65,17 @@ class TestToggleMode:
         assert ctx.toggle_mode() == "planning"
         assert ctx.mode == "planning"
 
-    def test_planning_to_agent(self):
+    def test_planning_to_autonomous(self):
         ctx = AgentContext(mode="planning")
+        assert ctx.toggle_mode() == "autonomous"
+
+    def test_autonomous_to_agent(self):
+        ctx = AgentContext(mode="autonomous")
         assert ctx.toggle_mode() == "agent"
 
-    def test_double_toggle(self):
+    def test_full_cycle(self):
         ctx = AgentContext(mode="agent")
+        ctx.toggle_mode()
         ctx.toggle_mode()
         ctx.toggle_mode()
         assert ctx.mode == "agent"

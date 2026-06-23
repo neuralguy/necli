@@ -197,10 +197,7 @@ def _get_context_tokens(summary_data: dict, session_dir) -> int:
 
 
 def _preview_title(content: str) -> str:
-    content = " ".join(str(content).split())
-    if not content:
-        return ""
-    return content[:237] + "..." if len(content) > 240 else content
+    return " ".join(str(content).split())
 
 
 def _first_user_message_title(msgs: list, fallback: str) -> str:
@@ -221,6 +218,10 @@ def _read_summary(session_dir) -> Optional[dict]:
         created = data.get("created_at", 0)
         updated = data.get("updated_at", created)
         title = data.get("title", "")
+        if str(title).rstrip().endswith(("...", "…")):
+            hist = _read_summary_from_history(session_dir)
+            if hist and hist.get("title"):
+                title = hist["title"]
 
         return {
             "id": data.get("id", session_dir.name),

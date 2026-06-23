@@ -4,8 +4,8 @@
 
     ---
     type: feedback
-    created: 2026-06-11
-    updated: 2026-06-11
+    created: 2026-06-11T14:30:00+03:00
+    updated: 2026-06-11T14:30:00+03:00
     ---
     Лид-строка с самим правилом.
 
@@ -138,13 +138,15 @@ def write_memory(
     *,
     mtype: str = "project",
     today: str = "",
+    timestamp: str = "",
     working_dir: str | None = None,
     scope: str = "project",
 ) -> MemoryFile:
     """Создаёт или перезаписывает memory-файл. Возвращает MemoryFile.
 
-    today — абсолютная дата (передаётся снаружи; модуль не дёргает системные
-    часы намеренно, чтобы быть детерминированным в тестах/воркфлоу).
+    timestamp — абсолютные дата+время добавления/обновления. today оставлен для
+    обратной совместимости date-only тестов и старых call-site'ов. Модуль не
+    дёргает системные часы, чтобы быть детерминированным в тестах/воркфлоу.
     scope="project" пишет в память проекта, scope="global" — в кросс-проектную.
     """
     if mtype not in MEMORY_TYPES:
@@ -153,19 +155,39 @@ def write_memory(
     mdir.mkdir(parents=True, exist_ok=True)
     path = mdir / _safe_filename(name)
 
-    created = today
+    now = timestamp or today
+    created = now
     existing = read_memory(path) if path.exists() else None
     if existing is not None and existing.created:
         created = existing.created
 
+    extra = dict(existing.extra) if existing is not None else {}
     body = (body or "").strip()[:_MAX_FILE_CHARS]
-    mf = MemoryFile(path=path, type=mtype, created=created, updated=today, body=body)
+    mf = MemoryFile(path=path, type=mtype, created=created, updated=now, body=body, extra=extra)
     try:
         path.write_text(mf.render(), encoding="utf-8")
         logger.info("memory: wrote {} (type={})", path.name, mtype)
     except OSError as e:
         logger.error("memory: write failed {}: {}", path, e)
+        raise
     return mf
+
+
+def _is_pinned(f: MemoryFile) -> bool:
+    pinned = f.extra.get("pinned", "").strip().lower()
+    priority = f.extra.get("priority", "").strip().lower()
+    return pinned in ("1", "true", "yes", "on") or priority in ("pinned", "high", "critical")
+
+
+def _time_suffix(f: MemoryFile) -> str:
+    details = []
+    if _is_pinned(f):
+        details.append("pinned=true")
+    if f.created:
+        details.append(f"created={f.created}")
+    if f.updated:
+        details.append(f"updated={f.updated}")
+    return f" ({', '.join(details)})" if details else ""
 
 
 def format_memory_block(working_dir: str | None = None, *, max_chars: int = 6_000) -> str:
@@ -194,19 +216,29 @@ def format_memory_block(working_dir: str | None = None, *, max_chars: int = 6_00
         "(тем же scope).",
         "",
     ]
+    entries: list[tuple[str, MemoryFile]] = [
+        *[("global", f) for f in global_files],
+        *[("project", f) for f in project_files],
+    ]
+    pinned_entries = [(scope_label, f) for scope_label, f in entries if _is_pinned(f)]
+    regular_entries = [(scope_label, f) for scope_label, f in entries if not _is_pinned(f)]
+
+    def _chunk(scope_label: str, f: MemoryFile) -> str:
+        tag = f"{scope_label}/{f.type}" if scope_label == "global" else f.type
+        return f"### [{tag}] {f.name}{_time_suffix(f)}\n{f.body}\n"
+
+    for scope_label, f in pinned_entries:
+        parts.append(_chunk(scope_label, f))
+
     used = 0
     truncated = False
-    for scope_label, files in (("global", global_files), ("project", project_files)):
-        for f in files:
-            tag = f"{scope_label}/{f.type}" if scope_label == "global" else f.type
-            chunk = f"### [{tag}] {f.name}\n{f.body}\n"
-            if used + len(chunk) > max_chars:
-                truncated = True
-                break
-            parts.append(chunk)
-            used += len(chunk)
-        if truncated:
+    for scope_label, f in regular_entries:
+        chunk = _chunk(scope_label, f)
+        if used + len(chunk) > max_chars:
+            truncated = True
             break
+        parts.append(chunk)
+        used += len(chunk)
     if truncated:
         parts.append("… (память усечена по лимиту)")
     parts.append("</persistent_memory>")
@@ -218,5 +250,9 @@ def format_manifest(working_dir: str | None = None) -> str:
     files = scan_memories(working_dir, scope="all")
     if not files:
         return ""
-    lines = [f"- {f.name} (type={f.type}): {f.body.splitlines()[0][:80] if f.body else ''}" for f in files]
+    lines = [
+        f"- {f.name} (type={f.type}{_time_suffix(f)}): "
+        f"{f.body.splitlines()[0][:80] if f.body else ''}"
+        for f in files
+    ]
     return "\n".join(lines)

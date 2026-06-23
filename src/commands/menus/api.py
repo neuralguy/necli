@@ -22,18 +22,13 @@ _KNOWN_PROVIDERS = {
     "anthropic": ("Anthropic", "https://api.anthropic.com", "anthropic", "anthropic"),
     "google": ("Google Gemini", "https://generativelanguage.googleapis.com", "google", "google"),
     "openrouter": ("OpenRouter", "https://openrouter.ai/api/v1", "openai_compatible", "openai"),
-    "together": ("Together AI", "https://api.together.xyz/v1", "openai_compatible", "openai"),
-    "fireworks": ("Fireworks AI", "https://api.fireworks.ai/inference/v1", "openai_compatible", "openai"),
     "groq": ("Groq", "https://api.groq.com/openai/v1", "openai_compatible", "openai"),
-    "deepseek": ("DeepSeek", "https://api.deepseek.com/v1", "openai_compatible", "openai"),
-    "mistral": ("Mistral AI", "https://api.mistral.ai/v1", "openai_compatible", "openai"),
+    "xai": ("xAI Grok", "https://api.x.ai/v1", "openai_compatible", "openai"),
 }
 
 _LOCAL_PROVIDERS = {
     "ollama":    ("Ollama (local)",            "http://localhost:11434/v1"),
     "lmstudio":  ("LM Studio (local)",         "http://localhost:1234/v1"),
-    "llamacpp":  ("llama.cpp server (local)",  "http://localhost:8080/v1"),
-    "vllm":      ("vLLM (local)",              "http://localhost:8000/v1"),
 }
 
 
@@ -84,17 +79,17 @@ def _render_api_table(providers: list, active_api: str, selected: int, width: in
         row_bg = Style(bgcolor=bg_select) if is_sel else Style.null()
 
         name_cell = Text(marker + p["name"], style=name_style)
-        url_cell = Text(_shorten_url(p.get("base_url") or ""), style="dim")
+        url_cell = Text(_shorten_url(p.get("base_url") or ""), style="bold white" if is_sel else "dim")
         models_cell = Text(str(models_count) if models_count else "—",
-                           style="cyan" if models_count else "dim")
+                           style="bold white" if is_sel else ("cyan" if models_count else "dim"))
         if is_active:
-            status_text = Text("● " + _("common.active"), style="green")
+            status_text = Text("● " + _("common.active"), style="bold white" if is_sel else "green")
         elif has_key and models_count:
-            status_text = Text(_("common.ready"), style="dim")
+            status_text = Text(_("common.ready"), style="bold white" if is_sel else "dim")
         elif not has_key:
-            status_text = Text(_("api.status_no_key"), style="dim red")
+            status_text = Text(_("api.status_no_key"), style="bold white" if is_sel else "dim red")
         else:
-            status_text = Text(_("api.status_no_models"), style="dim yellow")
+            status_text = Text(_("api.status_no_models"), style="bold white" if is_sel else "dim yellow")
 
         table.add_row(name_cell, url_cell, models_cell, status_text, style=row_bg)
 
@@ -399,20 +394,15 @@ def _api_add_menu():
         {"label": "Anthropic", "hint": "api.anthropic.com"},
         {"label": "Google Gemini", "hint": "generativelanguage.googleapis.com"},
         {"label": "OpenRouter", "hint": "openrouter.ai"},
-        {"label": "DeepSeek", "hint": "api.deepseek.com"},
         {"label": "Groq", "hint": "api.groq.com"},
-        {"label": "Together AI", "hint": "api.together.xyz"},
-        {"label": "Fireworks AI", "hint": "api.fireworks.ai"},
-        {"label": "Mistral AI", "hint": "api.mistral.ai"},
+        {"label": "xAI Grok", "hint": "api.x.ai"},
         {"label": "Ollama 🏠", "hint": f"localhost:11434 · {no_key}"},
         {"label": "LM Studio 🏠", "hint": f"localhost:1234 · {no_key}"},
-        {"label": "llama.cpp server 🏠", "hint": f"localhost:8080 · {no_key}"},
-        {"label": "vLLM 🏠", "hint": f"localhost:8000 · {no_key}"},
         {"label": _("api.custom"), "hint": _("api.any_url")},
     ]
 
-    cloud_ids = ["openai", "anthropic", "google", "openrouter", "deepseek", "groq", "together", "fireworks", "mistral"]
-    local_ids = ["ollama", "lmstudio", "llamacpp", "vllm"]
+    cloud_ids = ["openai", "anthropic", "google", "openrouter", "groq", "xai"]
+    local_ids = ["ollama", "lmstudio"]
 
     choice = select_menu(items, title=_("api.add_title"))
     if choice is None:

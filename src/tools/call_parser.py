@@ -35,17 +35,19 @@ _DIFF_TOOLS = frozenset({"apply_diff"})
 # роняет одно из трёх. ЕДИНЫЙ ИСТОЧНИК ИСТИНЫ — эти фрагменты; их используют ВСЕ
 # регулярки парсера (полный/truncated/strip/plan/stream), поэтому ::call с двумя
 # двоеточиями исполняется одинаково на всех путях, а не только в финальном
-# разборе. Открытие ОБЯЗАТЕЛЬНО якорим к началу строки (^[ \t]*) — иначе два
-# двоеточия задели бы мид-строчный код вроде `std::call_once`. Три двоеточия
-# исторически матчились в любом месте строки; начало-строки строже и безопаснее.
-_OPEN_MARKER = r"^[ \t]*:{2,3}call"
+# разборе. `::call` ОБЯЗАТЕЛЬНО якорим к началу строки (^[ \t]*) — иначе два
+# двоеточия задели бы мид-строчный код вроде `std::call_once`. Канонический
+# `:::call` разрешаем и в середине строки: модель иногда пишет пояснение и сразу
+# после точки начинает fenced-вызов без перевода строки.
+_OPEN_MARKER = r"(?:^[ \t]*:{2,3}call|(?<!:):::call)"
 _CLOSE_MARKER = r"call:{2,3}"
+_CLOSE_SUFFIX = r"[ \t]*(?=\n|$|[^\s])"
 
 _CALL_BLOCK_RE = re.compile(
     _OPEN_MARKER + r"[ \t]+(?P<name>[a-zA-Z_]\w*)"
     r"(?P<attrs>[^\n]*)\n"
     r"(?P<body>.*?)"
-    r"(?:\n|^)" + _CLOSE_MARKER + r"[ \t]*(?:\n|$)",
+    r"(?:\n|^)" + _CLOSE_MARKER + _CLOSE_SUFFIX,
     re.DOTALL | re.MULTILINE,
 )
 
@@ -59,7 +61,7 @@ _CALL_BLOCK_TRUNCATED_RE = re.compile(
 _STRIP_CALL_BLOCK_RE = re.compile(
     _OPEN_MARKER + r"[ \t]+\w+[^\n]*\n"
     r".*?"
-    r"(?:\n|^)" + _CLOSE_MARKER + r"[ \t]*(?:\n|$)",
+    r"(?:\n|^)" + _CLOSE_MARKER + _CLOSE_SUFFIX,
     re.DOTALL | re.MULTILINE,
 )
 _STRIP_CALL_TRUNCATED_RE = re.compile(

@@ -5,9 +5,9 @@
   "base_url": "https://api.anthropic.com",
   "api_format": "anthropic",
   "models": [
-    {"id": "claude-opus-4-7", "display_name": "Claude Opus 4.7", "context_window": 200000, "input_price": 15.00, "output_price": 75.00},
-    {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "context_window": 200000, "input_price": 3.00, "output_price": 15.00},
-    {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5", "context_window": 200000, "input_price": 0.80, "output_price": 4.00}
+    {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8", "context_window": 1000000, "input_price": 5.00, "output_price": 25.00},
+    {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "context_window": 1000000, "input_price": 3.00, "output_price": 15.00},
+    {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5", "context_window": 200000, "input_price": 1.00, "output_price": 5.00}
   ],
   "default_model": "claude-sonnet-4-6"
 }

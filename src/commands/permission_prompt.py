@@ -217,6 +217,11 @@ def confirm_tool_call(call: tools.ToolCall) -> bool:
     ]
     choice = select_menu(items, title=_t("perm.run_q", tool=label))
 
+    # Стираем шапку (пустая строка + строка ⚠ <label> <preview>),
+    # чтобы после решения в выводе не оставалось ничего от подтверждения.
+    from ui.menu import clear_lines
+    clear_lines(2)
+
     # Маппинг индексов на действия.
     if choice is None or choice == 4:  # esc/cancel или «deny once»
         return False

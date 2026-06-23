@@ -71,3 +71,20 @@ class TestEnsureDirs:
         monkeypatch.setattr(sys, "frozen", False, raising=False)
         # must not raise
         paths._seed_bundled("skills")
+
+    def test_seed_bundled_swallows_oserror(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        base = tmp_path / ".necli"
+        monkeypatch.setattr(paths, "BASE_DIR", base, raising=False)
+        src = tmp_path / "_bundle" / "skills" / "default"
+        src.mkdir(parents=True)
+        monkeypatch.setattr(paths, "resource_path", lambda *parts: src)
+
+        import shutil
+
+        def _boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(shutil, "copytree", _boom)
+        # OSError during copytree must be logged, not propagated.
+        paths._seed_bundled("skills/default")

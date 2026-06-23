@@ -6,7 +6,6 @@ import re
 from logger import logger
 from tools.models import ToolCall, ToolResult
 from tools._paths import resolve_path, clean_path
-from tools.file_checks import _run_ruff_on_python_file
 from tools.file_ops.read import invalidate_read_cache
 
 _resolve = resolve_path
@@ -99,7 +98,10 @@ def write_file(call: ToolCall) -> ToolResult:
         action = "overwritten" if existed else "created"
         msg = f"✓ {path_str}: {action}, {lines} lines"
         msg += _check_unbalanced_fences(content)
-        msg += _run_ruff_on_python_file(path, path_str)
+        if path.suffix == ".py":
+            from tools.auto_checks import queue_python_auto_check
+            if queue_python_auto_check(path, path_str):
+                msg += "\n↻ auto-check queued: lsp_diagnostics + ruff"
 
         return ToolResult(
             name="write_file",
@@ -163,7 +165,10 @@ def create_file(call: ToolCall) -> ToolResult:
         logger.info("create_file: {} ({}b, {} lines)", path_str, size, lines)
         msg = f"✓ Created: {path_str} ({lines} lines)"
         msg += _check_unbalanced_fences(content)
-        msg += _run_ruff_on_python_file(path, path_str)
+        if path.suffix == ".py":
+            from tools.auto_checks import queue_python_auto_check
+            if queue_python_auto_check(path, path_str):
+                msg += "\n↻ auto-check queued: lsp_diagnostics + ruff"
 
         return ToolResult(
             name="create_file",

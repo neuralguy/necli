@@ -9,7 +9,8 @@ from skills import manager
 def _isolated(isolated_data, monkeypatch):
     skills_dir = isolated_data / "skills"
     skills_dir.mkdir(exist_ok=True)
-    monkeypatch.setattr(manager, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(manager, "DEFAULT_SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(manager, "USER_SKILLS_DIR", skills_dir)
     manager.reset_active_skills()
     yield
     manager.reset_active_skills()

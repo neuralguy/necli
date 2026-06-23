@@ -5,10 +5,8 @@
 
 Что НИКОГДА не трогаем:
   - конфиги и реестры: config.json, apis.json, ui.json, hooks.json,
-    *_servers.json, api_providers.json, pinned_sessions.json, diff_target.txt,
-    docx_reference.docx, history, _git_stats.py
+    *_servers.json, pinned_sessions.json
   - каталоги пользовательского контента: agents/, skills/, memory/
-  - undo-репозиторий ТЕКУЩЕЙ рабочей директории
   - закреплённые (pinned) сессии и последние KEEP_RECENT_SESSIONS сессий
 
 Безопасность превыше всего: любая ошибка логируется и проглатывается — сбой
@@ -60,6 +58,7 @@ def maybe_cleanup() -> None:
 def run_cleanup() -> int:
     """Выполняет очистку. Возвращает примерно сколько байт освобождено."""
     freed = 0
+    freed += _clean_root_junk()
     freed += _clean_sessions()
     freed += _clean_runs("subagents", RUNS_MAX_AGE_DAYS)
     for name in ("clipboard_images", "docx_shots", "docx_sources", "uploads"):
@@ -68,6 +67,22 @@ def run_cleanup() -> int:
     freed += _clean_stale_undo()
     return freed
 
+
+# ── root junk ────────────────────────────────────────────────────────────────
+
+def _clean_root_junk() -> int:
+    freed = 0
+    for name in (
+        "history",
+        "_git_stats.py",
+        "api_providers.json",
+        "diff_target.txt",
+        "docx_reference.docx",
+    ):
+        path = BASE_DIR / name
+        if path.is_file():
+            freed += _unlink(path)
+    return freed
 
 # ── sessions ─────────────────────────────────────────────────────────────────
 

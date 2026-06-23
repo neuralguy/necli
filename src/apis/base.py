@@ -101,6 +101,7 @@ class BaseProvider:
         timeout: int = 120,
         max_retries: int = 3,
         streaming: bool = True,
+        reasoning_effort: Optional[str] = None,
     ) -> None:
         self.model = model
         self.temperature = temperature
@@ -108,6 +109,7 @@ class BaseProvider:
         self.timeout = timeout
         self.max_retries = max_retries
         self.streaming = streaming
+        self.reasoning_effort = reasoning_effort
 
         # Переопределяются наследниками / фабриками
         self._api_url: str = ""
@@ -154,6 +156,10 @@ class BaseProvider:
         }
         if (max_tokens := kwargs.get("max_tokens", self.max_tokens)) is not None:
             params["max_tokens"] = max_tokens
+        
+        effort = kwargs.get("reasoning_effort", self.reasoning_effort)
+        if effort:
+            params["reasoning_effort"] = effort
         return params
 
     # ── Главный API ──

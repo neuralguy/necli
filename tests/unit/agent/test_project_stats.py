@@ -106,38 +106,53 @@ class TestStepTrackerRecord:
 
     def test_patch_file_counts_added_and_removed(self):
         t = StepTracker()
-        output = "+ 42  new code\n- 17  old code\n  unchanged\n"
+        output = "✓ a.py updated (3 changed, +42 added, -17 removed)\n+ 99  code\n"
         t.record("patch_file", output, {"path": "a.py"})
-        assert t.lines_added == 1
-        assert t.lines_removed == 1
+        assert t.lines_added == 42
+        assert t.lines_removed == 17
 
-    def test_patch_file_ignores_ellipsis_markers(self):
+    def test_patch_file_added_only(self):
         t = StepTracker()
-        output = "+ ...\n- ...\n+ 1  real\n"
-        t.record("patch_file", output, {"path": "a.py"})
-        assert t.lines_added == 1
+        t.record("patch_file", "✓ a.py updated (+5 added)", {"path": "a.py"})
+        assert t.lines_added == 5
         assert t.lines_removed == 0
 
-    def test_patch_file_ignores_non_numbered_plus_lines(self):
+    def test_patch_file_removed_only(self):
         t = StepTracker()
-        output = "+ hello world\n- goodbye\n"
-        t.record("patch_file", output, {"path": "a.py"})
+        t.record("patch_file", "✓ a.py updated (-8 removed)", {"path": "a.py"})
+        assert t.lines_added == 0
+        assert t.lines_removed == 8
+
+    def test_patch_file_changed_only_no_delta(self):
+        t = StepTracker()
+        t.record("patch_file", "✓ a.py updated (3 changed)", {"path": "a.py"})
         assert t.lines_added == 0
         assert t.lines_removed == 0
 
+    def test_patch_file_single_line_singular(self):
+        t = StepTracker()
+        t.record("patch_file", "✓ a.py updated (+1 added, -1 removed)", {"path": "a.py"})
+        assert t.lines_added == 1
+        assert t.lines_removed == 1
+
     def test_create_file_parses_lines(self):
         t = StepTracker()
-        t.record("create_file", "✓ Создан: a.py (120 bytes, 7 строк)", {"path": "a.py"})
+        t.record("create_file", "✓ Created: a.py (7 lines)", {"path": "a.py"})
         assert t.lines_added == 7
+
+    def test_create_file_single_line_singular(self):
+        t = StepTracker()
+        t.record("create_file", "✓ Created: a.py (1 line)", {"path": "a.py"})
+        assert t.lines_added == 1
 
     def test_write_file_created_parses_lines(self):
         t = StepTracker()
-        t.record("write_file", "✓ a.py: создан (80 bytes), 5 строк", {"path": "a.py"})
+        t.record("write_file", "✓ a.py: created, 5 lines", {"path": "a.py"})
         assert t.lines_added == 5
 
     def test_write_file_overwrite_no_line_delta(self):
         t = StepTracker()
-        t.record("write_file", "✓ a.py: перезаписан (10 → 20 bytes), 5 строк", {"path": "a.py"})
+        t.record("write_file", "✓ a.py: overwritten, 5 lines", {"path": "a.py"})
         assert t.lines_added == 0
 
 class TestStepTrackerState:

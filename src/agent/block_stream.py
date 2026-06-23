@@ -30,8 +30,6 @@ _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _HEADING_RE = re.compile(r"^#{1,6}\s")
 _HR_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
 _LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+")
-_QUOTE_RE = re.compile(r"^\s*>")
-_TABLE_RE = re.compile(r"^\s*\|.*\|\s*$")
 
 
 def _split_into_blocks(text: str) -> list[str]:

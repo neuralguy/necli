@@ -8,6 +8,17 @@ def _normalize_line(line: str) -> str:
     """Нормализует строку: табы → пробелы, схлопывает множественные пробелы."""
     return ' '.join(line.expandtabs(_TAB_WIDTH).split())
 
+def _detect_eol(lines: list[str]) -> str:
+    """Определяет стиль перевода строки в блоке (CRLF/CR/LF) по первой строке с переносом."""
+    for ln in lines:
+        if ln.endswith('\r\n'):
+            return '\r\n'
+        if ln.endswith('\n'):
+            return '\n'
+        if ln.endswith('\r'):
+            return '\r'
+    return '\n'
+
 
 def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
     """Ищет find в text с нормализацией пробелов/отступов.
@@ -48,10 +59,11 @@ def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
                     ):
                         return text, False
                     replace_lines = [ln[cut:] if ln.strip() else ln for ln in replace_lines]
-            new_replace = '\n'.join(replace_lines)
+            eol = _detect_eol(text_lines[i:i + len(find_lines)])
+            new_replace = eol.join(replace_lines)
             last_line = text_lines[i + len(find_lines) - 1]
-            if last_line.endswith('\n') and not new_replace.endswith('\n'):
-                new_replace += '\n'
+            if last_line.endswith('\n') and not new_replace.endswith(('\n', '\r')):
+                new_replace += eol
             result_lines = text_lines[:i] + [new_replace] + text_lines[i + len(find_lines):]
             return ''.join(result_lines), True
 
@@ -71,10 +83,11 @@ def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
                     # сюда попадаем только когда та не нашла совпадения.
                     pad = ' ' * orig_indent
                     replace_lines = [pad + ln.lstrip() if ln.strip() else ln for ln in replace_lines]
-                new_replace = '\n'.join(replace_lines)
+                eol = _detect_eol(text_lines[i:i + len(strip_find)])
+                new_replace = eol.join(replace_lines)
                 last_line = text_lines[i + len(strip_find) - 1]
-                if last_line.endswith('\n') and not new_replace.endswith('\n'):
-                    new_replace += '\n'
+                if last_line.endswith('\n') and not new_replace.endswith(('\n', '\r')):
+                    new_replace += eol
                 result_lines = text_lines[:i] + [new_replace] + text_lines[i + len(strip_find):]
                 return ''.join(result_lines), True
 

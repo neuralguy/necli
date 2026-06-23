@@ -24,24 +24,12 @@ MAX_OUTPUT = 1500
 _TG_INVOCATION_LIMIT = 600
 _TG_TOOL_OUT_LIMIT = 1200
 
-# Краткие человекочитаемые названия аргумента для заголовка tool-вызова.
-_TOOL_ARG_KEY = {
-    "read_files": "path", "read_file": "path", "write_file": "path",
-    "patch_file": "path", "create_file": "path", "delete_file": "path",
-    "rename_file": "path", "copy_file": "src", "move_file": "src",
-    "ls": "path", "tree": "path", "mkdir": "path", "rmdir": "path",
-    "find_files": "pattern", "grep_files": "pattern",
-    "shell": "command", "web_search": "query", "skill": "name",
-}
-
-
 # Регексы для извлечения статистики строк из output файловых инструментов.
 # Инструменты уже считают строки — переиспользуем их цифры, не пересчитываем.
 _RE_PATCH_CHANGED = re.compile(r"(\d+)\s+changed")
 _RE_PATCH_ADDED = re.compile(r"\+(\d+)\s+added")
 _RE_PATCH_REMOVED = re.compile(r"-(\d+)\s+removed")
 _RE_WRITE_LINES = re.compile(r"(\d+)\s+lines")
-
 
 def _tool_label_with_emoji(tool_name: str) -> str:
     """`📖 Read` — те же эмодзи и подписи, что в CLI (из config/ui.py).
@@ -64,7 +52,6 @@ def _tool_label_with_emoji(tool_name: str) -> str:
     emoji = (entry.get("emoji") or "").strip()
     label = entry.get("label") or tool_name
     return f"{emoji} {label}".strip()
-
 
 def _line_stats(result: tools.ToolResult) -> str:
     """Компактная сводка строк по файловой операции (без содержимого).
@@ -92,7 +79,6 @@ def _line_stats(result: tools.ToolResult) -> str:
         return f" · {m.group(1)} lines" if m else ""
     return ""
 
-
 def _trunc(text: str, limit: int) -> str:
     if not text:
         return ""
@@ -104,35 +90,9 @@ def _trunc(text: str, limit: int) -> str:
     tail_str = text[len(text) - tail:] if tail > 0 else ""
     return f"{text[:head]}\n…(truncated {len(text) - limit} chars)…\n{tail_str}"
 
-
 def _html_escape(text: str) -> str:
     import html
     return html.escape(text, quote=False)
-
-
-def _arg_hint(call: tools.ToolCall) -> str:
-    """Короткая подсказка по главному аргументу инструмента (как arg в CLI-заголовке)."""
-    args = call.args or {}
-    key = _TOOL_ARG_KEY.get(call.tool_name)
-    val = args.get(key) if key else None
-    if val is None:
-        for k in ("path", "command", "query", "pattern", "name", "url"):
-            if k in args:
-                val = args[k]
-                break
-    if val is None:
-        return ""
-    if isinstance(val, (list, tuple)):
-        if not val:
-            return ""
-        first = str(val[0])
-        extra = f" +{len(val) - 1}" if len(val) > 1 else ""
-        val = f"{first}{extra}"
-    sval = str(val).strip()
-    # Многострочное (shell-команда) — только первая строка.
-    if "\n" in sval:
-        sval = sval.split("\n", 1)[0] + " …"
-    return _trunc(sval, 100)
 
 def _format_invocation(call: tools.ToolCall) -> str:
     """Человекочитаемое представление вызова инструмента для блока кода в TG.
@@ -161,7 +121,6 @@ def _format_invocation(call: tools.ToolCall) -> str:
         else:
             lines.append(f"  {k}: {_trunc(sval, 200)}")
     return "\n".join(lines)
-
 
 class TelegramEventHandler:
     """Зеркало событий агента в Telegram. Делегирует базовому handler'у."""

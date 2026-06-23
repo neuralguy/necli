@@ -9,10 +9,6 @@ CONTINUE_MESSAGE = (
 # следующем ходу и понимает, что её прервали, а не она сама завершила работу.
 INTERRUPTED_NOTICE = "[Execution stopped by the user.]"
 
-REPROMPT_SUFFIX = """IMPORTANT: You lost focus. Here is the plan you created earlier and have NOT finished:
-{plan_context}
-Continue with the remaining steps RIGHT NOW. Call the tools you need. Do NOT ask questions. Do NOT stop. Reply in the user's language."""
-
 # Маркеры блока истории диалога, инжектируемого в первое сообщение / при
 # продолжении (agent/messages.py, agent/loop.py).
 CONVERSATION_CONTEXT_HEADER = "--- CONVERSATION CONTEXT ---"

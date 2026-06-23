@@ -21,12 +21,9 @@ from planner import (
 from agent.think import ThinkLog, parse_think_blocks, parse_partial_thought, _THINK_BLOCK_RE
 from models import get_pricing
 from session.tokens import count_tokens
-from ui.formatting import format_elapsed, format_tokens, format_cost
+from ui.formatting import format_tokens, format_cost
 from agent.context import AgentContext
 from agent.sanitizer import sanitize_response
-from agent.display import (
-    render_md_panel as _render_md_panel,
-)
 from config.ui import ui
 from agent.stream_parser import (
     _find_next_tool_start, _find_next_complete_tool,
@@ -42,7 +39,6 @@ from agent.block_stream import BlockStreamer
 
 logger = logging.getLogger(__name__)
 console = Console()
-_SEP = " \u00b7 "
 
 
 def print_worked_footer(ctx, fallback_elapsed: float = 0.0) -> None:
@@ -131,12 +127,10 @@ class LiveStream:
         self._tcycle = cycle(THINKING_FRAMES)
         self._wcycle = cycle(WRITING_FRAMES)
         self._interrupt_tick = 0
-        self._need_live_restart = False
         self._last_block_end_time = time.monotonic()
         self._spin_last_tick = 0.0
         self._spin_tframe = next(self._tcycle)
         self._spin_wframe = next(self._wcycle)
-        self._stats_cache: tuple[float, str] = (0.0, "")
         self._early_abort: bool = False
         self._finalizing: bool = False
         # Compact-режим: поблочный markdown-стример (Claude Code-style).
@@ -145,7 +139,6 @@ class LiveStream:
         self._block_streamer = BlockStreamer(
             console, refresh_per_second=int(ui.get("live_stream.refresh_per_second", 8)),
         )
-        self._compact_thinking_printed: bool = False
         # Конец уже сохранённого в RenderStore compact-текста (для Ctrl+O).
         self._stored_text_end: int = 0
         # Был ли в этом turn'е напечатан хоть один блок в scrollback. Нужен
@@ -189,29 +182,6 @@ class LiveStream:
     def _interrupt_dots(self) -> int:
         self._interrupt_tick += 1
         return (self._interrupt_tick // 3) % 3 + 1
-
-    def _stats_text(self) -> str:
-        now = time.monotonic()
-        last_at, cached_stats = self._stats_cache
-        if cached_stats and now - last_at < 0.3:
-            return cached_stats
-        elapsed = now - self.start_time
-        ot = count_tokens(self.buffer, self.model)
-        ttfb = format_elapsed(self._first_chunk_time) if self._first_chunk_time else "\u2014"
-        p = [
-            f"TTFB {ttfb}",
-            format_elapsed(elapsed),
-            f"~{format_tokens(ot)} tokens",
-        ]
-        if self.session:
-            from models import get_pricing
-            _, price_out = get_pricing(self.model)
-            current_out_cost = ot * price_out / 1_000_000
-            est_cost = self.session.total_cost + current_out_cost
-            p.append(f"\u2248{format_cost(est_cost)}")
-        result = _SEP.join(p)
-        self._stats_cache = (now, result)
-        return result
 
     def _scan_tool_start(self, text: str, offset: int):
         return None if self._native_tools else _find_next_tool_start(text, offset)
@@ -355,30 +325,13 @@ class LiveStream:
             logger.debug("render_reasoning_panel failed", exc_info=True)
         self._reasoning_printed = True
 
-    def _print_text_block(self, text: str, subtitle: str = ""):
-        text = self._clean(text)
-        if not text or not text.strip():
-            return
-        stripped = text.strip()
-        if stripped.startswith("@too") or stripped.startswith("```\n@too"):
-            return
-        if getattr(self.ctx, "silent_console", False):
-            return
-        self._flush_reasoning_static()
-        self._print_think_static_once()
-        try:
-            console.print(_render_md_panel(text, subtitle=subtitle, message_num=self.message_num))
-        except Exception:
-            logger.debug("render_md_panel failed", exc_info=True)
-            console.print(text)
-
     def _advance_past_think_blocks(self):
         """Move scan cursor past ```call think``` blocks WITHOUT breaking Live.
 
-        Раньше тут вызывались _stop_live() + _print_text_block(text_before) — это
-        приводило к «морганию»: текст до think-блока «застывал» в отдельной
-        Response-панели, плюс _print_text_block печатал static thinking-panel и
-        прятал live-строку с мыслями. Теперь просто двигаем курсоры за конец
+        Раньше тут печатался текст до think-блока отдельной Response-панелью —
+        это приводило к «морганию»: текст «застывал» в панели, а static
+        thinking-panel прятала live-строку с мыслями. Теперь просто двигаем
+        курсоры за конец
         последнего закрытого блока БЕЗ печати и БЕЗ остановки Live. Сам
         think-блок выкидывается из отображения через strip_think_blocks в
         _clean_display_text, поэтому Live плавно перерисует единую Response.
@@ -423,9 +376,9 @@ class LiveStream:
         """Move cursor past plan blocks. Plan does NOT render to UI.
 
         Текст ДО plan-блока уже стримился через BlockStreamer
-        (_compact_feed_blocks). Раньше тут вызывался _print_text_block(
-        text_before) — это печатало тот же текст ВТОРОЙ раз отдельной
-        Response-панелью (дубль ответа). Теперь только финализируем активный
+        (_compact_feed_blocks). Раньше тут печатался тот же текст ВТОРОЙ раз
+        отдельной Response-панелью (дубль ответа). Теперь только финализируем
+        активный
         блок BlockStreamer'а (он сам уже всё вывел в scrollback) и двигаем
         курсоры за конец plan-блоков. План в UI не печатается вообще.
         """
@@ -446,8 +399,8 @@ class LiveStream:
         first_start = merged[0][0]
         last_end = merged[-1][1]
         if first_start > self._printed_text_end:
-            # Догоняем и финализируем текст до plan-блока через BlockStreamer
-            # (НЕ _print_text_block — иначе дубль). reset() открывает новую
+            # Догоняем и финализируем текст до plan-блока через BlockStreamer.
+            # reset() открывает новую
             # «страницу» для текста после плана.
             self._compact_feed_blocks()
             self._block_streamer.finalize()
@@ -477,13 +430,11 @@ class LiveStream:
         self._tcycle = cycle(THINKING_FRAMES)
         self._wcycle = cycle(WRITING_FRAMES)
         self._interrupt_tick = 0
-        self._need_live_restart = False
         self._last_block_end_time = time.monotonic()
         self._tg_placeholder_id = None
         self._tg_typing_started = False
         self._finalizing = False
         self._block_streamer.reset()
-        self._compact_thinking_printed = False
         self._stored_text_end = 0
         self._turn_emitted = False
         self._start_tg_thinking()
@@ -532,7 +483,6 @@ class LiveStream:
                 self.think_log.add(thought)
             self._think_processed_count = len(tb)
             self._advance_past_think_blocks()
-            self._need_live_restart = True
             # Печатаем static-панель think СРАЗУ при закрытии блока (до текста
             # ответа). Иначе Live с мыслью стирается, печатается текст, а
             # static think всплывает в конце снизу — выглядит как мигание и
@@ -594,7 +544,6 @@ class LiveStream:
             if len(pc) > self._plan_shown_count:
                 self._advance_past_plan_blocks()
                 self._plan_shown_count = len(pc)
-                self._need_live_restart = True
                 if self.ctx.plan and not getattr(self.ctx, "silent_console", False):
                     self._stop_live()
                     from agent.display import show_plan_update
@@ -650,7 +599,7 @@ class LiveStream:
                 # Если _printed_text_end уже стоит на начале fence (partial
                 # был обнаружен ранее), text_before — это просто открывающая
                 # строка `:::call <tool> ...` без полезного контента.
-                # _clean_display_text/_print_text_block её отфильтруют, но
+                # _clean_display_text её отфильтрует, но
                 # явная проверка дешевле и снимает лишний console.print().
                 cleaned_before = self._clean(text_before)
                 if cleaned_before:

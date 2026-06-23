@@ -29,8 +29,8 @@ _MAX_ITEMS = 6
 _JSON_BLOCK_RE = re.compile(r"\{.*\}|\[.*\]", re.DOTALL)
 
 
-def _today() -> str:
-    return _dt.date.today().isoformat()
+def _now() -> str:
+    return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _build_prompt(transcript: str, manifest: str) -> str:
@@ -126,7 +126,7 @@ async def extract_memories(transcript: str, working_dir: str | None = None) -> i
         logger.info("memory.extract: nothing to save")
         return 0
 
-    today = _today()
+    timestamp = _now()
     saved = 0
     for item in items[:_MAX_ITEMS]:
         name = str(item.get("name", "")).strip()
@@ -141,7 +141,7 @@ async def extract_memories(transcript: str, working_dir: str | None = None) -> i
             continue
         try:
             write_memory(
-                name, body, mtype=mtype, today=today,
+                name, body, mtype=mtype, timestamp=timestamp,
                 working_dir=working_dir, scope=scope,
             )
             saved += 1

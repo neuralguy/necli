@@ -70,10 +70,12 @@ class TestChunkAdd:
         merged = a + b
         assert merged.content == "Hello world"
 
-    def test_non_chunk_passthrough(self):
+    def test_non_chunk_addition_raises(self):
+        import pytest
+
         a = AIMessageChunk(content="A")
-        result = a + "not a chunk"
-        assert result is a
+        with pytest.raises(TypeError):
+            a + "not a chunk"
 
     def test_reasoning_concat(self):
         a = AIMessageChunk(content="", additional_kwargs={"reasoning_content": "think "})

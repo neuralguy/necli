@@ -85,6 +85,13 @@ class TestReadOnlyAndAllowed:
         assert is_tool_allowed("write_file", "planning") is False
         assert is_tool_allowed("shell", "planning") is False
 
+    def test_is_tool_allowed_autonomous_mode_allows_shell_not_writes(self):
+        assert is_tool_allowed("shell", "autonomous") is True
+        assert is_tool_allowed("shell", "auto") is True
+        assert is_tool_allowed("subagent", "autonomous") is True
+        assert is_tool_allowed("write_file", "autonomous") is False
+        assert is_tool_allowed("patch_file", "autonomous") is False
+
 
 class TestBlockedResult:
     def test_format(self):

@@ -35,13 +35,14 @@ class TestFmtTokens:
 
 
 class TestOnUsage:
-    def test_accumulates_across_calls(self):
+    def test_keeps_last_call_metrics_and_accumulates_total(self):
         b = _buf(0, "P1", "x")
         b.on_usage({"input_tokens": 100, "output_tokens": 40, "total_tokens": 140})
         b.on_usage({"input_tokens": 60, "output_tokens": 10, "total_tokens": 70})
-        assert b.input_tokens == 160
-        assert b.output_tokens == 50
-        assert b.total_tokens == 210
+        assert b.input_tokens == 60
+        assert b.output_tokens == 10
+        assert b.total_tokens == 70
+        assert b.cumulative_tokens == 210
 
     def test_total_falls_back_to_sum(self):
         b = _buf(0, "P1", "x")

@@ -367,8 +367,7 @@ class Session:
 
     def _auto_title(self, user_text: str):
         if not self.title:
-            clean = user_text.strip().replace("\n", " ")
-            self.title = clean[:60] + ("…" if len(clean) > 60 else "")
+            self.title = " ".join(user_text.strip().split())
 
     @property
     def models_used(self) -> list[str]:

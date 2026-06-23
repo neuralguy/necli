@@ -37,9 +37,9 @@ _PROVIDER_PRESETS = [
      "https://generativelanguage.googleapis.com", "google", "google"),
     ("openrouter", "OpenRouter", "openrouter.ai", "https://openrouter.ai/api/v1",
      "openai_compatible", "openai"),
-    ("deepseek", "DeepSeek", "api.deepseek.com", "https://api.deepseek.com/v1",
-     "openai_compatible", "openai"),
     ("groq", "Groq", "api.groq.com", "https://api.groq.com/openai/v1",
+     "openai_compatible", "openai"),
+    ("xai", "xAI Grok", "api.x.ai", "https://api.x.ai/v1",
      "openai_compatible", "openai"),
     ("ollama", "Ollama 🏠", "localhost:11434", "http://localhost:11434/v1",
      "openai_compatible", "openai"),
@@ -158,26 +158,15 @@ def _step_theme(start: int = 0) -> tuple[bool, int]:
     names = list_themes()
     current = get_active_theme_name()
 
-    term_w = shutil.get_terminal_size((120, 30)).columns
-    list_w = min(40, max(32, term_w // 3))
-    preview_w = min(80, term_w - list_w - 4)
+    # Раскладка как в /themes: панель списка сверху, превью под ней (вертикально).
+    term_w = shutil.get_terminal_size((100, 24)).columns
+    preview_w = min(76, term_w - 6)
+    list_w = min(term_w, preview_w + 4)
 
     def render_fn(sel: int) -> str:
-        list_str = _theme_list_panel(names, sel, current, list_w).rstrip("\n")
-        preview_str = render_theme_preview(BUILTIN_THEMES[names[sel]], width=preview_w).rstrip("\n")
-        ll = list_str.split("\n")
-        pl = preview_str.split("\n")
-        h = max(len(ll), len(pl))
-        def _pad(lines, target, pad_width):
-            out = list(lines)
-            blank = " " * pad_width
-            while len(out) < target:
-                out.append(blank)
-            return out
-        ll = _pad(ll, h, list_w)
-        pl = _pad(pl, h, preview_w)
-        merged = [f"{a}  {b}" for a, b in zip(ll, pl)]
-        return "\n".join(merged) + "\n"
+        list_panel = _theme_list_panel(names, sel, current, list_w)
+        preview = render_theme_preview(BUILTIN_THEMES[names[sel]], width=preview_w)
+        return list_panel + preview
 
     choice = _panel_menu_direct(
         render_fn, sys.stdout,

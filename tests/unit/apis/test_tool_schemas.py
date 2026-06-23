@@ -147,7 +147,7 @@ class TestPlanMode:
 
     def test_only_read_only_plus_plan(self):
         names = set(_names(get_tool_schemas("plan")))
-        allowed = set(READ_ONLY_TOOLS) | {"plan", "think"}
+        allowed = set(READ_ONLY_TOOLS) | {"poll", "skill", "web_search", "plan", "think"}
         assert names <= allowed, f"unexpected tools in plan mode: {names - allowed}"
 
     def test_includes_all_read_only_tools(self):
@@ -159,9 +159,47 @@ class TestPlanMode:
 
     def test_plan_subset_of_agent(self):
         plan_names = set(_names(get_tool_schemas("plan")))
-        agent_names = set(_names(get_tool_schemas("agent")))
+        agent_names = set(_names(get_tool_schemas("agent", {"web"})))
         # plan может содержать только think/plan вне agent — но они есть и в agent при тех же условиях
         assert (plan_names - {"think"}) <= agent_names
+
+
+class TestAutonomousMode:
+    def test_excludes_write_tools_except_shell(self):
+        names = set(_names(get_tool_schemas("autonomous", {"subagents"})))
+        offenders = (WRITE_TOOLS - {"shell"}) & names
+        assert not offenders, f"autonomous mode leaks write tools: {offenders}"
+        assert "shell" in names
+
+    def test_includes_subagent_when_skill_active(self):
+        names = set(_names(get_tool_schemas("autonomous", {"subagents"})))
+        assert "subagent" in names
+
+    def test_hides_subagent_without_skill(self):
+        names = set(_names(get_tool_schemas("autonomous", set())))
+        assert "subagent" not in names
+
+class TestDocxScreenshotSchema:
+    """docx_screenshot должен экспонировать dpi, иначе native-вызовы не задают его."""
+
+    def _props(self):
+        for s in TOOL_SCHEMAS:
+            if s["function"]["name"] == "docx_screenshot":
+                return s["function"]["parameters"]["properties"]
+        pytest.fail("docx_screenshot schema not found")
+
+    def test_dpi_present(self):
+        props = self._props()
+        assert "dpi" in props, "docx_screenshot schema must expose 'dpi'"
+
+    def test_dpi_is_integer(self):
+        assert self._props()["dpi"]["type"] == "integer"
+
+    def test_dpi_range_matches_code_clamp(self):
+        dpi = self._props()["dpi"]
+        assert dpi.get("minimum") == 50
+        assert dpi.get("maximum") == 600
+        assert dpi.get("default") == 200
 
 class TestSchemaValidity:
     def test_all_schemas_json_serializable(self):

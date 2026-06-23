@@ -155,24 +155,44 @@ def clear_read_cache(session_id: str | None = None) -> int:
     return n
 
 
-def _parse_lines_range(lines_range: str, total_lines: int) -> tuple[int, int] | None:
-    """Парсит 'A-B'/'A:B' или 'A' в (start, end). None если невалидно."""
-    lines_range = (lines_range or "").strip().replace(":", "-")
-    if not lines_range:
+def _parse_lines_range(lines_range: str, total_lines: int) -> tuple[int, int] | str | None:
+    """Единый парсер диапазона строк — источник истины и для cache-coverage, и для вывода.
+
+    Принимает 'A-B'/'A:B', 'A', открытые 'A-' (до конца файла) и '-B' (с начала).
+    Возвращает:
+      - (start, end) — валидный инклюзивный диапазон, клампленный по total_lines;
+      - str          — текст ошибки (инвертированный/невалидный диапазон);
+      - None         — пустая строка (фильтр не запрошен).
+    Никогда не «проваливается» в полное чтение молча: на ошибку отдаём str.
+    """
+    raw = (lines_range or "").strip()
+    norm = raw
+    if norm.startswith("[") and norm.endswith("]"):
+        norm = norm[1:-1].strip()
+    norm = norm.replace(":", "-").replace(",", "-")
+    if not norm:
         return None
-    try:
-        if "-" in lines_range:
-            start_s, end_s = lines_range.split("-", 1)
-            start = max(1, int(start_s))
-            end = int(end_s)
-        else:
-            start = max(1, int(lines_range))
-            end = start
-    except ValueError:
-        return None
+    if "-" in norm:
+        start_s, end_s = norm.split("-", 1)
+        start_s, end_s = start_s.strip(), end_s.strip()
+        try:
+            start = max(1, int(start_s)) if start_s else 1
+            # Открытый конец 'A-' → до конца файла.
+            end = int(end_s) if end_s else total_lines
+        except ValueError:
+            return f"Invalid line range {raw!r}: expected 'A', 'A-B', 'A-' or '-B' with integers."
+    else:
+        try:
+            start = max(1, int(norm))
+        except ValueError:
+            return f"Invalid line range {raw!r}: expected 'A', 'A-B', 'A-' or '-B' with integers."
+        end = start
+    if start > end:
+        return f"Inverted line range {raw!r}: start {start} > end {end}."
     end = min(end, total_lines) if total_lines > 0 else end
     if start > end:
-        return None
+        # start за пределами файла после клампа конца — пустой диапазон.
+        return f"Line range {raw!r} out of bounds: file has {total_lines} lines."
     return start, end
 
 
@@ -312,6 +332,12 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
     total_lines = len(all_file_lines)
 
     requested = _parse_lines_range(lines_range, total_lines) if lines_range else None
+    if isinstance(requested, str):
+        return ToolResult(
+            name="read_files", status="error",
+            output=f"[{path_str} · {total_lines} lines]\n{requested}",
+            exit_code=1, command=command,
+        )
     if not lines_range:
         effective_end = min(total_lines, MAX_LINES) if total_lines > MAX_LINES else total_lines
         effective_range = (1, effective_end) if total_lines > 0 else None
@@ -355,39 +381,16 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
         _cache_record(path, cache_key, 1, MAX_LINES)
         return ToolResult(name="read_files", status="ok", output=f"{info}\n{content_out}{note}", exit_code=0, command=command, full_content=False)
 
-    # ── Явный диапазон ──
-    if lines_range:
-        lines_range = lines_range.replace(":", "-")
-        all_lines = content.split("\n")
-        try:
-            if "-" in lines_range:
-                start_s, end_s = lines_range.split("-", 1)
-                start = max(1, int(start_s))
-                end = min(len(all_lines), int(end_s))
-            else:
-                start = max(1, int(lines_range))
-                end = start
-
-            if start > len(all_lines):
-                info = f"[{path_str} · {total_lines} lines]"
-                note = (
-                    f"(Requested lines {start}-{end}, "
-                    f"but file has only {len(all_lines)} lines. "
-                    f"Returning the whole file.)"
-                )
-                _cache_record(path, cache_key, 1, len(all_lines))
-                return ToolResult(name="read_files", status="ok", output=f"{info}\n{note}\n{content}", exit_code=0, command=command)
-
-            end = min(end, len(all_lines))
-            selected = all_lines[start - 1 : end]
-            header = f"[{path_str} lines {start}-{end} of {len(all_lines)}]"
-            body = "\n".join(
-                f"{i}: {line}" for i, line in enumerate(selected, start=start)
-            )
-            _cache_record(path, cache_key, start, end)
-            return ToolResult(name="read_files", status="ok", output=f"{header}\n{body}", exit_code=0, command=command, full_content=False)
-        except ValueError:
-            pass
+    # ── Явный диапазон ── (через единый парсер, тот же splitlines-массив)
+    if lines_range and requested is not None:
+        start, end = requested
+        selected = all_file_lines[start - 1 : end]
+        header = f"[{path_str} lines {start}-{end} of {total_lines}]"
+        body = "\n".join(
+            f"{i}: {line}" for i, line in enumerate(selected, start=start)
+        )
+        _cache_record(path, cache_key, start, end)
+        return ToolResult(name="read_files", status="ok", output=f"{header}\n{body}", exit_code=0, command=command, full_content=False)
 
     # ── Полное чтение без truncate ──
     info = f"[{path_str} · {total_lines} lines]"
@@ -397,26 +400,20 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
 
 
 def _apply_lines_filter(content: str, lines_range: str, path_str: str) -> str:
-    """Apply a line-range filter to content. Returns filtered or original text."""
-    lines_range = lines_range.strip().replace(":", "-")
-    if not lines_range:
+    """Apply a line-range filter to content via the single parser. Returns filtered, original, or an error string."""
+    if not (lines_range or "").strip():
         return content
-    all_lines = content.split("\n")
-    try:
-        if "-" in lines_range:
-            start_s, end_s = lines_range.split("-", 1)
-            start = max(1, int(start_s))
-            end = min(len(all_lines), int(end_s))
-        else:
-            start = max(1, int(lines_range))
-            end = start
-        end = min(end, len(all_lines))
-        selected = all_lines[start - 1 : end]
-        return f"[{path_str} lines {start}-{end} of {len(all_lines)}]\n" + "\n".join(
-            f"{i}: {line}" for i, line in enumerate(selected, start=start)
-        )
-    except ValueError:
+    all_lines = content.splitlines()
+    parsed = _parse_lines_range(lines_range, len(all_lines))
+    if parsed is None:
         return content
+    if isinstance(parsed, str):
+        return f"[{path_str} · {len(all_lines)} lines]\n{parsed}"
+    start, end = parsed
+    selected = all_lines[start - 1 : end]
+    return f"[{path_str} lines {start}-{end} of {len(all_lines)}]\n" + "\n".join(
+        f"{i}: {line}" for i, line in enumerate(selected, start=start)
+    )
 
 
 def read_files(call: ToolCall) -> ToolResult:

@@ -226,7 +226,7 @@ class InputPrompt:
 
         @kb.add(Keys.Tab)
         def _tab_toggle_mode(event):
-            order = ("agent", "planning")
+            order = ("agent", "planning", "autonomous")
             try:
                 idx = order.index(self.mode)
             except ValueError:
@@ -357,6 +357,12 @@ class InputPrompt:
             return [
                 ("", "🧠 "),
                 ("#e6a817 bold", "plan"),
+                ("class:prompt-arrow", " > "),
+            ]
+        if self.mode == "autonomous":
+            return [
+                ("", "🔮 "),
+                (f"{t('purple')} bold", "auto"),
                 ("class:prompt-arrow", " > "),
             ]
         return [
@@ -533,7 +539,12 @@ class InputPrompt:
         # prompt-строка: "🚀 agent > " (видимая ширина) — её prompt_toolkit
         # печатает перед текстом. Считаем сколько визуальных строк заняла
         # вся реплика (prompt+text с учётом wrap), чтобы поднять курсор.
-        mode_prefix = "🚀 agent > " if self.mode != "planning" else "🧠 plan > "
+        if self.mode == "planning":
+            mode_prefix = "🧠 plan > "
+        elif self.mode == "autonomous":
+            mode_prefix = "🔮 auto > "
+        else:
+            mode_prefix = "🚀 agent > "
         prefix_w = _vw(mode_prefix)
         rows = 0
         for i, ln in enumerate(text.split("\n")):

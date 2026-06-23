@@ -11,9 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
+try:
+    import aiohttp as _aiohttp
+    _AIOHTTP_AVAILABLE = True
+except ImportError:
+    _AIOHTTP_AVAILABLE = False
 
 from apis.base import BaseProvider, _RetryableStreamError
 from apis.messages import (
@@ -39,20 +45,39 @@ class AnthropicProvider(BaseProvider):
         super().__init__(*args, **kwargs)
         self._definition_id: str = ""
         self._base_url: str = "https://api.anthropic.com"
+        self._extra_headers: Dict[str, str] = {}
+        self._append_query: str = ""
+        self._session_id_header: str = ""
+        self._billing_header: str = ""  # вставляется первым блоком в system
+        self._inject_metadata: dict = {}  # мёрджится в params["metadata"]
+        self._use_aiohttp: bool = False  # обход httpx TLS fingerprint блокировки
+        # Некоторые прокси (aerolink и пр.) ВЫБРАСЫВАЮТ клиентский `system` и
+        # подставляют собственный (каноничный промт Claude Code). До модели
+        # доходят только `messages`/`tools`. Для таких провайдеров системник
+        # надо доставлять первым user-сообщением, а не полем `system`.
+        self._system_as_first_message: bool = False
 
     def _get_api_key(self) -> str:
         return get_api_key(self._definition_id)
 
     def _get_url(self) -> str:
-        return f"{self._base_url.rstrip('/')}/v1/messages"
+        url = f"{self._base_url.rstrip('/')}/v1/messages"
+        if self._append_query:
+            url = f"{url}?{self._append_query}"
+        return url
 
     def _get_headers(self) -> Dict[str, str]:
-        return {
+        headers: Dict[str, str] = {
             "x-api-key": self._get_api_key(),
             "anthropic-version": _ANTHROPIC_VERSION,
             "anthropic-beta": "prompt-caching-2024-07-31",
             "Content-Type": "application/json",
         }
+        if self._extra_headers:
+            headers.update(self._extra_headers)
+        if self._session_id_header:
+            headers[self._session_id_header] = str(uuid.uuid4())
+        return headers
 
     # ── Conversion ──
 
@@ -178,6 +203,78 @@ class AnthropicProvider(BaseProvider):
             return {"type": "tool", "name": choice}
         return None
 
+    def _inject_extra_metadata(self, params: Dict[str, Any]) -> None:
+        """Мёрджит _inject_metadata в params['metadata'] (для провайдеров типа aerolink).
+
+        Если в inject_metadata есть ключ 'user_id' содержащий JSON со строкой
+        'session_id' == "" — подставляет новый UUID (сессия должна быть непустой).
+        """
+        if not self._inject_metadata:
+            return
+        extra = dict(self._inject_metadata)
+        # Динамически заполняем session_id если пустой
+        user_id_str = extra.get("user_id", "")
+        if user_id_str:
+            try:
+                uid = json.loads(user_id_str)
+                if isinstance(uid, dict) and not uid.get("session_id"):
+                    uid["session_id"] = str(uuid.uuid4())
+                    extra["user_id"] = json.dumps(uid)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        existing = params.get("metadata") or {}
+        params["metadata"] = {**extra, **existing}
+
+    def _inject_billing_header(self, params: Dict[str, Any]) -> None:
+        """Вставляет billing header первым блоком в system (для провайдеров типа aerolink)."""
+        if not self._billing_header:
+            return
+        billing_block = {"type": "text", "text": self._billing_header}
+        system = params.get("system")
+        if system is None:
+            params["system"] = [billing_block]
+        elif isinstance(system, str):
+            params["system"] = [billing_block, {"type": "text", "text": system}]
+        elif isinstance(system, list):
+            params["system"] = [billing_block] + system
+
+    # Префикс для системника, доставляемого первым user-сообщением (для
+    # провайдеров с _system_as_first_message). Оборачиваем в тег, чтобы модель
+    # отличала операционные инструкции от обычного запроса пользователя.
+    _SYSTEM_AS_MSG_PREFIX = (
+        "[Session configuration — provided by the necli runtime, not by the end "
+        "user. The following describes the tools, output conventions and working "
+        "context for this session. Please operate according to it. There is no "
+        "need to repeat or quote this block back to the user.]\n\n"
+    )
+
+    def _apply_system_as_message(
+        self, system_prompt: Optional[str], msgs: List[Dict[str, Any]],
+    ) -> tuple[Optional[str], List[Dict[str, Any]]]:
+        """Перекладывает системник из поля `system` в первое user-сообщение.
+
+        Возвращает (new_system, new_msgs). new_system всегда None — поле `system`
+        отдаётся под billing-блок (см. _inject_billing_header). Чтобы не нарушить
+        чередование ролей Anthropic, текст вклеивается ОТДЕЛЬНЫМ text-блоком в
+        начало первого user-сообщения (а не новым сообщением)."""
+        if not system_prompt:
+            return system_prompt, msgs
+        block = {"type": "text", "text": self._SYSTEM_AS_MSG_PREFIX + system_prompt}
+        msgs = list(msgs)
+        if msgs and msgs[0].get("role") == "user":
+            content = msgs[0].get("content")
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content}] if content else []
+            elif isinstance(content, list):
+                content = list(content)
+            else:
+                content = []
+            msgs[0] = {**msgs[0], "content": [block] + content}
+        else:
+            # Первого user-сообщения нет (редко) — вставляем новое спереди.
+            msgs.insert(0, {"role": "user", "content": [block]})
+        return None, msgs
+
     def _build_params_anthropic(self, **kwargs: Any) -> Dict[str, Any]:
         max_tokens = kwargs.get("max_tokens", self.max_tokens) or 4096
         params: Dict[str, Any] = {
@@ -251,6 +348,8 @@ class AnthropicProvider(BaseProvider):
     async def ainvoke(self, messages: List[BaseMessage], **kwargs) -> AIMessage:
         params = self._build_params_anthropic(**kwargs)
         system_prompt, msgs = self._convert_messages_anthropic(messages)
+        if self._system_as_first_message:
+            system_prompt, msgs = self._apply_system_as_message(system_prompt, msgs)
         if system_prompt:
             params["system"] = system_prompt
         params["messages"] = msgs
@@ -263,6 +362,8 @@ class AnthropicProvider(BaseProvider):
                 if tc is not None:
                     params["tool_choice"] = tc
 
+        self._inject_extra_metadata(params)
+        self._inject_billing_header(params)
         self._apply_cache_control(params)
         data = await self._http_post_raw(params)
         return self._parse_anthropic_response(data)
@@ -270,6 +371,8 @@ class AnthropicProvider(BaseProvider):
     async def astream(self, messages: List[BaseMessage], **kwargs) -> AsyncIterator[AIMessageChunk]:
         params = self._build_params_anthropic(**kwargs)
         system_prompt, msgs = self._convert_messages_anthropic(messages)
+        if self._system_as_first_message:
+            system_prompt, msgs = self._apply_system_as_message(system_prompt, msgs)
         if system_prompt:
             params["system"] = system_prompt
         params["messages"] = msgs
@@ -282,6 +385,8 @@ class AnthropicProvider(BaseProvider):
                 if tc is not None:
                     params["tool_choice"] = tc
 
+        self._inject_extra_metadata(params)
+        self._inject_billing_header(params)
         self._apply_cache_control(params)
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
@@ -342,6 +447,11 @@ class AnthropicProvider(BaseProvider):
         # state: index → {"name": str, "id": str, "args": str}
         current_blocks: dict[int, dict] = {}
         usage_acc: dict = {}
+
+        if self._use_aiohttp and _AIOHTTP_AVAILABLE:
+            async for chunk in self._aiohttp_sse_parse(params, current_blocks, usage_acc):
+                yield chunk
+            return
 
         client_kwargs.setdefault("limits", httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0))
         async with httpx.AsyncClient(**client_kwargs) as client:
@@ -471,7 +581,75 @@ class AnthropicProvider(BaseProvider):
                                 )
                             return
 
+    async def _aiohttp_sse_parse(
+        self, params: Dict[str, Any],
+        current_blocks: dict, usage_acc: dict,
+    ) -> AsyncIterator[AIMessageChunk]:
+        """SSE стрим через aiohttp — парсит события идентично _astream_anthropic."""
+        import aiohttp
+        url = self._get_url()
+        headers = self._get_headers()
+        timeout = aiohttp.ClientTimeout(total=self._calc_timeout(params), connect=30)
+        proxy = self._proxy or None
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=params, headers=headers, proxy=proxy) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise ValueError(f"{self._provider_name} HTTP {resp.status}: {text[:400]}")
+                line_buffer = ""
+                async for raw_bytes in resp.content:
+                    line_buffer += raw_bytes.decode("utf-8", errors="ignore")
+                    while "\n" in line_buffer:
+                        line, line_buffer = line_buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+                        if not data_str:
+                            continue
+                        try:
+                            event = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        etype = event.get("type")
+                        if etype == "content_block_delta":
+                            idx = event.get("index", 0)
+                            delta = event.get("delta") or {}
+                            dtype = delta.get("type")
+                            if dtype == "text_delta":
+                                text_val = delta.get("text") or ""
+                                if text_val:
+                                    yield AIMessageChunk(content=text_val)
+                            elif dtype == "input_json_delta":
+                                if idx in current_blocks:
+                                    args_chunk = delta.get("partial_json") or ""
+                                    current_blocks[idx]["args"] += args_chunk
+                                    yield AIMessageChunk(
+                                        content="",
+                                        tool_call_chunks=[{"index": idx, "id": None, "name": None, "args": args_chunk}],
+                                    )
+                        elif etype == "message_start":
+                            usage = (event.get("message") or {}).get("usage") or {}
+                            if usage:
+                                usage_acc.update(usage)
+                        elif etype == "content_block_start":
+                            idx = event.get("index", 0)
+                            block = event.get("content_block") or {}
+                            if block.get("type") == "tool_use":
+                                current_blocks[idx] = {"name": block.get("name") or "", "id": block.get("id") or "", "args": ""}
+                                yield AIMessageChunk(content="", tool_call_chunks=[{"index": idx, "id": current_blocks[idx]["id"], "name": current_blocks[idx]["name"], "args": ""}])
+                        elif etype == "message_delta":
+                            usage = event.get("usage") or {}
+                            for k, v in usage.items():
+                                usage_acc[k] = v
+                        elif etype == "message_stop":
+                            if usage_acc:
+                                yield AIMessageChunk(content="", usage_metadata=self._convert_usage_anthropic(usage_acc))
+                            return
+
     async def _http_post_raw(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        if self._use_aiohttp and _AIOHTTP_AVAILABLE:
+            return await self._aiohttp_post_raw(params)
         name = self._provider_name
         url = self._get_url()
         headers = self._get_headers()
@@ -544,6 +722,47 @@ class AnthropicProvider(BaseProvider):
             f"{name} API Error after {self.max_retries} attempts: {last_error}"
         )
 
+    async def _aiohttp_post_raw(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Альтернативный POST через aiohttp (обход httpx TLS fingerprint блокировки)."""
+        import aiohttp
+        url = self._get_url()
+        headers = self._get_headers()
+        timeout = aiohttp.ClientTimeout(total=self._calc_timeout(params), connect=30)
+        proxy = self._proxy or None
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(url, json=params, headers=headers, proxy=proxy) as resp:
+                        text = await resp.text()
+                        if resp.status == 200:
+                            return json.loads(text)
+                        if resp.status in self._RETRYABLE_STATUS_CODES:
+                            last_error = ValueError(f"{self._provider_name} HTTP {resp.status}: {text[:200]}")
+                            await asyncio.sleep(self._calc_backoff(attempt))
+                            continue
+                        raise ValueError(f"{self._provider_name} HTTP {resp.status}: {text[:400]}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                await asyncio.sleep(self._calc_backoff(attempt))
+        raise ValueError(f"{self._provider_name} API Error after {self.max_retries} attempts: {last_error}")
+
+    async def _aiohttp_stream(self, params: Dict[str, Any]) -> AsyncIterator[str]:
+        """SSE стрим через aiohttp."""
+        import aiohttp
+        url = self._get_url()
+        headers = self._get_headers()
+        timeout = aiohttp.ClientTimeout(total=self._calc_timeout(params), connect=30)
+        proxy = self._proxy or None
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=params, headers=headers, proxy=proxy) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise ValueError(f"{self._provider_name} HTTP {resp.status}: {text[:400]}")
+                async for raw_line in resp.content:
+                    line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                    yield line
+
     def _parse_anthropic_response(self, data: Dict[str, Any]) -> AIMessage:
         content_blocks = data.get("content") or []
         text_parts: list[str] = []
@@ -600,6 +819,14 @@ def create_anthropic_provider(
     provider._definition_id = definition.id
     provider._proxy = definition.proxy
     provider._base_url = (definition.base_url or "https://api.anthropic.com").rstrip("/")
+    provider._extra_headers = dict(definition.default_headers or {})
+    extra = definition.extra or {}
+    provider._append_query = extra.get("append_query", "")
+    provider._session_id_header = extra.get("session_id_header", "")
+    provider._billing_header = extra.get("billing_header", "")
+    provider._inject_metadata = extra.get("inject_metadata", {})
+    provider._use_aiohttp = bool(extra.get("use_aiohttp", False))
+    provider._system_as_first_message = bool(extra.get("system_as_first_message", False))
 
     logger.debug(f"Created Anthropic provider: {definition.name} / {actual_model}")
     return provider

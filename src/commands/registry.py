@@ -54,6 +54,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/api",         "model",   "help.api"),
     SlashCommand("/models",      "model",   "help.models"),
     SlashCommand("/params",      "model",   "help.params"),
+    SlashCommand("/proxy",       "model",   "help.proxy",       args_hint="[URL|off]"),
 
     # ── tools ───────────────────────────────────────────────
     SlashCommand("/cd",          "tools",   "help.cd",          args_hint="PATH"),

@@ -20,13 +20,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from rich.console import Console
 from rich.text import Text
 
 logger = logging.getLogger(__name__)
-
-console = Console()
-
 
 class StepStatus(str, Enum):
     PENDING = "pending"
@@ -199,21 +195,6 @@ class Plan:
             return "0/0"
         return f"{self.done_count}/{self.total}"
 
-    # ── Прогресс-бар ──
-
-    @property
-    def progress_bar(self) -> str:
-        """Визуальный прогресс-бар: [████░░░░] 3/7"""
-        if self.total == 0:
-            return ""
-        filled = self.done_count
-        total = self.total
-        bar_width = min(total, 20)
-        filled_width = int(bar_width * filled / total)
-        empty_width = bar_width - filled_width
-        return "▮" * filled_width + "▯" * empty_width
-
-
     def render_for_context(self) -> str:
         """Рендерит план в текст для инжекции в контекст LLM.
         
@@ -283,7 +264,6 @@ class PlanCommand:
     """Распарсенная команда планирования."""
     action: str  # create | update | add_step | remove_step
     data: dict
-    raw: str = ""
 
 
 def _parse_plan_body(match):
@@ -322,7 +302,7 @@ def _parse_plan_body(match):
             return None
         # 'goal' field is optional, defaults to empty string
 
-    return PlanCommand(action=action, data=data, raw=match.group(0))
+    return PlanCommand(action=action, data=data)
 
 
 def parse_plan_commands(text: str) -> list[PlanCommand]:
@@ -361,7 +341,7 @@ def _first_present(data: dict, *keys):
 def _resolve_step_index(plan: Plan, data: dict) -> Optional[int]:
     """Разрешает индекс шага из update-команды.
 
-    Принимает поля: step, index, step_index, step_number, n, id, step_id, title.
+    Принимает поля: step, index, step_index, step_number, n, title.
     Если ни одного нет — целится в current_step (первый in_progress/pending).
     Возвращает 0-based индекс или None.
     """
@@ -369,7 +349,7 @@ def _resolve_step_index(plan: Plan, data: dict) -> Optional[int]:
         return None
 
     raw = _first_present(data, "step", "index", "step_index",
-                          "step_number", "n", "id", "step_id")
+                          "step_number", "n")
     if raw is not None:
         try:
             idx = int(raw)
@@ -380,10 +360,6 @@ def _resolve_step_index(plan: Plan, data: dict) -> Optional[int]:
                 return idx - 1
             if 0 <= idx < len(plan.steps):
                 return idx
-            sid = str(raw)
-            for i, st in enumerate(plan.steps):
-                if str(getattr(st, "id", "")) == sid:
-                    return i
     needle = data.get("title") or data.get("name") or data.get("text")
     if isinstance(needle, str) and needle.strip():
         nl = needle.strip().lower()

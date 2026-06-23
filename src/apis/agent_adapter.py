@@ -35,7 +35,7 @@ from apis.opus48_debug import has_transcript_hint, log_event
 def _provider_kwargs() -> dict:
     """User-configurable generation params from config.json.
 
-    Both keys are optional: omitted (None / 0) means provider's own default.
+    Keys are optional: omitted means provider's own default.
     """
     import config as _cfg
     kw: dict = {}
@@ -45,6 +45,9 @@ def _provider_kwargs() -> dict:
     mt = _cfg.get("max_tokens", 0)
     if isinstance(mt, (int, float)) and int(mt) > 0:
         kw["max_tokens"] = int(mt)
+    effort = _cfg.get("reasoning_effort", "")
+    if isinstance(effort, str) and effort:
+        kw["reasoning_effort"] = effort
     return kw
 
 
@@ -58,14 +61,26 @@ _IMAGE_MIME = {
 }
 
 
+def _cleanup_docx_shot(path: Path) -> None:
+    try:
+        from config.paths import BASE_DIR
+        shots_dir = (BASE_DIR / "docx_shots").resolve()
+        resolved = path.resolve()
+        if shots_dir == resolved.parent:
+            resolved.unlink(missing_ok=True)
+            logger.info("API docx shot cleaned: %s", resolved.name)
+    except Exception:
+        logger.debug("API docx shot cleanup failed: %s", path, exc_info=True)
+
+
 def _build_multimodal_content(text: str, image_paths: list) -> list[dict]:
     """Строит multimodal content для HumanMessage: текст + base64 изображения."""
     parts: list[dict] = []
     if text:
         parts.append({"type": "text", "text": text})
     for p in image_paths:
+        path = Path(p)
         try:
-            path = Path(p)
             if not path.exists():
                 logger.warning(f"API image skip (not found): {path}")
                 continue
@@ -77,6 +92,7 @@ def _build_multimodal_content(text: str, image_paths: list) -> list[dict]:
                 "image_url": {"url": f"data:{mime};base64,{b64}"},
             })
             logger.info(f"API image attached: {path.name} ({len(data)} bytes, {mime})")
+            _cleanup_docx_shot(path)
         except Exception as e:
             logger.error(f"API image read failed for {p}: {type(e).__name__}: {e}")
     return parts
@@ -563,7 +579,9 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         payload = _build_tool_results(tool_results)
         if extras and str(extras).strip():
             payload = (payload + "\n\n" + str(extras)).strip()
-        messages.append(HumanMessage(content=payload))
+        messages.append(HumanMessage(
+            content=payload, additional_kwargs={"synthetic": True},
+        ))
         text = payload  # для записи в ApiSession ниже (session.add_user)
         # Изображения от инструментов в гибрид-режиме тоже нужно прикрепить
         # отдельным multimodal HumanMessage — иначе модель их молча не увидит
@@ -844,6 +862,14 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
     # что уходит в историю провайдера.
     from agent.sanitizer import sanitize_response as _sanitize
     clean_raw_text = _sanitize(raw_text)
+    try:
+        from tools import has_tool_calls as _has_tool_calls
+        from tools import truncate_after_last_tool_call as _truncate_after_last_tool_call
+
+        if _has_tool_calls(clean_raw_text):
+            clean_raw_text = _truncate_after_last_tool_call(clean_raw_text)
+    except Exception:
+        logger.debug("assistant tool-tail truncate failed", exc_info=True)
     if len(raw_text) != len(clean_raw_text):
         logger.info(
             "API assistant sanitize: %d → %d chars (stripped fake transcript)",
@@ -954,12 +980,13 @@ async def api_recap(conversation_text: str) -> str:
 
     llm = get_provider(session.provider_id, session.model_id, **_provider_kwargs())
     prompt = (
-        "Below is the transcript of an ongoing coding session between a user "
-        "and an AI agent. Write a VERY SHORT recap (1-2 short sentences, max ~40 words) "
-        "that just reminds what the conversation is about — the topic and current focus. "
-        "Don't list details, decisions or steps. Write it as a brief neutral reminder, "
-        "in the SAME language the conversation is in. No preamble, no headings, no bullet "
-        "points — just the sentence(s).\n\n"
+        "Below is the transcript of a coding chat between a user and an AI agent. "
+        "Write a VERY SHORT recap (1-2 short sentences, max ~40 words) that says only "
+        "what the chat was about: the concrete topic/problem/domain discussed. "
+        "Do NOT describe current actions, current focus, next steps, progress, decisions, "
+        "or what is being worked on now. Write it as a neutral topic reminder in the SAME "
+        "language the conversation is in. No preamble, no headings, no bullet points — "
+        "just the sentence(s).\n\n"
         "--- TRANSCRIPT ---\n" + conversation_text + "\n--- END ---"
     )
 

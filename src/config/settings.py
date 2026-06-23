@@ -31,11 +31,17 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "background_autoresume": True,
     "temperature": 0.7,
     "max_tokens": 0,
+    "reasoning_effort": "",
     # 0 = trust Rich/wcwidth (emoji = 2 cells). 1 = принудительно считать emoji
     # как 1 cell — если в твоём терминале/шрифте emoji рендерятся узкими и
     # правая граница панелей съезжает влево. См. ui/_emoji_width.py.
     "emoji_width": 0,
     "language": "en",
+    # Глобальный прокси для всех исходящих запросов к API-провайдерам.
+    # Поддерживаются схемы http://, https://, socks5://, socks5h://
+    # (с опциональным user:pass@). Пустая строка = без прокси.
+    # Используется, если у конкретного провайдера не задан свой proxy.
+    "proxy": "",
 }
 
 _config_cache: dict | None = None

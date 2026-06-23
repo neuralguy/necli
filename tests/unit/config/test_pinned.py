@@ -15,18 +15,15 @@ class TestEmpty:
     def test_get_pinned_empty(self):
         assert pinned.get_pinned() == set()
 
-    def test_is_pinned_false_when_empty(self):
-        assert pinned.is_pinned("s1") is False
-
 class TestToggle:
     def test_toggle_on_returns_true(self):
         assert pinned.toggle("s1") is True
-        assert pinned.is_pinned("s1") is True
+        assert "s1" in pinned.get_pinned()
 
     def test_toggle_off_returns_false(self):
         pinned.toggle("s1")
         assert pinned.toggle("s1") is False
-        assert pinned.is_pinned("s1") is False
+        assert "s1" not in pinned.get_pinned()
 
     def test_toggle_independent_ids(self):
         pinned.toggle("a")

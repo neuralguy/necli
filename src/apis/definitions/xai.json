@@ -5,9 +5,9 @@
   "base_url": "https://api.x.ai/v1",
   "api_format": "openai",
   "models": [
-    {"id": "grok-4.3", "display_name": "Grok 4.3", "context_window": 256000, "input_price": 3.00, "output_price": 15.00},
-    {"id": "grok-code-fast-1", "display_name": "Grok Code Fast", "context_window": 256000, "input_price": 0.50, "output_price": 1.50},
-    {"id": "grok-3", "display_name": "Grok 3", "context_window": 131072, "input_price": 2.00, "output_price": 10.00}
+    {"id": "grok-4.3", "display_name": "Grok 4.3", "context_window": 1000000, "input_price": 1.25, "output_price": 2.50},
+    {"id": "grok-4.20", "display_name": "Grok 4.20", "context_window": 2000000, "input_price": 2.00, "output_price": 6.00},
+    {"id": "grok-4.1-fast", "display_name": "Grok 4.1 Fast", "context_window": 2000000, "input_price": 0.20, "output_price": 0.50}
   ],
   "default_model": "grok-4.3"
 }

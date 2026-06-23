@@ -103,22 +103,25 @@ _FAKE_RESULT_PATTERNS = [
         "(" + _AFTER_CALL + r")\s*\n+\s*(?:Output|Result|Результат|Вывод)\s*[:\-]\s*\n.*?(?=" + _NEXT_CALL + ")",
         re.DOTALL | re.IGNORECASE,
     ),
-    # Фейковый вывод "$ command\noutput" после tool-вызова. Покрывает
-    # галлюцинацию opus 4.8: после :::call read_files модель предсказывает
-    # свой же результат строкой `$ read_files ...` + нумерованными строками
-    # файла. Сохраняем сам плейсхолдер (group 1), вырезаем фейк-вывод.
-    # Допускаем префикс роли `user`/`assistant`/`●` ПЕРЕД `$` (opus 4.8 шлёт
-    # `user$ grep ...`) — иначе слово `user` между call::: и `$` ломало якорь.
+    # Модель реплеит proxy/user turn после tool-call: Current date + <query> + fake output.
     re.compile(
-        "(" + _AFTER_CALL + r")\s*\n+[ \t]*(?:●[ \t]*)?(?:user|assistant)?\$\s+[^\n]+\n(?:(?!:::call\b|\x00CALL_BLOCK_\d+\x00).)*?(?=" + _NEXT_CALL + ")",
+        "(" + _AFTER_CALL + r")\s*\n+\s*(?:user\s+)?Current date:.*?</query>\s*",
         re.DOTALL | re.IGNORECASE,
     ),
-    # Фейковый вывод вида `[path lines N-M of T]` + нумерованные строки
-    # СРАЗУ после tool-вызова, без префикса `$ cmd` (opus 4.8 иногда
-    # опускает строку команды). Якорим на плейсхолдере tool-вызова.
+    # Фейковый transcript после tool-call: `$ cmd`, `user$ cmd`, `usuario$ cmd`,
+    # `[file lines ...]`, `[Project: ...]`, bullet+separator blocks.
     re.compile(
-        "(" + _AFTER_CALL + r")\s*\n+\s*\[[^\]\n]*\blines?\b[^\]\n]*\]\n(?:[ \t]*\d+:[^\n]*\n?)+",
-        re.DOTALL,
+        "(" + _AFTER_CALL + r")\s*\n+"
+        r"(?:[ \t]*(?:●\s*)?-{3,}[ \t]*\n)?"
+        r"(?:"
+        r"(?:[^\s$]{1,32})?\$[^\n]*\n"
+        r"|(?:\[[^\]\n]*(?:lines\s+\d+|no matches|Project:)[^\]\n]*\]\n)"
+        r"|(?:●\s+[^\n]*(?:\$\s*|/[^\n]*:\d+:\d+)[^\n]*\n)"
+        r"|(?:-{20,}\n)"
+        r"|(?:\d+:\s+[^\n]*\n)"
+        r"|(?:[^\n]*(?:✓|✔|√)[^\n]*\n)"
+        r")+",
+        re.IGNORECASE | re.MULTILINE,
     ),
 ]
 
@@ -135,215 +138,6 @@ _ROLE_LEAK_RE = re.compile(
 )
 
 
-# Live-вариант фейк-вывода: в стрим-буфере call-блоки ещё литеральные
-# (call:::), плейсхолдеров нет. Якорим на `call:::` и срезаем предсказанный
-# моделью результат — `$ cmd`+вывод или `[... lines N-M ...]`+нумерованные
-# строки. Используется в _clean_display_text ДО strip_tool_calls, чтобы
-# мусор не утёк в scrollback через BlockStreamer (sanitize_response чистит
-# только сохранённый буфер, не перерисовывает уже напечатанное).
-# Структура фейк-вывода: после call::: идёт опциональная строка `$ cmd`,
-# затем заголовок `[path lines N-M of T]`, затем нумерованные строки файла
-# (`70: ...`), пустые строки и маркер `... (truncated)`. Прозу (обычный
-# ответ модели) НЕ трогаем — поэтому тело состоит ТОЛЬКО из output-образных
-# строк, и матч обрывается на первой прозаической строке.
-_LIVE_FAKE_READ_RE = re.compile(
-    r"(call:::[ \t]*\n)[ \t]*\n+"
-    r"(?:[ \t]*\$\s+[^\n]+\n)?"                     # опц. строка команды
-    r"[ \t]*\[[^\]\n]*\blines?\b[^\]\n]*\][ \t]*\n"  # обязат. `[… lines …]`
-    # Тело файла после заголовка: модель реплеит СОДЕРЖИМОЕ файла, которое
-    # не обязано быть нумерованным (`def foo():`, `class Bar:` и т.п.) и может
-    # содержать ПУСТЫЕ строки. Заголовок `[… lines …]` уже однозначно метит
-    # фейк-вывод, поэтому поглощаем всё до следующего :::call или конца текста
-    # (пустые строки внутри тела НЕ останавливают срез).
-    r"(?:(?![ \t]*:::call\b)[^\n]*\n?)*",
-    re.MULTILINE,
-)
-
-# Фейк-вывод shell без `[… lines …]`: `$ cmd` + произвольные строки вывода
-# до пустой строки (после неё обычно идёт проза-ответ). Тело — любые строки
-# КРОМЕ пустой и КРОМЕ начала нового tool-вызова `:::call`.
-_LIVE_FAKE_SHELL_RE = re.compile(
-    r"(call:::[ \t]*\n)[ \t]*\n+"
-    r"[ \t]*(?:●[ \t]*)?(?:user|assistant)?\$\s+[^\n]+\n"   # `$ cmd` / `user$ cmd`
-    r"(?:(?![ \t]*\n|[ \t]*:::call\b)[^\n]*\n?)*",          # вывод до пустой строки
-    re.MULTILINE | re.IGNORECASE,
-)
-
-# Старт фейк-transcript-строки: опц. bullet `●`, опц. РОЛЕВОЙ ПРЕФИКС вплотную
-# к `$`, затем `$ <cmd>`. Префикс — любое одиночное слово (вкл. локализованные
-# `user`: usuario/utilisateur/benutzer/пользователь и т.п.) ВПЛОТНУЮ перед `$`.
-# `\$\s+\S` (доллар + пробел + токен) — форма shell-приглашения, не валюта
-# (`$5` не матчится: нет пробела). После tool-вызова `word$ cmd` — однозначно
-# реплей, в нормальной прозе не встречается.
-_FAKE_TRANSCRIPT_START_RE = re.compile(
-    # Ролевой префикс перед `$` — ТОЛЬКО одно слово из букв (`user`/`assistant`/
-    # локализованные). Раньше `[^\s$]{1,20}` хватал прозу с пунктуацией перед
-    # `$ ` (напр. `…стоит около: $ 5`). Класс `[^\W\d_]` (буквы любого языка,
-    # без цифр/подчёркивания/пунктуации) делает якорь консервативнее.
-    r"^[ \t]*(?:●[ \t]*)?(?:[^\W\d_]{1,15})?\$[ \t]+\S+",
-)
-_FAKE_TRANSCRIPT_SEPARATOR_RE = re.compile(r"^\s*[─\-]{8,}\s*$")
-_FAKE_TRANSCRIPT_META_RE = re.compile(
-    r"^\s*(?:\[[^\]]*(?:Project|This step|image attached|lines?|files?)[^\]]*\]|[✓✗❌]\s|\d+\s|[📄🔍🔎]\s)",
-    re.IGNORECASE,
-)
-
-
-def _looks_like_fake_transcript_start(line: str) -> bool:
-    return bool(_FAKE_TRANSCRIPT_START_RE.match(line))
-
-
-# Лид-ин фейкового transcript-а: маркер пункта `●` (один, опц. с хвостом)
-# или короткое тире-правило `---`/`— ` которое opus 4.8 ставит перед `$ cmd`.
-_FAKE_TRANSCRIPT_LEADIN_RE = re.compile(r"^\s*(?:●\s*)?[─\-—]{2,}\s*$|^\s*●\s*$")
-
-# Строка-вывод инструмента в фейк-реплее, начинающаяся с `●` + путь/результат
-# БЕЗ `$` (например вывод lsp_definition: `● /abs/path/file.py:1:5`). Такой
-# строкой реплей может НАЧАТЬСЯ, поэтому её пропускаем при поиске сигнала.
-_FAKE_TRANSCRIPT_PATH_LINE_RE = re.compile(r"^\s*●\s*\S*[/\\]\S+")
-
-# Прокси-конверт как НАЧАЛО фейк-turn-а: модель реплеит транспортную обёртку
-# (`user Current date: …`, `<query>`) которой её обучает BASE_HEADER. После
-# tool-вызова это однозначный признак галлюцинации следующего хода.
-_FAKE_TRANSCRIPT_PROXY_RE = re.compile(
-    r"^[ \t]*(?:\[?user\]?[ \t]*)?current date:|^[ \t]*</?query>[ \t]*$",
-    re.IGNORECASE,
-)
-
-
-def _looks_like_fake_transcript_body(line: str) -> bool:
-    stripped = line.strip()
-    if not stripped:
-        return True
-    if _looks_like_fake_transcript_start(line):
-        return True
-    if _FAKE_TRANSCRIPT_SEPARATOR_RE.match(line):
-        return True
-    if _FAKE_TRANSCRIPT_LEADIN_RE.match(line):
-        return True
-    if _FAKE_TRANSCRIPT_META_RE.match(line):
-        return True
-    return False
-
-
-# Якорь конца tool-блока (плейсхолдер ИЛИ литеральный call:::) для построчного
-# вырезания фейк-transcript-а, идущего ПОСЛЕ вызова. Литеральный — на случай,
-# когда блок не попал под _protect_call_blocks (например незакрытый).
-_CALL_ANCHOR_LINE_RE = re.compile(r"^[ \t]*(?:\x00CALL_BLOCK_\d+\x00|call:::)[ \t]*$")
-_REAL_CALL_LINE_RE = re.compile(r"^[ \t]*(?::::call\b|\x00CALL_BLOCK_\d+\x00)")
-
-
-def _strip_fake_transcript_after_call(text: str) -> str:
-    """Вырезает фейковый transcript, который модель дописала ПОСЛЕ tool-вызова.
-
-    opus 4.8 в fenced иногда после `call:::` начинает реплеить весь раунд
-    результатов: опц. лид-ин `● ---`, затем строки `$ cmd ✓ output` (команда и
-    вывод НА ОДНОЙ строке), длинные тире-разделители, `[Project: …]`. Старые
-    regex якорились на `\n+\s*$` и ломались об `● ---` лид-ин и same-line вывод.
-
-    Построчно: находим строку-якорь конца вызова, пропускаем лид-ин/пустые,
-    и если дальше пошёл fake-transcript (`$ cmd`/`user$`/разделитель/meta) —
-    срезаем его до конца текста ИЛИ до следующего реального `:::call`
-    (модель могла возобновить настоящую работу — её сохраняем).
-    """
-    if not text or ("call:::" not in text and "\x00CALL_BLOCK_" not in text):
-        return text
-    lines = text.splitlines(keepends=True)
-    out: list[str] = []
-    i = 0
-    n = len(lines)
-    while i < n:
-        out.append(lines[i])
-        if not _CALL_ANCHOR_LINE_RE.match(lines[i].rstrip("\n")):
-            i += 1
-            continue
-        # После якоря ищем сигнал fake-transcript в небольшом окне, пропуская
-        # пустые / лид-ин (`● ---`) / bullet-path строки (вывод lsp-def:
-        # `● /path:1:5`). Сигнал — ЛИБО `$ cmd`-старт, ЛИБО длинная тире-линия
-        # (8+ `-`/`─`): и то, и другое не встречается в обычной прозе модели
-        # сразу после tool-вызова. Реплей может начинаться с вывода любого
-        # инструмента (не обязательно с `$`), поэтому одного `$`-старта мало.
-        j = i + 1
-        signal = -1
-        while j < n:
-            ln = lines[j]
-            if not ln.strip() or _FAKE_TRANSCRIPT_LEADIN_RE.match(ln) or _FAKE_TRANSCRIPT_PATH_LINE_RE.match(ln):
-                j += 1
-                continue
-            if (
-                _looks_like_fake_transcript_start(ln)
-                or _FAKE_TRANSCRIPT_SEPARATOR_RE.match(ln)
-                or _FAKE_TRANSCRIPT_PROXY_RE.match(ln)
-            ):
-                signal = j
-            break
-        if signal < 0:
-            i += 1
-            continue
-        j = i + 1  # срез начинаем сразу после якоря (вкл. лид-ин/path-строки)
-        # Это фейк-transcript. После tool-вызова модель НЕ должна писать `$ cmd`
-        # как текст — раз начала, весь хвост до следующего РЕАЛЬНОГО `:::call`
-        # (или EOF) является галлюцинацией реплея результатов, включая
-        # произвольный многострочный «вывод» (сигнатуры hover, тело файлов).
-        # Поэтому поглощаем жадно до реального вызова/конца, не пытаясь
-        # отличать «фейк-вывод» от «прозы» построчно (вывод hover/файла —
-        # обычная проза и раньше обрывала срез слишком рано).
-        k = j
-        while k < n and not _REAL_CALL_LINE_RE.match(lines[k]):
-            k += 1
-        logger.warning(
-            "sanitize_response: stripped fake transcript after call ({} lines)",
-            k - i - 1,
-        )
-        i = k  # пропускаем [i+1 .. k-1]; продолжаем с k (реальный вызов/EOF)
-    return "".join(out)
-
-
-def strip_leading_fake_tool_transcript(text: str) -> str:
-    """Срезает fake transcript-блоки (`$ tool...`) в начале фрагмента.
-
-    Сохраняет нормальный текст после transcript-а: `Осталось...`, summary и т.п.
-    """
-    if not text:
-        return text
-
-    lines = text.splitlines(keepends=True)
-    i = 0
-    while i < len(lines) and not lines[i].strip():
-        i += 1
-    if i >= len(lines) or not _looks_like_fake_transcript_start(lines[i]):
-        return text
-
-    while i < len(lines):
-        if _looks_like_fake_transcript_start(lines[i]):
-            i += 1
-            while i < len(lines) and _looks_like_fake_transcript_body(lines[i]):
-                i += 1
-            continue
-        if _looks_like_fake_transcript_body(lines[i]):
-            i += 1
-            continue
-        break
-
-    return "".join(lines[i:]).lstrip()
-
-
-def strip_fake_tool_output(text: str) -> str:
-    """Срезает предсказанный моделью «вывод инструмента» сразу после call:::.
-
-    Для live-рендера (BlockStreamer): sanitize_response применяется только
-    к финальному буферу истории и не стирает уже напечатанный scrollback,
-    поэтому фейк-вывод нужно резать и на лету. Сохраняем сам `call:::`
-    (group 1), вырезаем только предсказанный вывод.
-    """
-    text = _LIVE_FAKE_READ_RE.sub(lambda m: m.group(1), text)
-    text = _LIVE_FAKE_SHELL_RE.sub(lambda m: m.group(1), text)
-    # Жадно срезаем фейк-transcript (`● ---` + `$ cmd ✓ output` + разделители),
-    # дописанный после литерального call::: — _CALL_ANCHOR_LINE_RE ловит и
-    # литеральный маркер, не только плейсхолдер.
-    text = _strip_fake_transcript_after_call(text)
-    text = strip_leading_fake_tool_transcript(text)
-    return text
 
 
 _CALL_BLOCK_FOR_SANITIZE_RE = re.compile(
@@ -384,21 +178,151 @@ def _restore_call_blocks(text: str, stored: list[str]) -> str:
     return text
 
 
+_RUNTIME_TOOL_RESULTS_RE = re.compile(
+    r"<runtime_tool_results(?:_summary)?\b[\s\S]*?</runtime_tool_results(?:_summary)?>",
+    re.IGNORECASE,
+)
+_RUNTIME_TOOL_RESULTS_SUMMARY_INLINE_RE = re.compile(
+    r"<runtime_tool_results_summary\b[^>]*/?>",
+    re.IGNORECASE,
+)
+
+def strip_fake_runtime_tool_results(text: str) -> str:
+    """Удаляет runtime_tool_results-блоки, если модель сымитировала системный вывод."""
+    if not text:
+        return text
+    text = _RUNTIME_TOOL_RESULTS_RE.sub("", text)
+    text = _RUNTIME_TOOL_RESULTS_SUMMARY_INLINE_RE.sub("", text)
+    return text
+
+_REPLAY_START_RE = re.compile(
+    r"^\s*●\s*-{3,}\s*$"
+    r"|^\s*(?:[●]\s*)?(?:[^\s$]{1,32})?\$[^\n]*$"
+    r"|^\s*\[[^\]\n]*(?:lines\s+\d+|no matches|Project:)[^\]\n]*\]\s*$"
+    r"|^\s*●\s+[^\n]*(?:\$|/[^\n]*:\d+:\d+)"
+    r"|^\s*(?:user\s+)?Current date:",
+    re.IGNORECASE,
+)
+_STRUCTURED_REPLAY_LINE_RE = re.compile(
+    r"^\s*$"
+    r"|^\s*\[[^\]\n]*(?:lines\s+\d+|no matches|Project:)[^\]\n]*\]\s*$"
+    r"|^\s*\d+:\s"
+    r"|^\s*\.{3}\s*\(truncated\)"
+    r"|^\s*(?:✓|✔|√)\s"
+    r"|^\s*-{3,}\s*$",
+    re.IGNORECASE,
+)
+_WHOLE_REPLAY_HINT_RE = re.compile(
+    r"(?m)^\s*-{20,}\s*$"
+    r"|\[Project:"
+    r"|(?s:^\s*(?:[●]\s*)?(?:[^\s$]{1,32})?\$.*\n.*^\s*(?:[●]\s*)?(?:[^\s$]{1,32})?\$)"
+    r"|Plan \[\d+/\d+\]"
+    r"|Key reminders:"
+    r"|tool calls have produced"
+    r"|Continue now",
+    re.IGNORECASE,
+)
+
+def _is_call_anchor(line: str) -> bool:
+    return "\x00CALL_BLOCK_" in line or line.strip() == "call:::"
+
+def _next_call_index(lines: list[str], start: int) -> int:
+    for i in range(start, len(lines)):
+        stripped = lines[i].lstrip()
+        if "\x00CALL_BLOCK_" in lines[i] or stripped.startswith(":::call"):
+            return i
+    return len(lines)
+
+def _strip_replayed_transcript(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        out.append(lines[i])
+        if not _is_call_anchor(lines[i]):
+            i += 1
+            continue
+
+        j = i + 1
+        blanks: list[str] = []
+        while j < len(lines) and not lines[j].strip():
+            blanks.append(lines[j])
+            j += 1
+        if j >= len(lines):
+            out.extend(blanks)
+            i = j
+            continue
+
+        first = lines[j]
+        if not _REPLAY_START_RE.search(first):
+            out.extend(blanks)
+            i = j
+            continue
+
+        next_call = _next_call_index(lines, j)
+        block = "".join(lines[j:next_call])
+        if re.search(r"^\s*(?:user\s+)?Current date:", first, re.IGNORECASE):
+            i = next_call
+            continue
+
+        if _WHOLE_REPLAY_HINT_RE.search(block):
+            last_marker = j
+            for k in range(j, next_call):
+                line = lines[k]
+                if (
+                    _REPLAY_START_RE.search(line)
+                    or _STRUCTURED_REPLAY_LINE_RE.search(line)
+                    or "$" in line
+                    or "[Project:" in line
+                    or "tool calls have produced" in line
+                    or "Key reminders:" in line
+                    or "Continue now" in line
+                    or line.lstrip().startswith("```call")
+                ):
+                    last_marker = k
+            i = last_marker + 1
+            continue
+
+        k = j + 1
+        while k < next_call and _STRUCTURED_REPLAY_LINE_RE.search(lines[k]):
+            k += 1
+        if k < next_call and _REPLAY_START_RE.search(lines[k]):
+            i = next_call
+            continue
+        i = k
+    return "".join(out)
+
+def strip_fake_tool_output(text: str) -> str:
+    """Совместимый helper: удаляет фейковый tool output, сохраняя реальные call-блоки."""
+    if not text:
+        return text
+    result, call_blocks = _protect_call_blocks(text)
+    result = _strip_replayed_transcript(result)
+
+    for pattern in _FAKE_RESULT_PATTERNS:
+        def _replace(m):
+            groups = m.groups()
+            if groups and groups[0]:
+                return groups[0]
+            return ""
+
+        if pattern.groups > 0:
+            result = pattern.sub(_replace, result)
+        else:
+            result = pattern.sub("", result)
+    return _restore_call_blocks(result, call_blocks)
+
 def sanitize_response(text: str) -> str:
     """Удаляет фейковые tool_result и предсказанный вывод из ответа модели."""
     if not text:
         return text
 
     result = _maybe_unescape(text)
+    result = strip_fake_runtime_tool_results(result)
 
-    # Служебный proxy-маркер "*resume*" (OnlySQ и пр.) не должен попадать
-    # ни в терминал, ни в сохранённую историю.
-    from agent.stream_parser import _strip_proxy_markers
-    result = _strip_proxy_markers(result)
-
-    result = _PROXY_WRAP_RE.sub("", result)
-    result = _PROXY_QUERY_TAG_RE.sub("", result)
-
+    # Proxy-конверт внутри transcript replay (`Current date` + `<query>`) должен
+    # дойти до replay-stripper ниже: если снять маркеры здесь, останется голый
+    # фейк-вывод без признака начала блока.
     # Срезаем утёкший role-токен в начале строки (opus 4.8: `assПрочитал…`).
     # До protect — но префикс `ass`+Заглавная не встречается в коде/HTML
     # внутри call-блоков, так что риска задеть аргументы инструментов нет.
@@ -429,6 +353,8 @@ def sanitize_response(text: str) -> str:
     # Открывающие и закрывающие теги
     result = re.sub(r'</?(?:div|span|pre|button|code|path|a|img|br|hr|p|ul|ol|li|table|tr|td|th|thead|tbody|h[1-6])[^>]*>', '', result)
 
+    result = _strip_replayed_transcript(result)
+
     for pattern in _FAKE_RESULT_PATTERNS:
 
         def _replace(m):
@@ -442,14 +368,14 @@ def sanitize_response(text: str) -> str:
         else:
             result = pattern.sub("", result)
 
-    # Построчно вырезаем фейк-transcript, дописанный ПОСЛЕ tool-вызова
-    # (`● ---` лид-ин, `$ cmd ✓ output` на одной строке, тире-разделители,
-    # `[Project: …]`). Запускаем ПОКА плейсхолдеры call-блоков на месте —
-    # якорь _CALL_ANCHOR_LINE_RE ловит и плейсхолдер, и литеральный call:::.
-    result = _strip_fake_transcript_after_call(result)
-
     # Восстанавливаем защищённые call-блоки
     result = _restore_call_blocks(result, _call_blocks)
+
+    # Обычные proxy-маркеры вне replay-блоков всё равно не должны попасть в ответ.
+    from agent.stream_parser import _strip_proxy_markers
+    result = _strip_proxy_markers(result)
+    result = _PROXY_WRAP_RE.sub("", result)
+    result = _PROXY_QUERY_TAG_RE.sub("", result)
 
     # Очищаем множественные пустые строки
     result = re.sub(r"\n{3,}", "\n\n", result)

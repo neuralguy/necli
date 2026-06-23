@@ -21,66 +21,39 @@ class ModelPricing:
 # `list_models`). Идентичные значения оставлены намеренно как точка расширения,
 # если display-имя когда-нибудь разойдётся с каноническим ключом.
 CANONICAL_MODELS: dict[str, str] = {
+    "GPT-5.5":                 "GPT-5.5",
     "GPT-5.4":                 "GPT-5.4",
     "GPT-5.4 Mini":            "GPT-5.4 Mini",
-    "GPT-5.4 Nano":            "GPT-5.4 Nano",
-    "GPT-5.2 Pro":             "GPT-5.2 Pro",
-    "GPT-5.4 Pro":             "GPT-5.4 Pro",
-    "GPT-5.5":                 "GPT-5.5",
-    "o3-pro":                  "o3-pro",
+    "Claude Opus 4.8":         "Claude Opus 4.8",
     "Claude Sonnet 4.6":       "Claude Sonnet 4.6",
-    "Claude Opus 4.6":         "Claude Opus 4.6",
-    "Claude Opus 4.7":         "Claude Opus 4.7",
     "Claude Haiku 4.5":        "Claude Haiku 4.5",
-    "Gemini 2.5 Pro":          "Gemini 2.5 Pro",
-    "Gemini 3 Flash Preview":  "Gemini 3 Flash Preview",
-    "Gemini 3.1 Pro Preview":  "Gemini 3.1 Pro Preview",
-    "Grok 4.20 Reasoning":    "Grok 4.20 Reasoning",
+    "Gemini 3.1 Pro":          "Gemini 3.1 Pro",
+    "Gemini 3.5 Flash":        "Gemini 3.5 Flash",
+    "Gemini 3 Flash":          "Gemini 3 Flash",
+    "Grok 4.3":                "Grok 4.3",
     "Grok 4.20":               "Grok 4.20",
-    "DeepSeek Fast":            "DeepSeek Fast",
-    "DeepSeek Expert":          "DeepSeek Expert",
+    "Grok 4.1 Fast":           "Grok 4.1 Fast",
 }
 
 MODEL_PRICING: dict[str, ModelPricing] = {
+    # OpenAI
+    "GPT-5.5":                 ModelPricing(5.00,   30.00),
     "GPT-5.4":                 ModelPricing(2.50,   15.00),
     "GPT-5.4 Mini":            ModelPricing(0.75,   4.50),
-    "GPT-5.4 Nano":            ModelPricing(0.20,   1.25),
-    "GPT-5.2 Pro":             ModelPricing(21.00,  168.00),
-    "GPT-5.4 Pro":             ModelPricing(30.00,  180.00),
-    "GPT-5.5":                 ModelPricing(5.00,   30.00),
-    "o3-pro":                  ModelPricing(20.00,  80.00),
-    "Claude Sonnet 4.6":       ModelPricing(3.00,   15.00),
-    "Claude Opus 4.6":         ModelPricing(5.00,   25.00),
-    "Claude Opus 4.7":         ModelPricing(5.00,   25.00),
-    "Claude Haiku 4.5":        ModelPricing(1.00,   5.00),
-    "Gemini 2.5 Pro":          ModelPricing(1.25,   10.00),
-    "Gemini 3 Flash Preview":  ModelPricing(0.50,   3.00),
-    "Gemini 3.1 Pro Preview":  ModelPricing(2.00,   12.00),
-    "Grok 4.20 Reasoning":     ModelPricing(2.00,   6.00),
-    "Grok 4.20":               ModelPricing(2.00,   6.00),
-    "DeepSeek Fast":           ModelPricing(0.14,   0.28),
-    "DeepSeek Expert":         ModelPricing(1.74,   3.48),
-    "Claude Opus 4.5":         ModelPricing(5.00,   25.00),
+    # Anthropic
     "Claude Opus 4.8":         ModelPricing(5.00,   25.00),
-    "GPT 5.2":                 ModelPricing(1.75,   14.00),
-    "GPT-5.2":                 ModelPricing(1.75,   14.00),
-    "GPT 5.5":                 ModelPricing(5.00,   30.00),
-    "Gpt 5.5":                 ModelPricing(5.00,   30.00),
-    "Qwen3-235B-A22B":         ModelPricing(0.45,   1.82),
-    "Qwen3.5-Plus":            ModelPricing(0.40,   1.60),
-    "Qwen3.6-Plus":            ModelPricing(0.40,   1.60),
-    "Kimi K2":                 ModelPricing(0.60,   2.50),
+    "Claude Sonnet 4.6":       ModelPricing(3.00,   15.00),
+    "Claude Haiku 4.5":        ModelPricing(1.00,   5.00),
+    # Google Gemini
     "Gemini 3.1 Pro":          ModelPricing(2.00,   12.00),
-    "Gemini 3 Flash":          ModelPricing(0.50,   3.00),
     "Gemini 3.5 Flash":        ModelPricing(1.50,   9.00),
-    "gemini-3-flash":          ModelPricing(0.50,   3.00),
-    "Mistral Large":           ModelPricing(2.00,   6.00),
-    "deepseek-chat":           ModelPricing(0.27,   1.10),
-    "deepseek-v4-pro":         ModelPricing(0.27,   1.10),
-    "deepseek-v4-flash":       ModelPricing(0.07,   0.28),
-    "Deepseek Pro":            ModelPricing(0.27,   1.10),
-    "Deepseek Flash":          ModelPricing(0.07,   0.28),
-    "Deepseek v4 Pro":         ModelPricing(0.27,   1.10),
+    "Gemini 3 Flash":          ModelPricing(0.50,   3.00),
+    # xAI Grok
+    "Grok 4.3":                ModelPricing(1.25,   2.50),
+    "Grok 4.20":               ModelPricing(2.00,   6.00),
+    "Grok 4.1 Fast":           ModelPricing(0.20,   0.50),
+    # Groq (hosted open models)
+    "Kimi K2":                 ModelPricing(0.15,   0.60),
 }
 
 _NO_PRICING = ModelPricing(0.0, 0.0)
@@ -115,15 +88,12 @@ def _lookup_api_context_window(model: str) -> int | None:
     return None
 
 MODEL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pplx", ("pplx", "sonar", "searchgpt", "perplexity")),
     ("claude", ("claude", "opus", "sonnet", "haiku")),
     ("grok", ("grok",)),
-    ("deepseek", ("deepseek",)),
     ("gpt", ("gpt", "openai")),
     ("qwen", ("qwen",)),
     ("kimi", ("kimi", "moonshot")),
     ("gemini", ("gemini",)),
-    ("mistral", ("mistral",)),
 )
 
 

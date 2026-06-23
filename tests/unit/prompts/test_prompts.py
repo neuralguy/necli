@@ -47,16 +47,16 @@ class TestBuildSystemPrompt:
     def test_includes_core_section_anchors(self):
         result = _build()
         for anchor in (
-            "S0. TOOL CALL FORMAT",
-            "S1. EXECUTION MODEL",
-            "S2. RESPONSE STRUCTURE",
-            "S3. EFFICIENCY",
-            "S4. PLANNING",
-            "S6. HARD CONSTRAINTS",
-            "S7. AGENT RULES",
-            "S7.3. ORCHESTRATION DECISION",
-            "S8. SUBAGENTS",
-            "LANGUAGE",
+            "# Tool call format",
+            "# Execution model",
+            "# Response structure",
+            "# Efficiency",
+            "# Planning",
+            "# Hard constraints",
+            "# Agent rules",
+            "# Orchestration decision",
+            "# Subagents",
+            "# Language",
         ):
             assert anchor in result, anchor
 
@@ -65,13 +65,14 @@ class TestBuildSystemPrompt:
         bare = build_system_prompt(
             native_tools=False, think_enabled=False, active_skills=set(),
         )
-        # web_search скрыт из S5.0 и блока S5.2
-        tools_list = bare.split("S5.0")[1].split("S5.1")[0]
+        # web_search скрыт из списка инструментов и блока Web search
+        tools_list = bare.split("## Available tools")[1].split("## LSP tools")[0]
         assert "web_search" not in tools_list
-        assert "S5.2. WEB SEARCH" not in bare
-        # orchestration/subagents скрыты
-        assert "ORCHESTRATION DECISION" not in bare
-        assert "S8. SUBAGENTS" not in bare
+        assert "# Web search" not in bare
+        # Детальный блок Subagents гейтится скиллом `subagents` и скрыт.
+        # (Решение solo-vs-orchestration S3.0 — базовое и присутствует всегда;
+        # его гейтинг проверять нельзя, оно не зависит от скиллов.)
+        assert "# Subagents" not in bare
         # ssh/subagent отсутствуют в списке инструментов
         assert "ssh" not in tools_list
         assert "subagent" not in tools_list
@@ -83,20 +84,20 @@ class TestBuildSystemPrompt:
         p = build_system_prompt(
             native_tools=False, think_enabled=False, active_skills={"web"},
         )
-        tools_list = p.split("S5.0")[1].split("S5.1")[0]
+        tools_list = p.split("## Available tools")[1].split("## LSP tools")[0]
         assert "web_search" in tools_list
-        assert "S5.2. WEB SEARCH" in p
+        assert "# Web search" in p
         # но subagents-блоки всё ещё скрыты
-        assert "S8. SUBAGENTS" not in p
+        assert "# Subagents" not in p
 
     def test_skill_gating_subagents_exposes_orchestration(self):
         p = build_system_prompt(
             native_tools=False, think_enabled=False, active_skills={"subagents"},
         )
-        assert "ORCHESTRATION DECISION" in p
-        assert "S8. SUBAGENTS" in p
+        assert "# Orchestration decision" in p
+        assert "# Subagents" in p
         # web остаётся скрытым
-        assert "S5.2. WEB SEARCH" not in p
+        assert "# Web search" not in p
 
     def test_isolate_warns_about_merge_conflicts(self):
         # Изоляция спасает от затирания, но не от merge-конфликтов при правке
@@ -115,21 +116,22 @@ class TestBuildSystemPrompt:
             result = _build(native_tools=mode)
             assert "EXPLICIT USER INSTRUCTION OVERRIDES" in result
             override_pos = result.index("EXPLICIT USER INSTRUCTION OVERRIDES")
-            checklist_pos = result.index("Run this checklist")
+            checklist_pos = result.index("The checklist is ONLY for deciding")
             assert override_pos < checklist_pos, "override must come before the checklist"
 
     def test_orchestration_decision_has_triggers_and_anti_triggers(self):
-        # S7.3 must teach BOTH when to orchestrate and when to stay solo,
+        # Orchestration decision must teach BOTH when to orchestrate and when to stay solo,
         # otherwise the agent either dives in solo or forces workflows onto trivia.
         for mode in (True, False):
             result = _build(native_tools=mode)
-            assert "ORCHESTRATION DECISION" in result
+            assert "# Orchestration decision" in result
             # trigger toward orchestration
             assert "fan-out" in result
             # anti-trigger: small/linear work stays solo
             assert "SOLO" in result
-            # names the trap explicitly
-            assert "feels faster" in result
+            # names the trap explicitly (phrase wraps across a line in the source)
+            assert '"because it feels' in result
+            assert 'faster"' in result
 
     def test_efficiency_teaches_locate_then_narrow_read(self):
         # The agent must locate (grep/LSP) then read a targeted range — NOT pull
@@ -147,22 +149,22 @@ class TestBuildSystemPrompt:
             main = _build(native_tools=native, for_subagent=False)
             sub = _build(native_tools=native, for_subagent=True)
             # у главного есть, у субагента нет
-            assert "S8. SUBAGENTS" in main and "S8. SUBAGENTS" not in sub
-            assert "ORCHESTRATION DECISION" in main
-            assert "ORCHESTRATION DECISION" not in sub
+            assert "# Subagents" in main and "# Subagents" not in sub
+            assert "# Orchestration decision" in main
+            assert "# Orchestration decision" not in sub
             # субагент заметно короче
             assert len(sub) < len(main)
             # но критичное для работы — сохранено
-            assert "EFFICIENCY" in sub
-            assert "HARD CONSTRAINTS" in sub
-            assert "DELIVERABLE DISCIPLINE" in sub
-            assert "TOOL STRATEGY" in sub
+            assert "# Efficiency" in sub
+            assert "# Hard constraints" in sub
+            assert "# Deliverable discipline" in sub
+            assert "# Tool strategy" in sub
 
     def test_includes_environment_block(self):
         result = _build(working_dir="/tmp/some-dir")
-        assert "ENVIRONMENT" in result
+        assert "# Environment" in result
         assert "/tmp/some-dir" in result
-        assert "mode:     agent" in result
+        assert "- Mode: agent" in result
 
     def test_proof_is_substituted(self):
         result = _build(proof="PROOF-TOKEN-XYZ")
@@ -177,38 +179,45 @@ class TestBuildSystemPrompt:
         assert ":::call" in result
         assert "call:::" in result
         # text-mode формат вызова присутствует только в fenced
-        assert "TOOL CALL FORMAT (text mode" in result
+        assert "# Tool call format: text mode" in result
 
     def test_native_mode_no_fenced_markers(self):
         result = _build(native_tools=True)
         assert "NATIVE function calling" in result
-        assert ":::call" not in result
-        assert "call:::" not in result
-        assert "TOOL CALL FORMAT (text mode" not in result
+        # Инъецированная persistent-memory может содержать ':::call' как часть
+        # фактов — это артефакт окружения, а не дефект промта. Проверяем, что
+        # САМ авторский промт (без блока <persistent_memory>) не несёт fenced-
+        # маркеров в native-режиме.
+        authored = result.split("<persistent_memory>")[0]
+        assert ":::call" not in authored
+        assert "call:::" not in authored
+        assert "# Tool call format: text mode" not in result
 
     def test_agent_and_planning_mode_differ(self):
         agent = _build(mode="agent")
         planning = _build(mode="planning")
-        assert "mode:     agent" in agent
-        assert "mode:     planning" in planning
-        assert "MODE: PLANNING" in planning
+        assert "- Mode: agent" in agent
+        assert "- Mode: planning" in planning
+        assert "# Planning mode" in planning
 
     def test_think_off_no_think_block(self):
-        assert "THINK FORMAT (enabled)" not in _build(think_enabled=False)
+        assert "# Think format" not in _build(think_enabled=False)
 
     def test_think_on_appends_think_block(self):
-        assert "THINK FORMAT (enabled)" in _build(think_enabled=True)
+        assert "# Think format" in _build(think_enabled=True)
 
     def test_native_and_fenced_differ(self):
         assert _build(native_tools=False) != _build(native_tools=True)
 
     def test_lsp_tools_present_in_both_modes(self):
-        assert "S5.1. LSP TOOLS" in _build(native_tools=False)
-        assert "S5.1. LSP TOOLS" in _build(native_tools=True)
+        # Блок LSP-заметок (S5.2) — fenced-only: в native-режиме LSP-аргументы
+        # дублируются JSON-схемами, поэтому секция намеренно опускается.
+        assert "## LSP tools" in _build(native_tools=False)
+        assert "## LSP tools" not in _build(native_tools=True)
 
     def test_tool_strategy_present_in_both_modes(self):
-        assert "S5.3. TOOL STRATEGY" in _build(native_tools=False)
-        assert "S5.3. TOOL STRATEGY" in _build(native_tools=True)
+        assert "# Tool strategy" in _build(native_tools=False)
+        assert "# Tool strategy" in _build(native_tools=True)
 
 class TestDefaultSystemPrompt:
     def test_system_prompt_constant_non_empty(self):
@@ -227,7 +236,7 @@ class TestDefaultSystemPrompt:
     def test_assemble_default_contains_header_and_anchors(self):
         result = _assemble_default_system_prompt()
         assert BASE_HEADER in result
-        assert "S8. SUBAGENTS" in result
+        assert "# Subagents" in result
         assert "{proof}" in result
 
 class TestBlockSelectors:

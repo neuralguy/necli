@@ -33,10 +33,6 @@ def get_pinned() -> set[str]:
     return _load()
 
 
-def is_pinned(sid: str) -> bool:
-    return sid in _load()
-
-
 def toggle(sid: str) -> bool:
     """Toggle pin для session_id. Возвращает новое состояние (True = pinned)."""
     ids = _load()

@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from logger import logger  # noqa: F401  (used by callers via stream_parser context)
 from tools import strip_tool_calls as _strip_tool_calls
 from tools.call_parser import (
     find_next_complete_call as _find_next_complete_call_block,
@@ -91,20 +90,12 @@ def _clean_display_text(text: str, strip_calls: bool = True) -> str:
     # strip_calls=False (native function-calling): fenced-блоки НЕ вырезаются —
     # модель вызывает инструменты через native tool_calls, а любой текст вида
     # :::call ... call::: в ответе печатается дословно как обычный текст.
-    # Срезаем предсказанный моделью фейк-вывод инструмента (opus 4.8:
-    # `$ read_files…`/`[… lines …]`/прокси-конверт `Current date:`/`<query>`
-    # сразу после call:::) ДО strip_tool_calls И ДО _strip_proxy_markers,
-    # пока литеральный `call:::`-якорь И прокси-маркеры ещё на месте: именно
-    # они служат сигналом начала фейк-turn-а в _strip_fake_transcript_after_call.
-    # Если сначала вырезать прокси-обёртку, якорь-сигнал пропадёт и хвост фейка
-    # (`Plan […]`, фабрикованный nudge, ```call) утечёт в scrollback.
-    from agent.sanitizer import (
-        strip_fake_tool_output, strip_leading_fake_tool_transcript, _ROLE_LEAK_RE,
-    )
-    result = strip_fake_tool_output(text)
-    result = _strip_proxy_markers(result)
+    from agent.sanitizer import _ROLE_LEAK_RE, strip_fake_runtime_tool_results, strip_fake_tool_output
+
+    result = _strip_proxy_markers(text)
+    result = strip_fake_runtime_tool_results(result)
+    result = strip_fake_tool_output(result)
     result = _ROLE_LEAK_RE.sub("", result)
-    result = strip_leading_fake_tool_transcript(result)
     result = strip_plan_commands(result)
     result = strip_think_blocks(result)
     result = strip_partial_think_block(result)

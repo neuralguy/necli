@@ -47,7 +47,7 @@ def _render_poll(
     checked = checked or set()
 
     # Header
-    header = f"  \033[1;{accent}m\u2753 {question}\033[0m"
+    header = f"  \033[1;{accent}m? {question}\033[0m"
     if step_info:
         header += f"  \033[2m{step_info}\033[0m"
     lines.append(header)
@@ -83,7 +83,7 @@ def _input_custom_answer(question: str) -> str:
     from rich.console import Console  # noqa: F811 — local instance
     from config.themes import t
     console = Console()
-    console.print(f"  [bold {t('accent')}]\u2753 {question}[/bold {t('accent')}]")
+    console.print(f"  [bold {t('accent')}]? {question}[/bold {t('accent')}]")
     console.print()
     try:
         sys.stdout.write(f"  \033[1;{_accent_ansi()}m\u25b8 \033[0m")
@@ -136,7 +136,7 @@ def run_poll_step(
                 # пустая строка + строка ввода. Хардкод "3" оставлял артефакты
                 # на узких терминалах, когда вопрос переносился.
                 _term_w = _get_term_width()
-                _q_line = f"  ❓ {question}"
+                _q_line = f"  ? {question}"
                 _clear_lines(_visual_line_count(_q_line, _term_w) + 2)
                 if multiple:
                     if answer:

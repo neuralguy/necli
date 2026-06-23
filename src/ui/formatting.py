@@ -16,7 +16,11 @@ def _latex_fragment_to_unicode(latex: str) -> str:
 
 
 _DISPLAY_MATH_RE = re.compile(r'\$\$(.*?)\$\$', re.DOTALL)
-_INLINE_MATH_RE = re.compile(r'(?<!\\)\$(.+?)(?<!\\)\$')
+# Inline math $...$, tightened to avoid mangling currency like "$5 and $10":
+# the opening $ must not be followed by whitespace, the closing $ must not be
+# preceded by whitespace, and the closing $ must not be directly followed by a
+# digit (which signals a second currency amount, not a math delimiter).
+_INLINE_MATH_RE = re.compile(r'(?<!\\)\$(?!\s)(.+?)(?<!\s)(?<!\\)\$(?!\d)')
 _LATEX_BLOCK_RE = re.compile(
     r'\\\[(.*?)\\\]'
     r'|\\\((.*?)\\\)',

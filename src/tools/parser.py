@@ -4,6 +4,7 @@ from .call_parser import (
     parse_call_calls as _parse_call_calls,
     strip_call_calls as _strip_call_calls,
     has_call_calls as _has_call_calls,
+    find_next_complete_call as _find_next_complete_call,
 )
 
 MAX_TOOL_CALLS_PER_MESSAGE = 50
@@ -28,3 +29,18 @@ def strip_tool_calls(text: str) -> str:
 
 def has_tool_calls(text: str) -> bool:
     return _has_call_calls(text)
+
+def truncate_after_last_tool_call(text: str) -> str:
+    if not text:
+        return ""
+    offset = 0
+    last_end = None
+    while True:
+        block = _find_next_complete_call(text, offset)
+        if not block:
+            break
+        last_end = block["end"]
+        offset = block["end"]
+    if last_end is None:
+        return text
+    return text[:last_end].rstrip()

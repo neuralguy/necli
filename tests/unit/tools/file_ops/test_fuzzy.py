@@ -65,6 +65,18 @@ class TestFuzzyFindReplace:
         assert found is True
         assert result == "new\n"
 
+    def test_preserves_crlf_line_ending(self):
+        text = "a\r\nold\r\nb\r\n"
+        result, found = _fuzzy_find_replace(text, "old", "new")
+        assert found is True
+        assert result == "a\r\nnew\r\nb\r\n"
+
+    def test_preserves_crlf_multiline_replace(self):
+        text = "a\r\nold1\r\nold2\r\nb\r\n"
+        result, found = _fuzzy_find_replace(text, "old1\nold2", "new1\nnew2")
+        assert found is True
+        assert result == "a\r\nnew1\r\nnew2\r\nb\r\n"
+
 class TestFuzzyEdgeCases:
     def test_first_occurrence_only(self):
         text = "old\nmid\nold\n"

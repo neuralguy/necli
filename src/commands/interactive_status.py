@@ -37,8 +37,7 @@ def _term_width() -> int:
 def build_status_line(state) -> str:
     s = state.session
     mc = s.message_count
-    in_tok = s.raw_input_tokens          # usage провайдера (может быть кривым)
-    est_tok = s.estimated_input_tokens  # наша независимая оценка
+    in_tok = s.raw_input_tokens
     out_tok = s.output_tokens
     total_tok = s.context_tokens
 
@@ -70,12 +69,7 @@ def build_status_line(state) -> str:
 
     if mc > 0:
         msg_part = f"{mc}msg · "
-        # Если usage провайдера заметно расходится с нашей оценкой (>1.5×) —
-        # показываем оба: ↑<оценка>(prov~<провайдер>). Иначе одну цифру.
-        if est_tok > 0 and in_tok > est_tok * 1.5:
-            up_part = f"↑{format_tokens(est_tok)}(prov~{format_tokens(in_tok)})"
-        else:
-            up_part = f"↑{format_tokens(in_tok)}"
+        up_part = f"↑{format_tokens(in_tok)}"
         io_part = f"{up_part} ↓{format_tokens(out_tok)} · "
         cost_part = f"≈{cost_str} · "
     else:

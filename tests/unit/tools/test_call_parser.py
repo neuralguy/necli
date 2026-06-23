@@ -46,6 +46,13 @@ class TestBasicParsing:
         assert calls[0].tool_name == "read_files"
         assert calls[1].tool_name == "ls"
 
+    def test_inline_triple_colon_after_sentence_parses(self):
+        text = 'Пробую системный Chromium.:::call shell\n{"command": "echo ok"}\ncall:::'
+        calls = parse_call_calls(text)
+        assert len(calls) == 1
+        assert calls[0].tool_name == "shell"
+        assert calls[0].args == {"command": "echo ok"}
+
     def test_memory_tools_parse(self):
         # Регрессия: memory_* были в TOOL_REGISTRY, но отсутствовали в
         # NAMED_TOOLS → парсер ругался "unknown tool".

@@ -46,21 +46,49 @@ class TestFileWriteViaShell:
         msg = _is_file_write_via_shell("cat > x.py")
         assert msg and "write_file" in msg
 
+    def test_tee_redirect(self):
+        # tee пишет в файл и без heredoc — блокируем.
+        msg = _is_file_write_via_shell("echo hi | tee x.py")
+        assert msg and "write_file" in msg
+
+    def test_tee_append_redirect(self):
+        msg = _is_file_write_via_shell("echo hi | tee -a x.py")
+        assert msg and "write_file" in msg
+
     def test_echo_redirect(self):
-        # Текущая реализация блокирует только heredoc и 'cat >',
-        # echo-редирект не детектируется.
+        # echo-редирект — осознанно НЕ блокируем (мелкие inline-операции).
         assert _is_file_write_via_shell("echo hi > x.py") is None
 
     def test_printf_redirect(self):
-        # printf-редирект тоже не детектируется текущей реализацией.
+        # printf-редирект тоже осознанно НЕ блокируем.
         assert _is_file_write_via_shell("printf 'x' > x.py") is None
 
     def test_echo_with_pipe_allowed(self):
-        # echo "x" | tee — pipe не должен блокироваться
+        # pipe в grep не должен блокироваться
         assert _is_file_write_via_shell("echo hi | grep h") is None
 
     def test_normal_command(self):
         assert _is_file_write_via_shell("ls -la") is None
+
+    def test_quoted_cat_redirect_not_flagged(self):
+        # 'cat >' внутри кавычек — литерал, не реальная запись файла.
+        assert _is_file_write_via_shell('echo "cat > x.py"') is None
+
+    def test_quoted_heredoc_not_flagged(self):
+        # heredoc-подобный текст внутри кавычек не должен срабатывать.
+        assert _is_file_write_via_shell("echo 'cat > x.py << EOF'") is None
+
+    def test_quoted_tee_not_flagged(self):
+        assert _is_file_write_via_shell('grep "tee file" log.txt') is None
+
+    def test_real_cat_redirect_still_flagged(self):
+        # Реальный 'cat >' вне кавычек по-прежнему блокируется.
+        assert _is_file_write_via_shell('cat > x.py') is not None
+
+    def test_unbalanced_quotes_fail_safe(self):
+        # При незакрытой кавычке остаёмся осторожными — блокируем реальную запись.
+        msg = _is_file_write_via_shell('cat > x.py "unterminated')
+        assert msg and "write_file" in msg
 
 
 class TestStripShellPrefix:

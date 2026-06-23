@@ -3,9 +3,6 @@
 Функции:
   - wrap_table_cells: оборачивает inline-содержимое <td>/<th> в <p>,
     чтобы pandoc корректно парсил формулы и inline-форматирование внутри.
-  - escape_code_blocks: экранирует < > & внутри <pre><code>…</code></pre>,
-    чтобы pandoc HTML reader не съедал C++/HTML-фрагменты вида
-    vector<Lexeme>, <iostream>, <программа> как мнимые теги.
 
 (apply_text_align удалён — выравнивание обрабатывается через
 _extract_styled_spans + _apply_styles_to_docx в docx_writer post-process.)
@@ -283,8 +280,6 @@ _INLINE_CODE_RE = re.compile(
     r"<code\b[^>]*>(.*?)</code>",
     flags=re.IGNORECASE | re.DOTALL,
 )
-_ENTITY_RE = re.compile(r"&(?:#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);")
-
 # Уникальный плейсхолдер-токен. Состоит из букв/цифр — pandoc проносит его
 # через HTML reader дословно (не трогает как тег и не разбивает на слова).
 _CODE_PH_PREFIX = "NECLICODEBLOCK"

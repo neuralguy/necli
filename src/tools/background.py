@@ -73,6 +73,7 @@ class _Job:
 
 
 _jobs: dict[str, _Job] = {}
+_external_results: list[ToolResult] = []
 _lock = threading.Lock()
 _counter = 0
 
@@ -80,9 +81,16 @@ _counter = 0
 def has_pending_finished() -> bool:
     """True, если есть завершённые, но ещё не доставленные модели задачи."""
     with _lock:
-        return any(
+        return bool(_external_results) or any(
             j.status != "running" and not j.delivered for j in _jobs.values()
         )
+
+
+def publish_background_result(result: ToolResult) -> None:
+    """Публикует готовый background ToolResult из несhell-фоновых задач."""
+    with _lock:
+        _external_results.append(result)
+    _signal_finish()
 
 
 def _run_job(job: _Job, cwd: str, env: dict) -> None:
@@ -150,6 +158,9 @@ def drain_finished_results() -> list[ToolResult]:
     """Возвращает ToolResult-уведомления по завершённым, ещё не доставленным задачам."""
     out: list[ToolResult] = []
     with _lock:
+        if _external_results:
+            out.extend(_external_results)
+            _external_results.clear()
         for job in _jobs.values():
             if job.status == "running" or job.delivered:
                 continue

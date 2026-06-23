@@ -1,6 +1,6 @@
 [project]
 name = "necli-api"
-version = "0.14.0"
+version = "0.15.0"
 description = "Terminal client for AI chat (API-only, no browser)"
 readme = "README.md"
 license = "Apache-2.0"
@@ -10,7 +10,7 @@ dependencies = [
     "prompt-toolkit",
     "click",
     "tiktoken",
-    "httpx>=0.27",
+    "httpx[socks]>=0.27",
     "Pillow",
     "python-docx",
     "openpyxl",
@@ -30,7 +30,57 @@ dev = [
     "pytest-asyncio>=0.24",
     "vulture>=2.16",
     "pyinstaller>=6.0",
+    "ruff>=0.8",
 ]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "PIE",  # flake8-pie
+    "PERF", # perflint
+    "ASYNC",# flake8-async
+    "LOG",  # flake8-logging
+    "TID",  # flake8-tidy-imports
+]
+ignore = [
+    "E501",   # line length handled by formatter
+    "B008",   # function call in default arg (used by click/aiogram)
+    "SIM105", # contextlib.suppress over try/except/pass
+    "RUF001", # ambiguous unicode (Cyrillic strings are intentional)
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["N802", "N803", "N806", "B011", "PTH"]
+"scripts/**" = ["N", "PTH"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

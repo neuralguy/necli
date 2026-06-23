@@ -1,6 +1,7 @@
 """Статистика проекта и трекинг изменений за шаг агента."""
 
 import os
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -84,19 +85,8 @@ class StepTracker:
                 tool_name, path or new_path, len(self.files_changed),
             )
 
-        # Парсим +/- строки из diff-вывода patch_file
         if tool_name == "patch_file":
-            for line in result_output.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("+ ") and not stripped.startswith("+ ..."):
-                    # Строка с номером: "+ 42  code"
-                    parts = stripped[2:].split(None, 1)
-                    if parts and parts[0].isdigit():
-                        self.lines_added += 1
-                elif stripped.startswith("- ") and not stripped.startswith("- ..."):
-                    parts = stripped[2:].split(None, 1)
-                    if parts and parts[0].isdigit():
-                        self.lines_removed += 1
+            self._parse_patch_stats(result_output)
 
         elif tool_name == "write_file":
             self._parse_write_stats(result_output)
@@ -108,42 +98,31 @@ class StepTracker:
             # Удалённый файл — все строки минус, но мы не знаем сколько было
             pass
 
+    def _parse_patch_stats(self, output: str):
+        """Парсит summary patch_file: '✓ path updated (3 changed, +5 added, -2 removed)'."""
+        m = re.search(r"\+(\d+)\s+added", output)
+        if m:
+            self.lines_added += int(m.group(1))
+        m = re.search(r"-(\d+)\s+removed", output)
+        if m:
+            self.lines_removed += int(m.group(1))
+
     def _parse_write_stats(self, output: str):
-        """Парсит вывод write_file для подсчёта строк."""
-        # Формат: "✓ path: перезаписан (X → Y bytes), N строк"
-        # или: "✓ path: создан (Y bytes), N строк"
-        for line in output.split("\n"):
-            if "строк" in line and "перезаписан" in line:
-                # Перезапись — считаем как изменение, точную дельту не знаем
-                pass
-            elif "строк" in line and "создан" in line:
-                # Новый файл через write_file
-                try:
-                    parts = line.split(",")
-                    for p in parts:
-                        p = p.strip()
-                        if "строк" in p:
-                            num = int(p.split()[0])
-                            self.lines_added += num
-                            break
-                except (ValueError, IndexError):
-                    pass
+        """Парсит вывод write_file для подсчёта строк.
+
+        Формат: "✓ path: created, N lines" / "✓ path: overwritten, N lines".
+        Перезапись считаем изменением файла (дельту строк точно не знаем),
+        поэтому строки прибавляем только для созданного файла.
+        """
+        m = re.search(r":\s*created,\s*(\d+)\s+lines?", output)
+        if m:
+            self.lines_added += int(m.group(1))
 
     def _parse_create_stats(self, output: str):
-        """Парсит вывод create_file."""
-        # Формат: "✓ Создан: path (N bytes, M строк)"
-        for line in output.split("\n"):
-            if "строк" in line:
-                try:
-                    # Ищем число перед "строк"
-                    parts = line.split()
-                    for i, word in enumerate(parts):
-                        if word.startswith("строк") and i > 0:
-                            num = int(parts[i - 1].rstrip(","))
-                            self.lines_added += num
-                            break
-                except (ValueError, IndexError):
-                    pass
+        """Парсит вывод create_file: "✓ Created: path (N lines)"."""
+        m = re.search(r"Created:.*\((\d+)\s+lines?\)", output)
+        if m:
+            self.lines_added += int(m.group(1))
 
     def reset(self):
         self.files_changed.clear()

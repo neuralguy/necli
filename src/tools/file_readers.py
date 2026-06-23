@@ -295,15 +295,6 @@ def _rewrite_media_paths(html: str, media_dir: Path) -> str:
     return re.sub(r'(<img\b[^>]*?\s)src="([^"]+)"([^>]*>)', repl, html)
 
 
-_ALIGN_MAP = {
-    "center": "center",
-    "right": "right",
-    "both": "justify",
-    "justify": "justify",
-    "left": None,  # left is default — don't emit
-}
-
-
 def _effective_alignment(para):
     """Эффективное выравнивание абзаца: прямое (pPr/jc) либо унаследованное
     из именованного стиля по цепочке base_style. python-docx pf.alignment

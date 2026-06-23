@@ -61,7 +61,7 @@ def _build_reply_keyboard():
 
 def _build_mode_menu(current_mode: str):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    modes = [("agent", "🚀 agent"), ("planning", "🧠 planning")]
+    modes = [("agent", "🚀 agent"), ("planning", "🧠 planning"), ("autonomous", "🔮 auto")]
     rows = []
     for mid, label in modes:
         mark = "● " if mid == current_mode else "  "
@@ -260,7 +260,7 @@ def register_tg_menu(state) -> None:
 
         if data.startswith("mode:"):
             new_mode = data.split(":", 1)[1]
-            if new_mode not in ("agent", "planning"):
+            if new_mode not in ("agent", "planning", "autonomous"):
                 await bridge.answer_callback(cb, "Unknown mode", show_alert=True)
                 return
             state.mode_state["mode"] = new_mode

@@ -74,6 +74,19 @@ class TestGet:
     def test_limits_value(self, cfg):
         assert cfg.get("limits.compact_preview_lines") == 8
 
+class TestMissingConsumedKeys:
+    def test_think_stream_lines(self, cfg):
+        assert "think_stream_lines" in DEFAULTS["limits"]
+        assert cfg.get("limits.think_stream_lines") == 6
+
+    def test_think_preview_lines(self, cfg):
+        assert "think_preview_lines" in DEFAULTS["limits"]
+        assert cfg.get("limits.think_preview_lines") == 3
+
+    def test_compact_active_live(self, cfg):
+        assert "compact_active_live" in DEFAULTS["live_stream"]
+        assert cfg.get("live_stream.compact_active_live") is False
+
 class TestMaxConcurrencyDefault:
     def test_default(self, cfg):
         assert cfg.get("subagent.max_concurrency") == 12

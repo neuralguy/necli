@@ -9,7 +9,7 @@ from rich.console import Console
 
 import config
 import tools
-from tools import strip_tool_calls
+from tools import strip_tool_calls, truncate_after_last_tool_call
 from system_prompt import build_system_prompt
 from collections import Counter
 
@@ -83,6 +83,12 @@ def _format_history_block(history, *, leading_newline: bool = False) -> str:
 def _clean_for_save(text: str) -> str:
     """Очищает текст ответа от plan/think блоков перед сохранением в session."""
     return strip_think_blocks(strip_plan_commands(text))
+
+def _sanitize_agent_response(text: str) -> str:
+    cleaned = sanitize_response(text)
+    if tools.has_tool_calls(cleaned):
+        return truncate_after_last_tool_call(cleaned)
+    return cleaned
 
 
 def _extract_thoughts(text: str) -> list[str]:
@@ -235,6 +241,24 @@ def _dedupe_tool_calls(calls: list[tools.ToolCall]) -> list[tools.ToolCall]:
     return deduped
 
 
+def _build_repeat_tool_notice(
+    last_tool_name: str | None,
+    calls: list[tools.ToolCall],
+) -> tuple[str, str | None]:
+    if not calls:
+        return "", None
+    tool_name = calls[0].tool_name
+    if tool_name != last_tool_name:
+        return "", tool_name
+    return (
+        "[repeat-tool notice]\n"
+        f"You called `{tool_name}` in two consecutive tool rounds. "
+        "Before calling it again, check whether the previous result already "
+        "answers the task, or explain why repeating the same tool is necessary.",
+        tool_name,
+    )
+
+
 async def _stream_send(text, model, ctx, session=None, images=None, message_num=1,
                        tool_results=None, extras=None):
     """Отправляет сообщение со стримингом через API.
@@ -314,7 +338,7 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         raise
     else:
         stream.stop(show_final=True)
-    return sanitize_response(response), stream.inline_results, stream.inline_call_keys, stream._plan_processed_count, usage, native_tool_calls
+    return _sanitize_agent_response(response), stream.inline_results, stream.inline_call_keys, stream._plan_processed_count, usage, native_tool_calls
 
 
 async def _send_via_api(text, on_chunk, images, tool_results=None, extras=None, return_result: bool = False, system_prompt=""):
@@ -492,10 +516,11 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
     api_result = await _send_via_api(
         first_msg, on_chunk, images, return_result=True, system_prompt=api_sys,
     )
-    full_response = sanitize_response(api_result["text"])
+    full_response = _sanitize_agent_response(api_result["text"])
     native_tool_calls = api_result.get("tool_calls") or []
     _process_plan_commands(full_response, ctx)
 
+    last_tool_name: str | None = None
     for _ in range(MAX_ITERATIONS):
         if _is_api_proxy_error(full_response):
             if ctx.event_handler:
@@ -503,7 +528,7 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
                     "⚠ API returned an error — auto-continuing…", level="warning",
                 )
             api_result = await _send_via_api("continue", on_chunk, None, return_result=True)
-            full_response = sanitize_response(api_result["text"])
+            full_response = _sanitize_agent_response(api_result["text"])
             native_tool_calls = api_result.get("tool_calls") or []
             _process_plan_commands(full_response, ctx)
             continue
@@ -513,6 +538,7 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
         else:
             calls = _dedupe_tool_calls(tools.parse_tool_calls(full_response))
         calls = [c for c in calls if c.tool_name not in ("think", "plan")]
+        repeat_tool_notice, last_tool_name = _build_repeat_tool_notice(last_tool_name, calls)
         if not calls:
             if _is_control_only_response(full_response, native_tool_calls=native_tool_calls):
                 extras = _build_result_extras(
@@ -531,14 +557,14 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
                         extras or _build_continue_message(),
                         on_chunk, None, return_result=True,
                     )
-                full_response = sanitize_response(api_result["text"])
+                full_response = _sanitize_agent_response(api_result["text"])
                 native_tool_calls = api_result.get("tool_calls") or []
                 _process_plan_commands(full_response, ctx)
                 continue
 
             if _is_likely_truncated(full_response):
                 api_result = await _send_via_api(_build_continue_message(), on_chunk, None, return_result=True)
-                full_response = sanitize_response(api_result["text"])
+                full_response = _sanitize_agent_response(api_result["text"])
                 native_tool_calls = api_result.get("tool_calls") or []
                 _process_plan_commands(full_response, ctx)
                 continue
@@ -578,6 +604,8 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
             )
             if bg_notice:
                 extras = (extras + "\n\n" + bg_notice) if extras else bg_notice
+            if repeat_tool_notice:
+                extras = (extras + "\n\n" + repeat_tool_notice) if extras else repeat_tool_notice
             api_result = await _send_via_api(
                 "", on_chunk, result_images or None,
                 tool_results=struct_results, extras=extras or None,
@@ -594,6 +622,8 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
             )
             if bg_notice:
                 result_msg = result_msg + "\n\n" + bg_notice
+            if repeat_tool_notice:
+                result_msg = result_msg + "\n\n" + repeat_tool_notice
             api_result = await _send_via_api(
                 result_msg,
                 on_chunk, result_images or None,
@@ -602,7 +632,7 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
             full_response = api_result["text"]
             native_tool_calls = api_result.get("tool_calls") or []
         ctx.step_tracker.reset()
-        full_response = sanitize_response(full_response)
+        full_response = _sanitize_agent_response(full_response)
         _process_plan_commands(full_response, ctx)
 
     logger.warning("run_agent: MAX_ITERATIONS={} reached", MAX_ITERATIONS)
@@ -799,6 +829,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
     msg_num = 1
     last_usage: dict = {}
 
+    last_tool_name: str | None = None
     try:
         full_response, inline_results, inline_call_keys, plan_processed, last_usage, native_tool_calls = await _stream_send(
             msg, model, ctx, session, images=first_images,
@@ -855,6 +886,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
         # thinking-panel. Если не отфильтровать здесь — execute_and_show_async
         # выполнит его повторно через generic-pipeline → дубль рамок.
         all_calls = [c for c in all_calls if c.tool_name not in ("think", "plan")]
+        repeat_tool_notice, last_tool_name = _build_repeat_tool_notice(last_tool_name, all_calls)
         executed_counts = Counter(inline_call_keys)
         remaining_calls = []
         for c in all_calls:
@@ -874,7 +906,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             if is_tool_allowed(c.tool_name, ctx.mode):
                 allowed.append(c)
             else:
-                blocked_results.append(build_blocked_result(c))
+                blocked_results.append(build_blocked_result(c, ctx.mode))
         remaining_calls = allowed
 
         if blocked_results:
@@ -1057,6 +1089,8 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             bg_notice = _format_background_notice(drain_finished_results())
             if bg_notice:
                 extras = (extras + "\n\n" + bg_notice) if extras else bg_notice
+            if repeat_tool_notice:
+                extras = (extras + "\n\n" + repeat_tool_notice) if extras else repeat_tool_notice
             ctx.step_tracker.reset()
             msg_num += 1
             try:
@@ -1079,6 +1113,8 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             bg_notice = _format_background_notice(drain_finished_results())
             if bg_notice:
                 result_msg = result_msg + "\n\n" + bg_notice
+            if repeat_tool_notice:
+                result_msg = result_msg + "\n\n" + repeat_tool_notice
             ctx.step_tracker.reset()
             if session:
                 session.add_tool_result(result_msg, model=model or "")

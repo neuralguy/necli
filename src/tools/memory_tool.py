@@ -14,9 +14,9 @@ from tools._paths import get_working_dir
 from tools.models import ToolCall, ToolResult
 
 
-def _today() -> str:
-    # Дата нужна для frontmatter; формат YYYY-MM-DD (абсолютная, не относительная).
-    return _dt.date.today().isoformat()
+def _now() -> str:
+    # Абсолютные дата+время для frontmatter; timezone сохраняет смысл между сессиями.
+    return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def memory_write(call: ToolCall) -> ToolResult:
@@ -50,7 +50,7 @@ def memory_write(call: ToolCall) -> ToolResult:
         )
     try:
         mf = write_memory(
-            name, body, mtype=mtype, today=_today(),
+            name, body, mtype=mtype, timestamp=_now(),
             working_dir=get_working_dir(), scope=scope,
         )
     except Exception as e:  # noqa: BLE001
@@ -62,7 +62,10 @@ def memory_write(call: ToolCall) -> ToolResult:
         )
     return ToolResult(
         name="memory_write", status="ok",
-        output=f"Saved memory '{mf.name}' (type={mf.type}, scope={scope}).",
+        output=(
+            f"Saved memory '{mf.name}' (type={mf.type}, scope={scope}, "
+            f"created={mf.created}, updated={mf.updated})."
+        ),
         command=call.command,
     )
 
@@ -84,7 +87,8 @@ def memory_list(call: ToolCall) -> ToolResult:
         for f in files:
             first = f.body.splitlines()[0][:100] if f.body else ""
             lines.append(
-                f"- {f.name} [scope={scope_label}, type={f.type}, updated={f.updated}]: {first}"
+                f"- {f.name} [scope={scope_label}, type={f.type}, "
+                f"created={f.created}, updated={f.updated}]: {first}"
             )
     return ToolResult(
         name="memory_list", status="ok",

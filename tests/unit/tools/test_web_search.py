@@ -7,11 +7,57 @@ import tools.web_search as ws
 from tools.web_search import (
     _cache_get,
     _cache_put,
+    _coerce_indices,
     _do_url_fetch,
     _fetch_cache,
     _fetch_pages,
     execute_web_search,
 )
+
+# ---------------- thread-safety & index coercion (added) ----------------
+
+def test_cache_concurrent_mutation_thread_safe():
+    import threading as _threading
+
+    errors: list[BaseException] = []
+
+    def worker(n: int) -> None:
+        try:
+            for i in range(200):
+                _cache_put(f"http://t{n}-{i}", str(i))
+                _cache_get(f"http://t{n}-{i}")
+        except BaseException as exc:  # noqa: BLE001 - record for assertion
+            errors.append(exc)
+
+    threads = [_threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert len(_fetch_cache) <= ws._CACHE_MAX_ENTRIES
+
+def test_coerce_indices_ints():
+    assert _coerce_indices([0, 2, 5]) == {0, 2, 5}
+
+def test_coerce_indices_strings():
+    assert _coerce_indices(["0", "1", "3"]) == {0, 1, 3}
+
+def test_coerce_indices_mixed_and_single():
+    assert _coerce_indices(["0", 2]) == {0, 2}
+    assert _coerce_indices(3) == {3}
+    assert _coerce_indices("4") == {4}
+
+def test_coerce_indices_invalid_ignored():
+    assert _coerce_indices(["x", None, [], "1.5", 2]) == {2}
+
+def test_coerce_indices_booleans_ignored():
+    assert _coerce_indices([True, False, 1]) == {1}
+
+def test_coerce_indices_empty_and_none():
+    assert _coerce_indices([]) == set()
+    assert _coerce_indices(None) == set()
 
 @pytest.fixture(autouse=True)
 def clear_cache():

@@ -10,6 +10,11 @@ if str(SRC_ROOT) not in sys.path:
 import pytest  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def disable_auto_checks_by_default(monkeypatch):
+    monkeypatch.setenv("NECLI_AUTO_CHECKS", "0")
+
+
 @pytest.fixture
 def tmp_workdir(tmp_path):
     """Подменяет рабочую директорию tools/_paths на tmp_path."""

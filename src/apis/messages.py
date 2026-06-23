@@ -79,7 +79,7 @@ class AIMessageChunk(AIMessage):
 
     def __add__(self, other: "AIMessageChunk") -> "AIMessageChunk":
         if not isinstance(other, AIMessageChunk):
-            return self
+            return NotImplemented
 
         # content: конкатенация строк
         a = self.content if isinstance(self.content, str) else ""

@@ -7,7 +7,9 @@ from ui.formatting import (
     progress_bar,
     latex_to_unicode,
     BAR_FILLED_START,
+    BAR_FILLED_END,
     BAR_EMPTY_START,
+    BAR_EMPTY_END,
 )
 
 
@@ -71,6 +73,41 @@ class TestProgressBar:
         # ratio=0 → all empty
         assert "▯" * 10 in bar
 
+    def test_marker_layout_half(self):
+        bar = progress_bar(5, 10, width=10)
+        # Маркеры должны идти строго: FS …▮ FE ES …▯ EE
+        expected = (
+            BAR_FILLED_START + "▮" * 5 + BAR_FILLED_END
+            + BAR_EMPTY_START + "▯" * 5 + BAR_EMPTY_END
+        )
+        assert bar == expected
+
+    def test_marker_layout_full(self):
+        bar = progress_bar(10, 10, width=10)
+        # При полном баре пустой сегмент пуст, но маркеры всё равно есть
+        expected = (
+            BAR_FILLED_START + "▮" * 10 + BAR_FILLED_END
+            + BAR_EMPTY_START + BAR_EMPTY_END
+        )
+        assert bar == expected
+        assert bar.index(BAR_FILLED_END) < bar.index(BAR_EMPTY_START)
+
+    def test_marker_layout_zero(self):
+        bar = progress_bar(0, 10, width=10)
+        expected = (
+            BAR_FILLED_START + BAR_FILLED_END
+            + BAR_EMPTY_START + "▯" * 10 + BAR_EMPTY_END
+        )
+        assert bar == expected
+
+    def test_ratio_clamped_overflow(self):
+        # current > total → ratio clamps to 1.0, бар полностью заполнен
+        bar = progress_bar(20, 10, width=10)
+        assert bar == (
+            BAR_FILLED_START + "▮" * 10 + BAR_FILLED_END
+            + BAR_EMPTY_START + BAR_EMPTY_END
+        )
+
 
 class TestLatexToUnicode:
     def test_passthrough_no_math(self):
@@ -109,3 +146,33 @@ class TestLatexToUnicode:
         # fence удалён, alpha заменена
         assert "```" not in result
         assert "alpha" not in result or "α" in result
+
+    def test_currency_not_treated_as_math(self):
+        text = "It costs $5 and $10 total"
+        assert latex_to_unicode(text) == text
+
+    def test_real_inline_math_still_converts(self):
+        result = latex_to_unicode("formula $a^2 + b^2$ end")
+        assert "$" not in result
+        assert "formula" in result and "end" in result
+
+    def test_bare_fence_math_unwrapped(self):
+        # Голый ```-fence, содержащий только $$...$$, разворачивается:
+        # fence-маркеры убираются, математика конвертируется.
+        text = "```\n$$x^2$$\n```"
+        result = latex_to_unicode(text)
+        assert "```" not in result
+        assert "$" not in result
+
+    def test_bare_fence_math_with_surrounding_whitespace(self):
+        # Текущее поведение: внутренние пробелы вокруг $$ допускаются
+        # регэкспом _BARE_FENCE_MATH_RE и съедаются .strip().
+        text = "```\n  $$y^2$$  \n```"
+        result = latex_to_unicode(text)
+        assert "```" not in result
+        assert "$" not in result
+
+    def test_bare_fence_non_math_preserved(self):
+        # Голый fence без $$...$$ внутри — это обычный код, не трогаем.
+        text = "```\nx = 1\n```"
+        assert latex_to_unicode(text) == text

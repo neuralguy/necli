@@ -27,8 +27,11 @@ def activity_emoji(status: str | None = None) -> str:
 def set_terminal_title(title: str) -> None:
     if not title:
         return
-    out = getattr(sys, "__stdout__", sys.stdout)
-    if not (sys.stdout.isatty() or out.isatty()):
+    out = getattr(sys, "__stdout__", None) or sys.stdout
+    if out is None:
+        return
+    isatty = getattr(out, "isatty", None)
+    if not callable(isatty) or not isatty():
         return
     if os.environ.get("TERM") == "dumb":
         return

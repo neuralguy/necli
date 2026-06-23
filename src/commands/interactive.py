@@ -406,15 +406,17 @@ def interactive(model, workdir, resume, api_provider):
                     console.print(
                         f"  [dim]📄 {tr('send.context_files', files=files_str)}[/dim]"
                     )
-                    agent_message = file_context_block + "\n\n" + user
+                    agent_message = file_context_block + "\n\n" + agent_message
 
                 # Полное описание mode/think — в системном промте (пересобирается
                 # каждый запрос). В поток шлём ТОЛЬКО короткий one-shot сигнал при
                 # переключении, чтобы модель явно заметила смену в середине диалога.
                 if state.mode_state["changed"]:
-                    from prompts import MODE_SWITCH_TO_PLANNING, MODE_SWITCH_TO_AGENT
+                    from prompts import MODE_SWITCH_TO_AGENT, MODE_SWITCH_TO_AUTONOMOUS, MODE_SWITCH_TO_PLANNING
                     if state.mode_state["mode"] == "planning":
                         mode_notice = MODE_SWITCH_TO_PLANNING
+                    elif state.mode_state["mode"] == "autonomous":
+                        mode_notice = MODE_SWITCH_TO_AUTONOMOUS
                     else:
                         mode_notice = MODE_SWITCH_TO_AGENT
                     agent_message = mode_notice + "\n\n" + agent_message
@@ -486,6 +488,11 @@ def interactive(model, workdir, resume, api_provider):
                 shutdown_lsp()
             except Exception:
                 logger.debug("lsp shutdown failed", exc_info=True)
+            try:
+                from agent.undo_store import cleanup_store
+                cleanup_store(state.workdir)
+            except Exception:
+                logger.debug("undo cleanup failed", exc_info=True)
             try:
                 tg = _get_tg_bridge()
                 if tg.is_running:

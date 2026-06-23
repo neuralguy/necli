@@ -70,6 +70,7 @@ def create_custom_provider(
         max_tokens=kwargs.get("max_tokens"),
         timeout=definition.timeout or 300,
         max_retries=definition.max_retries or 3,
+        reasoning_effort=kwargs.get("reasoning_effort"),
     )
     provider._api_url = api_url
     provider._provider_name = definition.name

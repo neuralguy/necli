@@ -64,13 +64,34 @@ class TestParseLinesRange:
         assert _parse_lines_range("0", 100) == (1, 1)
 
     def test_invalid(self):
-        assert _parse_lines_range("abc", 100) is None
+        result = _parse_lines_range("abc", 100)
+        assert isinstance(result, str)
+        assert "Invalid" in result
 
     def test_empty(self):
         assert _parse_lines_range("", 100) is None
 
-    def test_inverted_returns_none(self):
-        assert _parse_lines_range("50-10", 100) is None
+    def test_inverted_returns_error(self):
+        result = _parse_lines_range("50-10", 100)
+        assert isinstance(result, str)
+        assert "Inverted" in result
+
+    def test_open_ended_to_eof(self):
+        # 'A-' → от A до конца файла, без молчаливого full read.
+        assert _parse_lines_range("90-", 100) == (90, 100)
+
+    def test_open_start(self):
+        assert _parse_lines_range("-20", 100) == (1, 20)
+
+    def test_out_of_bounds_start(self):
+        result = _parse_lines_range("150-160", 100)
+        assert isinstance(result, str)
+        assert "out of bounds" in result.lower()
+
+    def test_open_ended_dangling_dash_invalid_token(self):
+        result = _parse_lines_range("x-", 100)
+        assert isinstance(result, str)
+        assert "Invalid" in result
 
 
 class TestReadFilesBasic:
@@ -121,9 +142,10 @@ class TestReadFilesBasic:
     def test_lines_out_of_range(self, tmp_workdir):
         (tmp_workdir / "a.py").write_text("a\nb\n")
         r = read_files(_call(path="a.py", lines="100-200"))
-        # за пределами → возвращает весь файл с предупреждением
-        assert r.status == "ok"
-        assert "a" in r.output
+        # за пределами → явная ошибка, НЕ молчаливый full read.
+        assert r.status == "error"
+        assert "out of bounds" in r.output.lower()
+        assert "a: a" not in r.output  # содержимое файла не пересылается
 
 
 class TestMultiplePaths:
@@ -201,3 +223,58 @@ class TestReadCache:
         # Тот же диапазон уже виден → NOT CHANGED, контент не пересылается.
         r = read_files(_call(path="a.py"))
         assert "NOT CHANGED" in r.output
+
+class TestRangeParserDivergence:
+    """Регрессии: единый парсер для cache-coverage и вывода, без расхождений."""
+
+    def test_inverted_range_actual_output_is_error(self, tmp_workdir):
+        content = "\n".join(f"l{i}" for i in range(20))
+        (tmp_workdir / "a.py").write_text(content)
+        r = read_files(_call(path="a.py", lines="15-5"))
+        # Инвертированный диапазон → явная ошибка, НЕ пустой/полный вывод.
+        assert r.status == "error"
+        assert "Inverted" in r.output
+        # Содержимое файла не пересылается.
+        assert "l0" not in r.output
+        assert "l14" not in r.output
+
+    def test_trailing_newline_count_consistent(self, tmp_workdir):
+        # Файл с финальным '\n': splitlines() даёт 5 строк, split('\n') дал бы 6.
+        content = "a\nb\nc\nd\ne\n"
+        f = tmp_workdir / "a.py"
+        f.write_text(content)
+        # Полное чтение: total_lines из splitlines == 5.
+        r1 = read_files(_call(path="a.py"))
+        assert r1.status == "ok"
+        assert "· 5 lines" in r1.output
+        # Сбрасываем кэш, чтобы проверить фактический вывод диапазона (не NOT CHANGED).
+        clear_read_cache("*")
+        # Диапазон 1-5 ровно покрывает файл → header согласован.
+        r2 = read_files(_call(path="a.py", lines="1-5"))
+        assert r2.status == "ok"
+        assert "lines 1-5 of 5" in r2.output
+        assert "1: a" in r2.output
+        assert "5: e" in r2.output
+        # Никакой призрачной 6-й (пустой) строки от split('\n').
+        assert "6: " not in r2.output
+
+    def test_open_ended_range_to_eof(self, tmp_workdir):
+        content = "\n".join(f"l{i}" for i in range(10))  # 10 строк: l0..l9
+        (tmp_workdir / "a.py").write_text(content)
+        r = read_files(_call(path="a.py", lines="7-"))
+        assert r.status == "ok"
+        # 'N-' → от строки 7 до конца (строки 7,8,9,10 == l6..l9).
+        assert "lines 7-10 of 10" in r.output
+        assert "7: l6" in r.output
+        assert "10: l9" in r.output
+        assert "6: l5" not in r.output
+
+    def test_open_ended_cache_coverage_matches_output(self, tmp_workdir):
+        content = "\n".join(f"l{i}" for i in range(30))
+        (tmp_workdir / "a.py").write_text(content)
+        r1 = read_files(_call(path="a.py", lines="20-"))
+        assert r1.status == "ok"
+        assert "lines 20-30 of 30" in r1.output
+        # Повторный тот же открытый диапазон → cache-coverage совпадает → NOT CHANGED.
+        r2 = read_files(_call(path="a.py", lines="20-"))
+        assert "NOT CHANGED" in r2.output

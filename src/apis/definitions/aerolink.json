@@ -1,0 +1,35 @@
+{
+  "id": "aerolink",
+  "name": "Aerolink",
+  "type": "anthropic",
+  "base_url": "https://capi.aerolink.lat",
+  "api_format": "anthropic",
+  "models": [
+    {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8", "context_window": 1000000, "input_price": 0, "output_price": 0},
+    {"id": "claude-opus-4-7", "display_name": "Claude Opus 4.7", "context_window": 1000000, "input_price": 0, "output_price": 0},
+    {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "context_window": 1000000, "input_price": 0, "output_price": 0},
+    {"id": "claude-opus-4-6", "display_name": "Claude Opus 4.6", "context_window": 1000000, "input_price": 0, "output_price": 0},
+    {"id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5", "context_window": 200000, "input_price": 0, "output_price": 0}
+  ],
+  "default_model": "claude-opus-4-8",
+  "default_headers": {
+    "User-Agent": "claude-cli/2.1.183 (external, sdk-cli)",
+    "x-app": "cli",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "Linux",
+    "X-Stainless-Arch": "x64",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v24.3.0",
+    "X-Stainless-Package-Version": "0.94.0"
+  },
+  "extra": {
+    "append_query": "beta=true",
+    "session_id_header": "X-Claude-Code-Session-Id",
+    "use_aiohttp": true,
+    "system_as_first_message": true,
+    "billing_header": "x-anthropic-billing-header: cc_version=2.1.183.aeb; cc_entrypoint=sdk-cli;",
+    "inject_metadata": {
+      "user_id": "{\"device_id\": \"6dd643eb1c02353bf22b029347c825fab8d011fc68b9fd34ed8185533b442961\", \"account_uuid\": \"\", \"session_id\": \"\"}"
+    }
+  }
+}

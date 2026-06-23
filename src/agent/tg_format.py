@@ -27,7 +27,7 @@ _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 # **bold** / __bold__
 _BOLD_RE = re.compile(r"\*\*([^\*\n]+?)\*\*|__([^_\n]+?)__")
 # *italic* / _italic_  (после bold, чтобы не съесть **)
-_ITALIC_RE = re.compile(r"(?<![\*\w])\*([^\*\n]+?)\*(?![\*\w])|(?<![_\w])_([^_\n]+?)_(?![_\w])")
+_ITALIC_RE = re.compile(r"(?<![\*\w])\*(\S(?:[^\*\n]*?\S)?)\*(?![\*\w])|(?<![_\w])_(\S(?:[^_\n]*?\S)?)_(?![_\w])")
 # ~~strike~~
 _STRIKE_RE = re.compile(r"~~([^~\n]+?)~~")
 # [text](url)

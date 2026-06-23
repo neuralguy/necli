@@ -27,7 +27,8 @@ def _sources_dir() -> Path:
 def _key_for(docx_path: Path) -> str:
     try:
         abs_str = str(docx_path.resolve())
-    except Exception:
+    except Exception as e:
+        logger.debug("docx_source key resolve failed for {}: {}", docx_path, e)
         abs_str = str(docx_path)
     # Полный sha1-hex (40 символов): 16-символьный префикс давал заметный риск
     # коллизий, при которых исходник одного docx перезаписывал другой.
@@ -58,12 +59,6 @@ def load_source(docx_path: Path) -> str | None:
     except Exception as e:
         logger.opt(exception=True).warning("docx_source load failed for {}: {}", docx_path, e)
         return None
-
-def has_source(docx_path: Path) -> bool:
-    try:
-        return (_sources_dir() / f"{_key_for(docx_path)}.html").exists()
-    except Exception:
-        return False
 
 def delete_source(docx_path: Path) -> None:
     """Удаляет сохранённый исходник (например при delete_file docx)."""
@@ -110,7 +105,8 @@ def iter_templates() -> list[Path]:
     """Все сохранённые шаблоны-оригиналы (.template.docx)."""
     try:
         return sorted(_sources_dir().glob("*.template.docx"))
-    except Exception:
+    except Exception as e:
+        logger.warning("docx_template iter failed: {}", e)
         return []
 
 
@@ -119,7 +115,8 @@ def load_template(docx_path: Path) -> Path | None:
     try:
         tpl = _sources_dir() / f"{_key_for(docx_path)}.template.docx"
         return tpl if tpl.exists() and tpl.stat().st_size > 0 else None
-    except Exception:
+    except Exception as e:
+        logger.warning("docx_template load failed for {}: {}", docx_path, e)
         return None
 
 
@@ -136,6 +133,6 @@ def delete_template(docx_path: Path) -> None:
 
 
 __all__ = [
-    "save_source", "load_source", "has_source", "delete_source",
-    "save_template", "load_template", "delete_template",
+    "save_source", "load_source", "delete_source",
+    "save_template", "load_template",
 ]

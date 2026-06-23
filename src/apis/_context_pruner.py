@@ -270,6 +270,66 @@ def _tool_placeholder(cmd_line: str, reason: str) -> str:
         f"{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
     )
 
+
+def _runtime_results_summary(text: str) -> str:
+    from html import unescape
+
+    result_tags = re.findall(r"<result\s+([^>]*)>", text)
+    items = []
+    for attrs_text in result_tags:
+        attrs = {
+            key: unescape(value)
+            for key, value in re.findall(r'([a-zA-Z_]\w*)="([^"]*)"', attrs_text)
+        }
+        tool = attrs.get("tool") or "tool"
+        command = attrs.get("command") or tool
+        exit_code = attrs.get("exit_code")
+        label = f"{tool}: {command}"
+        if exit_code:
+            label += f" exit_code={exit_code}"
+        items.append(label)
+    if not items:
+        items.append("runtime tool results")
+    summary = "; ".join(items)
+    if len(summary) > 500:
+        summary = summary[:497].rstrip() + "..."
+    return (
+        f'<runtime_tool_results_summary count="{len(result_tags)}" '
+        f'chars="{len(text)}">{summary}</runtime_tool_results_summary>'
+    )
+
+
+def _prune_runtime_tool_results(messages: list, keep_last: int = 3) -> tuple[list, int, int]:
+    indexes = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, HumanMessage):
+            continue
+        if not (getattr(msg, "additional_kwargs", None) or {}).get("synthetic"):
+            continue
+        text = _get_text_content(msg)
+        if text and text.lstrip().startswith("<runtime_tool_results"):
+            indexes.append(i)
+
+    if len(indexes) <= keep_last:
+        return messages, 0, 0
+
+    compress = set(indexes[:-keep_last])
+    result = list(messages)
+    pruned = 0
+    saved = 0
+    for i in compress:
+        text = _get_text_content(messages[i])
+        if not text or text.lstrip().startswith("<runtime_tool_results_summary"):
+            continue
+        new_text = _runtime_results_summary(text)
+        if new_text == text:
+            continue
+        result[i] = _set_text_content(messages[i], new_text)
+        pruned += 1
+        saved += len(text) - len(new_text)
+    return result, pruned, saved
+
+
 def _prune_user_text(
     text: str,
     user_round: int,
@@ -451,7 +511,8 @@ def prune_messages(messages: list) -> tuple[list, dict]:
 
     current_round = sum(1 for m in messages if _is_real_user(m))
     if current_round <= 1:
-        return list(messages), {"pruned_blocks": 0, "saved_chars": 0}
+        result, runtime_pruned, runtime_saved = _prune_runtime_tool_results(list(messages))
+        return result, {"pruned_blocks": runtime_pruned, "saved_chars": runtime_saved}
 
     write_rounds = _scan_round_writes(messages)
     read_rounds = _scan_read_paths(messages)
@@ -491,6 +552,11 @@ def prune_messages(messages: list) -> tuple[list, dict]:
     )
     pruned_blocks += native_pruned
     saved += native_saved
+
+    # ── Pass 3: fenced runtime tool results ──
+    result, runtime_pruned, runtime_saved = _prune_runtime_tool_results(result)
+    pruned_blocks += runtime_pruned
+    saved += runtime_saved
 
     # Сброс read-cache для вытесненных путей: тело удалено из истории, поэтому
     # повторный read_files НЕ должен отвечать NOT CHANGED (иначе модель

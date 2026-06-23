@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -28,26 +29,51 @@ def _fetch_pages(urls: list[str], raw: bool = False) -> dict[str, str | None]:
         return dict(zip(urls, ex.map(fetcher, urls)))
 
 # url -> (timestamp, text). OrderedDict для O(1) eviction старейших.
+# Кэш мутируется из воркеров ThreadPoolExecutor, поэтому защищён локом.
 _fetch_cache: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
+_cache_lock = threading.Lock()
 
 
 def _cache_get(url: str) -> str | None:
-    item = _fetch_cache.get(url)
-    if item is None:
-        return None
-    ts, text = item
-    if time.time() - ts > _CACHE_TTL:
-        _fetch_cache.pop(url, None)
-        return None
-    _fetch_cache.move_to_end(url)
-    return text
+    with _cache_lock:
+        item = _fetch_cache.get(url)
+        if item is None:
+            return None
+        ts, text = item
+        if time.time() - ts > _CACHE_TTL:
+            _fetch_cache.pop(url, None)
+            return None
+        _fetch_cache.move_to_end(url)
+        return text
 
 
 def _cache_put(url: str, text: str) -> None:
-    _fetch_cache[url] = (time.time(), text)
-    _fetch_cache.move_to_end(url)
-    while len(_fetch_cache) > _CACHE_MAX_ENTRIES:
-        _fetch_cache.popitem(last=False)
+    with _cache_lock:
+        _fetch_cache[url] = (time.time(), text)
+        _fetch_cache.move_to_end(url)
+        while len(_fetch_cache) > _CACHE_MAX_ENTRIES:
+            _fetch_cache.popitem(last=False)
+
+def _coerce_indices(raw: object) -> set[int]:
+    """Приводит fetch_indices к множеству int. Принимает list/tuple/set/одиночное
+    значение, int и строки вида '0'. Невалидные значения молча игнорируются."""
+    if raw is None:
+        return set()
+    if isinstance(raw, (str, bytes)):
+        items: list[object] = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        items = list(raw)
+    else:
+        items = [raw]
+    out: set[int] = set()
+    for item in items:
+        if isinstance(item, bool):
+            continue
+        try:
+            out.add(int(item))
+        except (ValueError, TypeError):
+            logger.warning("web_search: ignoring invalid fetch_index {!r}", item)
+    return out
 
 
 def _fetch_page(url: str) -> str | None:
@@ -231,7 +257,7 @@ def execute_web_search(call: ToolCall) -> ToolResult:
     if fetch_content:
         indices_to_fetch = set(range(len(results)))
     elif fetch_indices:
-        indices_to_fetch = {i for i in fetch_indices if 0 <= i < len(results)}
+        indices_to_fetch = {idx for idx in _coerce_indices(fetch_indices) if 0 <= idx < len(results)}
 
     urls_by_index = {
         i: r.get("href", r.get("link", ""))

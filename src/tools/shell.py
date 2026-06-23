@@ -2,6 +2,7 @@
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 from typing import Optional
@@ -29,6 +30,10 @@ _HEREDOC_RE = re.compile(
 _CAT_REDIRECT_RE = re.compile(
     r'cat\s+>',
 )
+# tee, пишущий в файл (с опциями -a и без), но НЕ как часть конвейера в grep и т.п.
+_TEE_REDIRECT_RE = re.compile(
+    r'(?:^|\||&&|;)\s*tee\b(?:\s+-\w+)*\s+\S',
+)
 
 # _working_dir, get_working_dir, set_working_dir — перенесены в tools/_paths.py
 # Реэкспортируются через этот модуль для обратной совместимости.
@@ -54,12 +59,36 @@ def _is_blocked(command: str) -> Optional[str]:
     return None
 
 
+_QUOTED_SEGMENT_RE = re.compile(r"""'[^']*'|"[^"]*\"""", re.DOTALL)
+
+def _strip_quoted(command: str) -> str:
+    """
+    Вырезает содержимое кавычек, чтобы паттерны cat/tee/heredoc не срабатывали
+    на литеральном тексте внутри строк (например `echo "cat > x"`). Реальные
+    shell-операторы (>, <<, |, &&) вне кавычек сохраняются.
+
+    Перед удалением проверяем баланс кавычек через shlex: при незакрытой кавычке
+    остаёмся осторожными и возвращаем команду как есть (fail-safe — лучше лишний
+    раз заблокировать, чем пропустить реальную запись файла).
+    """
+    try:
+        shlex.split(command, posix=True)
+    except ValueError:
+        return command
+    return _QUOTED_SEGMENT_RE.sub("", command)
+
 def _is_file_write_via_shell(command: str) -> Optional[str]:
     """
     Детектирует попытки записи файлов через shell вместо нативных инструментов.
     Возвращает сообщение-подсказку или None.
+
+    Политика: блокируем heredoc (cat/tee <<EOF) и редиректы 'cat >' / 'tee file',
+    направляя агента к write_file/create_file. echo/printf-редиректы НЕ блокируем —
+    это осознанное решение (мелкие inline-операции), зафиксированное тестами.
+    Содержимое кавычек игнорируется, чтобы литералы вроде `echo "cat > x"`
+    не давали ложных срабатываний.
     """
-    cmd = command.strip()
+    cmd = _strip_quoted(command.strip())
 
     # heredoc: cat > file << 'EOF', cat > file <<EOF, tee file << EOF
     if _HEREDOC_RE.search(cmd):
@@ -76,6 +105,13 @@ def _is_file_write_via_shell(command: str) -> Optional[str]:
     if _CAT_REDIRECT_RE.search(cmd):
         return (
             "REJECTED: Do not use 'cat >' to write files. "
+            "Use the write_file or create_file tool instead."
+        )
+
+    # tee file (tee writes its stdin to a file even without heredoc)
+    if _TEE_REDIRECT_RE.search(cmd):
+        return (
+            "REJECTED: Do not use 'tee' to write files. "
             "Use the write_file or create_file tool instead."
         )
 

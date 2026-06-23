@@ -1,4 +1,4 @@
-"""tools/subagent.py — _parse_depends_on + execute_subagent (runner mocked)."""
+"""tools/subagent.py — parse_depends_on + execute_subagent (runner mocked)."""
 
 import sys
 import types
@@ -7,7 +7,8 @@ from typing import Optional
 
 import pytest
 
-from tools.subagent import _parse_depends_on, execute_subagent, set_subagent_context
+from tools.subagent import execute_subagent, set_subagent_context
+from tools.subagent_specs import parse_depends_on
 from tools.models import ToolCall
 
 def _call(args: dict) -> ToolCall:
@@ -103,7 +104,7 @@ class TestSubagentContextDiscipline:
 
         run_src = inspect.getsource(sa._ApiSubagentRunner.run)
         # обе ветки стопа должны возвращать ненулевой error
-        assert "token budget reached (work likely incomplete)" in run_src
+        assert "context size limit reached (work likely incomplete)" in run_src
         assert "iteration limit reached (work likely incomplete)" in run_src
         # нормальное завершение (нет tool calls) остаётся успехом — ровно ОДИН
         # такой return с error=None допустим, не больше (стопы его не используют)
@@ -145,37 +146,37 @@ class TestSubagentContextDiscipline:
 
 class TestParseDependsOn:
     def test_none(self):
-        assert _parse_depends_on(None) == []
+        assert parse_depends_on(None) == []
 
     def test_int(self):
-        assert _parse_depends_on(3) == [3]
+        assert parse_depends_on(3) == [3]
 
     def test_list_of_ints(self):
-        assert _parse_depends_on([1, 2, 3]) == [1, 2, 3]
+        assert parse_depends_on([1, 2, 3]) == [1, 2, 3]
 
     def test_list_of_str_ints(self):
-        assert _parse_depends_on(["1", "2"]) == [1, 2]
+        assert parse_depends_on(["1", "2"]) == [1, 2]
 
     def test_str_comma_separated(self):
-        assert _parse_depends_on("1,2,3") == [1, 2, 3]
+        assert parse_depends_on("1,2,3") == [1, 2, 3]
 
     def test_str_space_separated(self):
-        assert _parse_depends_on("1 2 3") == [1, 2, 3]
+        assert parse_depends_on("1 2 3") == [1, 2, 3]
 
     def test_str_mixed_separators(self):
-        assert _parse_depends_on("1, 2  3") == [1, 2, 3]
+        assert parse_depends_on("1, 2  3") == [1, 2, 3]
 
     def test_invalid_entries_skipped(self):
-        assert _parse_depends_on([1, "x", 2, None]) == [1, 2]
+        assert parse_depends_on([1, "x", 2, None]) == [1, 2]
 
     def test_unsupported_type(self):
-        assert _parse_depends_on({"a": 1}) == []
+        assert parse_depends_on({"a": 1}) == []
 
     def test_tuple(self):
-        assert _parse_depends_on((4, 5)) == [4, 5]
+        assert parse_depends_on((4, 5)) == [4, 5]
 
     def test_empty_str(self):
-        assert _parse_depends_on("") == []
+        assert parse_depends_on("") == []
 
 # --- Fakes for agent.subagent (so execute_subagent never spawns real work) ---
 
@@ -187,6 +188,8 @@ class _FakeTask:
     role: Optional[str] = None
     preset: Optional[str] = None
     depends_on: list = field(default_factory=list)
+    phase: str = "subagents"
+    label: str = ""
 
 @dataclass
 class _FakeResult:

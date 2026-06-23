@@ -8,13 +8,10 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Protocol, runtime_checkable
 
 import tools
 from planner import Plan
-
-logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class AgentEventHandler(Protocol):

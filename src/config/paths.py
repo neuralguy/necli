@@ -1,6 +1,9 @@
+import logging
 import os
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 def _resolve_base_dir() -> Path:
     """Каталог пользовательских данных.
@@ -71,8 +74,8 @@ def _seed_bundled(rel: str) -> None:
         return
     try:
         shutil.copytree(src, dst)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.warning("Не удалось скопировать встроенный ресурс %s → %s: %s", src, dst, exc)
 
 
 def ensure_dirs() -> None:

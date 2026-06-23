@@ -14,15 +14,9 @@
 теряются.
 
 Использование:
-    from logger import logger, LogContext, log_call, new_request_id
+    from logger import logger
 
     logger.info("message")
-
-    with LogContext(request_id="abc123"):
-        logger.info("with request_id")
-
-    @log_call(level="INFO")
-    async def my_func(): ...
 """
 
 from __future__ import annotations
@@ -41,15 +35,10 @@ except Exception as _emoji_patch_error:
         file=sys.stderr,
     )
 
-import asyncio
 import logging
 import os
-import uuid
 from contextvars import ContextVar
-from functools import wraps
 from pathlib import Path
-from time import perf_counter
-from typing import Any, Callable, Optional
 
 from loguru import logger as _loguru_logger
 
@@ -67,15 +56,6 @@ else:
 # ── Контекст (request_id для трейсинга одной операции через слои) ──
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
-
-def get_request_id() -> str:
-    return request_id_var.get()
-
-def set_request_id(request_id: Optional[str]) -> None:
-    request_id_var.set(request_id if request_id is not None else "-")
-
-def new_request_id() -> str:
-    return uuid.uuid4().hex[:8]
 
 def _context_patcher(record: dict) -> None:
     record["extra"].setdefault("request_id", request_id_var.get())
@@ -105,7 +85,7 @@ def _error_format(record: dict) -> str:
     req_part = req_part.replace("{", "{{").replace("}", "}}")
     exc = record.get("exception")
     exc_part = ""
-    if exc is not None and exc.type is not None:
+    if exc:
         exc_part = f" | {exc.type.__name__}: {exc.value}"
         exc_part = exc_part.replace("{", "{{").replace("}", "}}")
         exc_part = exc_part.replace("<", r"\<")
@@ -224,7 +204,7 @@ def _install_stdlib_intercept() -> None:
 # ── Настройка ──
 
 def setup_logger():
-    LOGS_DIR.mkdir(exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
     _loguru_logger.remove()
     _loguru_logger.configure(patcher=_context_patcher)
 
@@ -275,91 +255,3 @@ def setup_logger():
     return _loguru_logger
 
 logger = setup_logger()
-
-# ── Декоратор log_call ──
-
-def log_call(
-    level: str = "DEBUG",
-    log_args: bool = True,
-    log_result: bool = False,
-    max_arg_length: int = 200,
-):
-    def decorator(func: Callable) -> Callable:
-        func_name = func.__qualname__
-
-        @wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            args_str = ""
-            if log_args:
-                args_str = f" | args={_safe_repr(args[1:], max_arg_length)}"
-                if kwargs:
-                    args_str += f", kwargs={_safe_repr(kwargs, max_arg_length)}"
-            logger.log(level, f"→ {func_name}{args_str}")
-            start = perf_counter()
-            try:
-                result = await func(*args, **kwargs)
-                elapsed = perf_counter() - start
-                result_str = f" | result={_safe_repr(result, max_arg_length)}" if log_result else ""
-                logger.log(level, f"← {func_name} | OK | {elapsed:.3f}s{result_str}")
-                return result
-            except Exception as e:
-                elapsed = perf_counter() - start
-                logger.opt(exception=True).error(
-                    f"✗ {func_name} | FAILED | {elapsed:.3f}s | {type(e).__name__}: {e}"
-                )
-                raise
-
-        @wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            args_str = ""
-            if log_args:
-                args_str = f" | args={_safe_repr(args[1:], max_arg_length)}"
-                if kwargs:
-                    args_str += f", kwargs={_safe_repr(kwargs, max_arg_length)}"
-            logger.log(level, f"→ {func_name}{args_str}")
-            start = perf_counter()
-            try:
-                result = func(*args, **kwargs)
-                elapsed = perf_counter() - start
-                result_str = f" | result={_safe_repr(result, max_arg_length)}" if log_result else ""
-                logger.log(level, f"← {func_name} | OK | {elapsed:.3f}s{result_str}")
-                return result
-            except Exception as e:
-                elapsed = perf_counter() - start
-                logger.opt(exception=True).error(
-                    f"✗ {func_name} | FAILED | {elapsed:.3f}s | {type(e).__name__}: {e}"
-                )
-                raise
-
-        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
-    return decorator
-
-def _safe_repr(obj: Any, max_len: int = 200) -> str:
-    try:
-        if isinstance(obj, tuple) and len(obj) == 0:
-            return "()"
-        s = repr(obj)
-        return s[:max_len] + "..." if len(s) > max_len else s
-    except Exception:
-        return f"<{type(obj).__name__}>"
-
-# ── Контекстный менеджер для request_id ──
-
-class LogContext:
-    def __init__(self, request_id: Optional[str] = None):
-        self.request_id = request_id or new_request_id()
-        self._token = None
-
-    def __enter__(self):
-        self._token = request_id_var.set(self.request_id)
-        return self
-
-    def __exit__(self, *args):
-        if self._token is not None:
-            request_id_var.reset(self._token)
-
-    async def __aenter__(self):
-        return self.__enter__()
-
-    async def __aexit__(self, *args):
-        self.__exit__(*args)

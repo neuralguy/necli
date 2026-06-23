@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Optional
 
 from apis.base import BaseProvider
@@ -125,6 +126,16 @@ def get_definitions() -> dict[str, ApiProviderDefinition]:
 
 def _create_instance(defn: ApiProviderDefinition, model_id: str, **kwargs) -> BaseProvider:
     """Создаёт LLM-инстанс по типу провайдера."""
+    # Глобальный прокси из конфига применяется, если у провайдера нет своего.
+    if not defn.proxy:
+        try:
+            import config
+            global_proxy = str(config.get("proxy", "") or "").strip()
+            if global_proxy:
+                defn = replace(defn, proxy=global_proxy)
+        except Exception:
+            logger.debug("apply global proxy failed", exc_info=True)
+
     ptype = defn.type.lower()
     fmt = defn.api_format.lower()
 

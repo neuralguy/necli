@@ -23,14 +23,11 @@ class AgentContext:
     interrupted: bool = False
     hard_interrupted: bool = False
     mode: str = "agent"
-    site_id: str = ""
-    page_mode: str = "chat"
     session_id: str = ""
     step_tracker: StepTracker = field(default_factory=StepTracker)
     last_fs_snapshot: Optional[dict] = None
     silent_console: bool = False
     render_store: RenderStore = field(default_factory=RenderStore)
-    welcome_args: Optional[dict] = None
     turn_start_time: float = field(default_factory=time.monotonic)
     last_status_text: str = ""
     # Callback пересчёта status-строки из текущего state. Нужен на Ctrl+O
@@ -51,8 +48,13 @@ class AgentContext:
         self.hard_interrupted = False
 
     def toggle_mode(self) -> str:
-        """Циклит режимы agent ↔ planning."""
-        self.mode = "planning" if self.mode == "agent" else "agent"
+        """Циклит режимы agent → planning → autonomous."""
+        order = ("agent", "planning", "autonomous")
+        try:
+            idx = order.index(self.mode)
+        except ValueError:
+            idx = 0
+        self.mode = order[(idx + 1) % len(order)]
         return self.mode
 
 

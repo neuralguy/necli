@@ -33,7 +33,7 @@ def _cell_width(value: str) -> int:
         width += 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
     return width
 
-def _safe_menu_text(value: str, max_width: int) -> str:
+def _clean_menu_text(value: str) -> str:
     cleaned = []
     for ch in str(value):
         category = unicodedata.category(ch)
@@ -42,7 +42,11 @@ def _safe_menu_text(value: str, max_width: int) -> str:
         if ord(ch) >= 0x1F000 or ch in ("\ufe0e", "\ufe0f"):
             continue
         cleaned.append(ch)
-    text = " ".join("".join(cleaned).split())
+    return " ".join("".join(cleaned).split())
+
+
+def _safe_menu_text(value: str, max_width: int) -> str:
+    text = _clean_menu_text(value)
     if _cell_width(text) <= max_width:
         return text
     out = []
@@ -100,7 +104,7 @@ def _move_up_and_overwrite(stream, new_content: str, prev_lines: int) -> int:
     (с учётом переноса длинных строк), чтобы следующий вызов поднял курсор
     ровно на столько же строк.
     """
-    term_width = shutil.get_terminal_size((80, 24)).columns
+    term_width = Console().size.width
     stream.write('\x1b[?25l')  # скрыть курсор
     stream.write('\r')  # начало текущей строки
     # Подняться на prev_lines - 1 физических строк
@@ -191,6 +195,7 @@ def select_menu(
     BOLD_BLUE = '\x1b[1m' + _hex_to_ansi_fg(t('accent'))
     GREEN = _hex_to_ansi_fg(t('success'))
     BOLD = '\x1b[1m'
+    WHITE = '\x1b[38;2;255;255;255m'
     BG_SELECT = _hex_to_ansi_bg(t('bg_select'))
 
     def _render():
@@ -202,9 +207,9 @@ def select_menu(
 
             if i == selected:
                 marker = f"{BOLD_BLUE}❯{RESET}"
-                text = f"{BG_SELECT}{BOLD} {label}{RESET}"
+                text = f"{BG_SELECT}{BOLD}{WHITE} {label}{RESET}"
                 if hint:
-                    text += f"  {BG_SELECT}{DIM}{hint}{RESET}"
+                    text += f"  {BG_SELECT}{BOLD}{WHITE}{hint}{RESET}"
                 if is_active:
                     text += f"  {GREEN}◄{RESET}"
                 lines.append(f"  {marker}{text}")
@@ -329,10 +334,11 @@ def select_session_menu(
             break
 
     total = len(order)
-    out_console = Console(file=sys.stderr, highlight=False)
-    render_width = max(20, out_console.width - 1)
+    _probe = Console()
+    cols, rows = _probe.size
+    render_width = max(20, cols - 1)
 
-    term_h = shutil.get_terminal_size((80, 24)).lines
+    term_h = rows
     max_visible = max(3, (term_h - 8) // 3)
     need_scroll = total > max_visible
 
@@ -365,7 +371,6 @@ def select_session_menu(
         vp_start, vp_end, scroll_offset = _viewport(sel, scroll_offset)
         pinned_ids = get_pinned()
         inner_width = max(20, render_width - 4)
-        title_width = max(20, inner_width - 4)
         body = Text()
         shown = sel + 1 if total else 0
         body.append(f"Session management ({shown} of {total})\n\n", style="bold #9bbcff")
@@ -381,7 +386,6 @@ def select_session_menu(
             s = sessions[orig_idx]
             sid = s.get("id", "")
             is_pinned = sid in pinned_ids
-            title = _safe_menu_text(s.get("title", "") or "Untitled Session", title_width)
             msgs = s.get("messages", 0)
             updated_at = s.get("updated_at", 0)
             tokens = s.get("tokens", 0)
@@ -389,7 +393,12 @@ def select_session_menu(
             is_current = sid == current_id
             is_selected = pos == sel
             marker = "› " if is_selected else "  "
-            pin = "↓ " if is_pinned else ""
+            pin = "✱ " if is_pinned else ""
+            prefix_w = _cell_width(marker + pin)
+            title = _safe_menu_text(
+                s.get("title", "") or "Untitled Session",
+                max(1, inner_width - prefix_w),
+            )
 
             row_bg = Style(bgcolor=t("bg_select")) if is_selected else Style.null()
             if is_current and is_selected:
@@ -397,15 +406,16 @@ def select_session_menu(
             elif is_current:
                 title_style = row_bg + Style.parse("green")
             elif is_selected:
-                title_style = row_bg + Style.parse("bold #9bbcff")
+                title_style = row_bg + Style.parse("bold white")
             else:
                 title_style = row_bg + Style.parse("green")
 
             meta = f"{activity} · {msgs} msgs · {_format_tokens_short(tokens)} · {sid[:12]}"
+            meta_style = row_bg + Style.parse("bold white") if is_selected else row_bg + Style(dim=True)
             body.append("\n")
             body.append(_pad_menu_text(marker + pin + title, inner_width), style=title_style)
             body.append("\n")
-            body.append(_pad_menu_text("  " + _safe_menu_text(meta, inner_width - 2), inner_width), style=row_bg + Style(dim=True))
+            body.append(_pad_menu_text("  " + _safe_menu_text(meta, inner_width - 2), inner_width), style=meta_style)
 
         buf = StringIO()
         render_console = Console(file=buf, highlight=False, force_terminal=True, width=render_width)
@@ -440,15 +450,10 @@ def select_session_menu(
                 sid = sessions[order[sel]].get("id", "")
                 if sid:
                     toggle_pin(sid)
-                    new_order = _filtered_order()
-                    try:
-                        new_sel = next(pos for pos, oi in enumerate(new_order)
-                                       if sessions[oi].get("id") == sid)
-                    except StopIteration:
-                        new_sel = min(sel, max(0, len(new_order) - 1))
-                    order = new_order
+                    order = _filtered_order()
                     total = len(order)
-                    return (True, new_sel, total)
+                    scroll_offset = 0
+                    return (True, 0, total)
         return None
 
     result_pos = _panel_menu_direct(

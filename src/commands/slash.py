@@ -364,6 +364,26 @@ def _handle_slash(
         params_interactive()
         return r
 
+    if head == "/proxy":
+        arg = rest.strip()
+        if arg:
+            # Инлайн-режим: /proxy <url> | /proxy off|none|clear
+            from commands.menus.proxy import _invalidate_api_llm, _validate
+            if arg.lower() in ("off", "none", "clear", "-"):
+                config.set_value("proxy", "")
+                _invalidate_api_llm()
+                console.print(f"  [green]✓[/green] {_('proxy.cleared')}")
+            elif _validate(arg):
+                config.set_value("proxy", arg)
+                _invalidate_api_llm()
+                console.print(f"  [green]✓[/green] proxy = [yellow]{arg}[/yellow]")
+            else:
+                console.print(f"  [red]{_('proxy.invalid')}[/red]")
+        else:
+            from commands.menus.proxy import proxy_interactive
+            proxy_interactive()
+        return r
+
     if head == "/lang":
         from commands.menus.lang import lang_interactive
         lang_interactive()

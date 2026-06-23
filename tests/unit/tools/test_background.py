@@ -12,11 +12,13 @@ from tools import background as bg
 def _clean_jobs():
     # Изолируем глобальный реестр задач между тестами.
     bg._jobs.clear()
+    bg._external_results.clear()
     bg._counter = 0
     bg._event_loop = None
     bg._finish_event = None
     yield
     bg._jobs.clear()
+    bg._external_results.clear()
     bg._event_loop = None
     bg._finish_event = None
 

@@ -141,6 +141,21 @@ def _truncate(text: str, limit: int = 20000) -> str:
     return text[:half] + f"\n... [{len(text)} chars, truncated] ...\n" + text[-half:]
 
 
+def _build_repeat_tool_notice(last_tool_name: str | None, calls: list) -> tuple[str, str | None]:
+    if not calls:
+        return "", None
+    tool_name = calls[0].tool_name
+    if tool_name != last_tool_name:
+        return "", tool_name
+    return (
+        "[repeat-tool notice]\n"
+        f"You called `{tool_name}` in two consecutive tool rounds. "
+        "Before calling it again, check whether the previous result already "
+        "answers the task, or explain why repeating the same tool is necessary.",
+        tool_name,
+    )
+
+
 async def run_commit_agent(
     provider_id: str,
     model_id: str,
@@ -176,6 +191,7 @@ async def run_commit_agent(
     session.messages.append(HumanMessage(content=_build_task_prompt(hint)))
 
     raw_text = ""
+    last_tool_name: str | None = None
     for i in range(MAX_COMMIT_ITERATIONS):
         _status(f"iteration {i + 1}")
         raw_text, native_calls = await _call_model(session, provider_id, model_id, use_native, schemas)
@@ -193,6 +209,7 @@ async def run_commit_agent(
             calls = parse_tool_calls(raw_text)
         calls = [c for c in calls if c.tool_name != "think"]
 
+        repeat_tool_notice, last_tool_name = _build_repeat_tool_notice(last_tool_name, calls)
         if not calls:
             return strip_tool_calls(raw_text).strip()
 
@@ -212,13 +229,18 @@ async def run_commit_agent(
                 session.messages.append(ToolMessage(
                     content=content, tool_call_id=tc.get("id") or "", name=name,
                 ))
+            if repeat_tool_notice:
+                session.messages.append(HumanMessage(content=repeat_tool_notice))
         else:
             result_dicts = []
             for r in results:
                 d = r.to_dict()
                 d["output"] = _truncate(d.get("output") or "")
                 result_dicts.append(d)
-            session.messages.append(HumanMessage(content=build_tool_results(result_dicts)))
+            result_msg = build_tool_results(result_dicts)
+            if repeat_tool_notice:
+                result_msg += "\n\n" + repeat_tool_notice
+            session.messages.append(HumanMessage(content=result_msg))
 
     logger.warning("commit-agent: iteration limit reached")
     return strip_tool_calls(raw_text).strip() + "\n\n[commit agent iteration limit]"

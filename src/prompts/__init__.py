@@ -7,44 +7,54 @@ do raw .replace("{proof}", ...) (agent/subagent_api.py, agent/messages.py).
 For mode-aware assembly use system_prompt.build_system_prompt(mode=...).
 """
 
-from prompts._base import (
+from prompts._core import (
     BASE_HEADER,
-    TOOL_FORMAT_BLOCK,
     EXECUTION_MODEL_BLOCK,
+    LANGUAGE_BLOCK,
+    execution_model_block_for,
+)
+from prompts._interaction import (
     RESPONSE_STRUCTURE_BLOCK,
     TONE_AND_OUTPUT_BLOCK,
+    response_structure_block_for,
+)
+from prompts._workflow import (
     ORCHESTRATION_TRIGGER_BLOCK,
     EFFICIENCY_BLOCK,
     PLANNING_BLOCK,
+    planning_block_for,
+)
+from prompts._tooling import (
+    TOOL_FORMAT_BLOCK,
     FENCED_SYNTAX_BLOCK,
     TOOLS_LIST_BLOCK,
     TOOL_STRATEGY_BLOCK,
     LSP_TOOLS_BLOCK,
     TOOLS_REFERENCE_BLOCK,
     LSP_BLOCK,
+    tool_format_block_for,
+    tool_strategy_block_for,
+)
+from prompts._modalities import (
     WEB_SEARCH_BLOCK,
     DOCX_BLOCK,
+    docx_block_for,
+)
+from prompts._quality import (
     HARD_CONSTRAINTS_BLOCK,
     AGENT_RULES_BLOCK,
     DELIVERABLE_DISCIPLINE_BLOCK,
     CRAFT_BLOCK,
     VERIFICATION_GATE_BLOCK,
-    SUBAGENTS_BLOCK,
-    LANGUAGE_BLOCK,
-    tool_format_block_for,
-    execution_model_block_for,
-    response_structure_block_for,
-    planning_block_for,
-    docx_block_for,
     hard_constraints_block_for,
-    tool_strategy_block_for,
 )
+from prompts._subagents import SUBAGENTS_BLOCK
 from prompts._agent import AGENT_MODE_BLOCK
 from prompts._planning import PLANNING_MODE_BLOCK
+from prompts._autonomous import AUTONOMOUS_MODE_BLOCK
 from prompts._notices import (
     CONTINUE_MESSAGE,
     INTERRUPTED_NOTICE,
-    REPROMPT_SUFFIX,
     COMPRESS_PROMPT,
     REFLECT_PROMPT,
     ACTIVE_PLAN_NOTICE,
@@ -58,6 +68,7 @@ from prompts._settings import (
     THINK_SWITCH_OFF,
     MODE_SWITCH_TO_PLANNING,
     MODE_SWITCH_TO_AGENT,
+    MODE_SWITCH_TO_AUTONOMOUS,
     think_block_for,
 )
 
@@ -99,7 +110,6 @@ __all__ = [
     "SYSTEM_PROMPT",
     "CONTINUE_MESSAGE",
     "INTERRUPTED_NOTICE",
-    "REPROMPT_SUFFIX",
     "ACTIVE_PLAN_NOTICE",
     "CONVERSATION_CONTEXT_HEADER",
     "CONVERSATION_CONTEXT_FOOTER",
@@ -111,6 +121,7 @@ __all__ = [
     "THINK_SWITCH_OFF",
     "MODE_SWITCH_TO_PLANNING",
     "MODE_SWITCH_TO_AGENT",
+    "MODE_SWITCH_TO_AUTONOMOUS",
     "BASE_HEADER",
     "TOOL_FORMAT_BLOCK",
     "EXECUTION_MODEL_BLOCK",
@@ -134,6 +145,7 @@ __all__ = [
     "VERIFICATION_GATE_BLOCK",
     "AGENT_MODE_BLOCK",
     "PLANNING_MODE_BLOCK",
+    "AUTONOMOUS_MODE_BLOCK",
     "SUBAGENTS_BLOCK",
     "LANGUAGE_BLOCK",
     "tool_format_block_for",

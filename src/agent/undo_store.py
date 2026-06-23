@@ -121,6 +121,28 @@ def snapshot_round(workdir: str, label: str = "") -> None:
     except Exception as e:
         logger.error("undo_store: snapshot failed: %s", e, exc_info=True)
 
+def cleanup_store(workdir: str) -> int:
+    """Удаляет undo-репозиторий рабочей директории после завершения сессии."""
+    store_root = _store_dir(workdir).parent
+    if not store_root.exists():
+        return 0
+    try:
+        size = 0
+        for root, _dirs, files in os.walk(store_root, onerror=lambda _e: None):
+            for file_name in files:
+                try:
+                    size += os.lstat(os.path.join(root, file_name)).st_size
+                except OSError:
+                    continue
+        import shutil
+        shutil.rmtree(store_root, ignore_errors=True)
+        if not store_root.exists():
+            logger.info("undo_store: cleaned %s (~%d bytes)", store_root, size)
+            return size
+    except Exception as e:
+        logger.debug("undo_store: cleanup failed: %s", e, exc_info=True)
+    return 0
+
 def undo_rounds(workdir: str, n: int) -> tuple[bool, int, list[str]]:
     """Перемещает рабочее дерево по timeline снапшотов.
 

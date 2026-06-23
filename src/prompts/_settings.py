@@ -5,9 +5,7 @@ _CLOSE = "call:::"
 # ── THINK ───────────────────────────────────────────────────────────
 # Включается в системный промт, только когда think_enabled=True.
 # Выключенное состояние = отсутствие блока (никаких "THINK disabled").
-THINK_BLOCK = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-THINK FORMAT (enabled)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THINK_BLOCK = f"""# Think format
 
 Think out loud before acting. This works on top of ANY mode (agent/planning)
 and does not override its rules.
@@ -35,9 +33,7 @@ STRICT RULES:
 
 
 # Native-вариант THINK: только function-calling, без :::call think.
-THINK_BLOCK_NATIVE = """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-THINK FORMAT (enabled)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THINK_BLOCK_NATIVE = """# Think format
 
 Think out loud before acting. This works on top of ANY mode (agent/planning)
 and does not override its rules.
@@ -65,9 +61,7 @@ def think_block_for(native_tools: bool) -> str:
 # Включается в промт, только когда нативный function calling недоступен
 # (tool_format=text). В native-режиме этот блок не нужен — S0 уже описывает
 # fenced+native, и инструменты забиндены.
-TOOL_FORMAT_TEXT_BLOCK = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TOOL CALL FORMAT (text mode — native disabled)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOOL_FORMAT_TEXT_BLOCK = f"""# Tool call format: text mode
 
 Native function calling is OFF. Call tools ONLY via {_OPEN} <tool> ... {_CLOSE} blocks.
 Open line STARTS with three colons; close line is bare {_CLOSE}. Markers are asymmetric.
@@ -114,4 +108,8 @@ MODE_SWITCH_TO_PLANNING = (
 MODE_SWITCH_TO_AGENT = (
     "[SYSTEM: Switched to AGENT mode — all tools available again. "
     "See the AGENT MODE section in the system prompt.]"
+)
+MODE_SWITCH_TO_AUTONOMOUS = (
+    "[SYSTEM: Switched to AUTONOMOUS mode — orchestrator-only long-running mode. "
+    "Delegate implementation/debugging/testing/verification to subagents; see the AUTONOMOUS MODE section.]"
 )

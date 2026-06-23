@@ -26,6 +26,8 @@ DEFAULTS: dict[str, Any] = {
         "limits.max_result_length": "Жёсткий лимит длины result в символах — длиннее обрезается с пометкой.",
         "limits.partial_lang_bypass_threshold": "Если стримящийся текст длиннее N символов — отключается подсветка синтаксиса (лагает Live).",
         "limits.think_snippet_max_len": "Максимальная длина одной мысли (think) в компактной строке.",
+        "limits.think_stream_lines": "Сколько последних строк thinking-блока держать видимыми во время стрима.",
+        "limits.think_preview_lines": "Сколько строк thinking показывать в статичном превью после завершения.",
 
         "paddings.*": "Все padding — пара [vertical, horizontal] для Rich Panel/Syntax/Table.",
         "paddings.response_panel": "Отступы внутри панели ответа модели.",
@@ -83,6 +85,7 @@ DEFAULTS: dict[str, Any] = {
         "live_stream.refresh_per_second": "Частота перерисовки Live-стрима (Гц). Выше → плавнее, но больше CPU.",
         "live_stream.reserved_lines": "Сколько строк терминала зарезервировать под чат (заголовок/футер). Live использует остаток.",
         "live_stream.min_visible_lines": "Минимум строк Live даже на крошечных терминалах.",
+        "live_stream.compact_active_live": "Компактнее отрисовывать активный Live-блок (без рамки/лишних отступов).",
 
         "response.title_format": "Формат заголовка response-панели. {num} = ' 5' / '' (для первой).",
         "response.title_format_compact_bullet": "Bullet перед заголовком в compact (не используется напрямую, для совместимости).",
@@ -109,6 +112,8 @@ DEFAULTS: dict[str, Any] = {
         "max_result_length": 15000,
         "partial_lang_bypass_threshold": 50000,
         "think_snippet_max_len": 140,
+        "think_stream_lines": 6,
+        "think_preview_lines": 3,
     },
 
     "paddings": {
@@ -217,6 +222,7 @@ DEFAULTS: dict[str, Any] = {
         "refresh_per_second": 8,
         "reserved_lines": 14,
         "min_visible_lines": 10,
+        "compact_active_live": False,
     },
 
     "response": {

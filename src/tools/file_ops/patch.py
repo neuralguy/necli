@@ -5,7 +5,6 @@ import difflib
 from logger import logger
 from tools.models import ToolCall, ToolResult
 from tools._paths import resolve_path, clean_path
-from tools.file_checks import _run_ruff_on_python_file
 from tools.file_ops._fuzzy import _fuzzy_find_replace
 from tools.file_ops.read import invalidate_read_cache
 
@@ -215,9 +214,10 @@ def patch_file(call: ToolCall) -> ToolResult:
         path_str, added, removed, changed, len(changes),
     )
 
-    ruff_output = _run_ruff_on_python_file(path, path_str)
-    if ruff_output:
-        output_parts.append(ruff_output)
+    if path.suffix == ".py":
+        from tools.auto_checks import queue_python_auto_check
+        if queue_python_auto_check(path, path_str):
+            output_parts.append("↻ auto-check queued: lsp_diagnostics + ruff")
 
     return ToolResult(
         name="patch_file",

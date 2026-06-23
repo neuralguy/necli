@@ -211,6 +211,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             "or 'all'. Overrides 'page' when provided."
                         ),
                     },
+                    "dpi": {
+                        "type": "integer",
+                        "description": (
+                            "Render resolution in DPI (clamped to 50-600). Higher = sharper "
+                            "but larger images; raise it to read small text/formulas. Default 200."
+                        ),
+                        "minimum": 50,
+                        "maximum": 600,
+                        "default": 200,
+                    },
                 },
                 "required": ["path"],
             },
@@ -886,7 +896,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
-from config import READ_ONLY_TOOLS as _PLANNING_TOOL_NAMES  # noqa: E402
+from config import READ_ONLY_TOOLS as _READ_ONLY_TOOL_NAMES  # noqa: E402
+
+_PLANNING_TOOL_NAMES = _READ_ONLY_TOOL_NAMES | {"poll", "skill", "web_search"}
+_AUTONOMOUS_TOOL_NAMES = _PLANNING_TOOL_NAMES | {"shell", "subagent"}
 
 # Кэш для get_tool_schemas. Ключ — (mode, mcp_signature), где mcp_signature —
 # кортеж имён MCP-инструментов. Инвалидируется при любом изменении набора MCP.
@@ -929,8 +942,9 @@ def _skill_gated_filter(active_skills) -> frozenset:
 def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, Any]]:
     """Возвращает JSON-схемы инструментов для нужного режима.
 
-    plan  → read-only инструменты + plan (+ think если включён).
-    agent → все базовые + MCP + plan (+ think если включён).
+    plan/planning → read-only инструменты + plan (+ think если включён).
+    autonomous    → planning-инструменты + shell + subagent (+ think если включён).
+    agent         → все базовые + MCP + plan (+ think если включён).
 
     think попадает в схемы ТОЛЬКО при активном think-режиме — иначе модель
     звала бы его без надобности. plan доступен всегда (структурирование задач).
@@ -941,15 +955,16 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
     видит инструмент, пока не загрузит его скилл.
     """
     think_on = _resolve_think_for_schemas()
-    mcp_sig = () if mode == "plan" else _mcp_signature()
+    restricted_mode = mode in ("plan", "planning", "autonomous", "auto")
+    mcp_sig = () if restricted_mode else _mcp_signature()
     hidden = _skill_gated_filter(active_skills)
     cache_key = (mode, mcp_sig, think_on, hidden)
     cached = _SCHEMAS_CACHE.get(cache_key)
     if cached is not None:
         return list(cached)
 
-    if mode == "plan":
-        allowed = _PLANNING_TOOL_NAMES | {"plan"}
+    if mode in ("plan", "planning", "autonomous", "auto"):
+        allowed = (_AUTONOMOUS_TOOL_NAMES if mode in ("autonomous", "auto") else _PLANNING_TOOL_NAMES) | {"plan"}
         if think_on:
             allowed = allowed | {"think"}
         base = [

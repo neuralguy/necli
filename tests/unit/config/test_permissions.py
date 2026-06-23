@@ -69,9 +69,31 @@ class TestWildcard:
     def test_session_star_beats_forever_explicit(self):
         set_decision("shell", "deny", "forever")
         set_decision("*", "allow", "session")
-        # explicit forever на shell должен побеждать звезду на любом уровне
-        # т.к. iteration: tool in SESSION? нет, tool in PROCESS? нет, tool in forever? да → deny
-        assert get_decision("shell") == "deny"
+        # session > process > forever: звезда на session побеждает
+        # явное решение forever по приоритету уровней.
+        assert get_decision("shell") == "allow"
+        assert get_scope("shell") == "session"
+
+    def test_process_star_beats_forever_explicit(self):
+        set_decision("shell", "deny", "forever")
+        set_decision("*", "allow", "process")
+        assert get_decision("shell") == "allow"
+        assert get_scope("shell") == "process"
+
+    def test_same_level_explicit_beats_star(self):
+        set_decision("*", "deny", "session")
+        set_decision("shell", "allow", "session")
+        assert get_decision("shell") == "allow"
+        assert get_scope("shell") == "session"
+
+    def test_get_scope_star_fallback(self):
+        set_decision("*", "allow", "process")
+        assert get_scope("anything") == "process"
+        assert get_scope("other") == "process"
+
+    def test_get_scope_none_without_match(self):
+        set_decision("shell", "allow", "session")
+        assert get_scope("unset") is None
 
 
 class TestReset:

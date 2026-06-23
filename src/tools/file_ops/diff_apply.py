@@ -193,20 +193,18 @@ def apply_diff(call: ToolCall) -> ToolResult:
 
     logger.info("apply_diff: ok via {} ({} files)", backend, len(files))
 
-    # Запускаем file_checks по каждому Python-файлу для семантики
-    from tools.file_checks import _run_ruff_on_python_file
-    check_blocks: list[str] = []
+    # Запускаем lsp_diagnostics+ruff в фоне, без синхронного дублирования.
+    from tools.auto_checks import queue_python_auto_check
+    queued_checks: list[str] = []
     for f in files:
         p = resolve_path(f)
-        if p.exists() and p.suffix == ".py":
-            block = _run_ruff_on_python_file(p, f)
-            if block:
-                check_blocks.append(block)
+        if p.exists() and p.suffix == ".py" and queue_python_auto_check(p, f):
+            queued_checks.append(f)
 
     output_parts = [f"✓ apply_diff: {len(files)} file(s) updated via {backend}"]
     output_parts.extend(f"  - {f}" for f in files)
-    if check_blocks:
-        output_parts.extend(check_blocks)
+    if queued_checks:
+        output_parts.append("↻ auto-check queued: lsp_diagnostics + ruff for " + ", ".join(queued_checks))
 
     return ToolResult(
         name="apply_diff",

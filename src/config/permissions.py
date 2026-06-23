@@ -46,45 +46,40 @@ def _set_forever(tool: str, decision: Decision) -> None:
 
 # ── публичное API ──
 
+def _lookup(tool: str) -> tuple[Decision, Scope] | None:
+    """Находит эффективное решение и его уровень.
+
+    Приоритет — scope-first, внутри уровня явный tool важнее "*":
+    session explicit, session *, process explicit, process *,
+    forever explicit, forever *. Возвращает None, если решения нет.
+    """
+    for scope, store in (
+        ("session", _SESSION),
+        ("process", _PROCESS),
+        ("forever", _forever_all()),
+    ):
+        if tool in store:
+            return store[tool], scope
+        if "*" in store:
+            return store["*"], scope
+    return None
+
 def get_decision(tool: str) -> Decision:
     """Возвращает текущее эффективное решение для инструмента.
 
     Wildcard "*" в любом уровне действует как fallback для всех tools,
-    которые не имеют явного решения. Приоритет уровней сохраняется.
+    которые не имеют явного решения. Приоритет уровней сохраняется:
+    более высокий уровень (session) побеждает даже своей звездой более
+    низкий уровень (forever) с явным решением.
     """
-    if tool in _SESSION:
-        return _SESSION[tool]
-    if tool in _PROCESS:
-        return _PROCESS[tool]
-    forever = _forever_all()
-    if tool in forever:
-        return forever[tool]
-    # Wildcard fallback (session > process > forever)
-    if "*" in _SESSION:
-        return _SESSION["*"]
-    if "*" in _PROCESS:
-        return _PROCESS["*"]
-    if "*" in forever:
-        return forever["*"]
-    return "ask"
+    found = _lookup(tool)
+    return found[0] if found else "ask"
 
 
 def get_scope(tool: str) -> Scope | None:
     """Возвращает уровень, на котором установлено решение (None если ask по дефолту)."""
-    if tool in _SESSION:
-        return "session"
-    if tool in _PROCESS:
-        return "process"
-    forever = _forever_all()
-    if tool in forever:
-        return "forever"
-    if "*" in _SESSION:
-        return "session"
-    if "*" in _PROCESS:
-        return "process"
-    if "*" in forever:
-        return "forever"
-    return None
+    found = _lookup(tool)
+    return found[1] if found else None
 
 
 def set_decision(tool: str, decision: Decision, scope: Scope) -> None:
