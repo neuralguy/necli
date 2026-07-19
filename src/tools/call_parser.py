@@ -8,23 +8,22 @@ import html
 import re
 
 from logger import logger
-from .models import ToolCall
+
+from ._html_unescape import has_html_entities as _has_html_entities
+from ._html_unescape import maybe_unescape as _maybe_unescape_html
 from .json_repair import robust_json_loads as _robust_json_loads
-from ._html_unescape import maybe_unescape as _maybe_unescape_html, has_html_entities as _has_html_entities
+from .models import ToolCall
 
 NAMED_TOOLS = frozenset({
-    "read_files", "read_file", "write_file", "patch_file",
-    "create_file", "delete_file", "rename_file", "copy_file",
-    "move_file", "ls", "tree", "mkdir", "rmdir", "find_files",
-    "grep_files", "poll", "skill", "shell", "web_search",
-    "ssh", "subagent", "create_docx", "docx_screenshot", "expand_tool_result", "apply_diff",
+    "read_files", "read_file", "patch_file",
+    "create_file", "poll", "skill", "shell", "web_search",
+    "ssh", "subagent", "create_docx", "docx_screenshot", "expand_tool_result",
     "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
     "memory_write", "memory_list", "memory_read",
 })
 
-_CONTENT_TOOLS = frozenset({"write_file", "create_file", "create_docx"})
+_CONTENT_TOOLS = frozenset({"create_file", "create_docx"})
 _PATCH_TOOLS = frozenset({"patch_file"})
-_DIFF_TOOLS = frozenset({"apply_diff"})
 
 # Fence: :::call <tool> ... call:::
 # Open  marker: ::: BEFORE 'call' (colons first).
@@ -77,6 +76,7 @@ _ATTR_RE = re.compile(
 _INT_ATTRS = frozenset({"line", "depth", "context", "max_results"})
 _BOOL_ATTRS = frozenset({
     "all", "force", "ignore_case", "literal", "long", "fetch",
+    "background",
 })
 
 def _coerce_attr(key, val):
@@ -246,10 +246,9 @@ def _parse_json_body(body):
     if not body:
         return {}
     parsed = _robust_json_loads(body)
-    if parsed is None:
-        if _has_html_entities(body):
-            decoded = html.unescape(body)
-            parsed = _robust_json_loads(decoded)
+    if parsed is None and _has_html_entities(body):
+        decoded = html.unescape(body)
+        parsed = _robust_json_loads(decoded)
     if parsed is None:
         return None
     # Фикс 1.4: даже когда JSON распарсился, его строковые значения могли
@@ -355,15 +354,11 @@ def parse_call_block(tool_name, attrs_header, body, raw):
                     args = merged
                 else:
                     args = json_args
-    elif tool_name in _DIFF_TOOLS:
-        # Тело — unified diff. Path не обязателен в шапке (берётся из diff).
-        args = dict(attrs) if attrs else {}
-        args["diff"] = body or ""
     else:
         json_args = _parse_json_body(body)
         if json_args is None:
             # Пустое/невалидное тело — допускаем shorthand с path/args в attrs:
-            # :::call delete_file path="x.py" / :::call ls path="dir" и т.п.
+            # :::call poll question="...?" и т.п.
             if attrs:
                 args = dict(attrs)
             else:
@@ -384,7 +379,7 @@ def parse_call_block(tool_name, attrs_header, body, raw):
         return None
 
     # Content and patch tools REQUIRE path. Without it, the block is malformed.
-    if tool_name in _CONTENT_TOOLS or tool_name in _PATCH_TOOLS:
+    if tool_name in _CONTENT_TOOLS or tool_name in _PATCH_TOOLS:  # noqa: SIM102
         if not isinstance(args, dict) or not args.get("path"):
             logger.warning(
                 "parse_call_block: tool '{}' missing 'path' in fence header",

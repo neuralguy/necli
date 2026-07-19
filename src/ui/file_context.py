@@ -37,10 +37,10 @@ def _read_file_content(path, max_size=_MAX_FILE_SIZE):
     try:
         size = path.stat().st_size
         if size > max_size:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 content = f.read(max_size)
             return content + f"\n... [truncated, {size} bytes total]", True
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return f.read(), False
     except (OSError, UnicodeDecodeError):
         return None, False
@@ -75,7 +75,7 @@ def _collect_dir_files(dir_path, max_files=_MAX_DIR_FILES):
 def _build_tree(dir_path, max_depth=3):
     """Build a simple tree string for a directory."""
     result = []
-    
+
     def _walk(path, prefix, depth):
         if depth > max_depth:
             return
@@ -93,14 +93,14 @@ def _build_tree(dir_path, max_depth=3):
                 _walk(entry, prefix + extension, depth + 1)
             else:
                 result.append(f"{prefix}{connector}{entry.name}")
-    
+
     _walk(dir_path, "", 0)
     return "\n".join(result)
 
 
 class FileReference:
     """A parsed @-reference."""
-    
+
     def __init__(self, raw, path_str, resolved_path, is_dir=False):
         self.raw = raw          # "@src/main.py"
         self.path_str = path_str  # "src/main.py"
@@ -165,10 +165,10 @@ def parse_at_references(text, working_dir):
                 ref.error = f"not found: {path_str}"
                 refs.append(ref)
                 continue
-        
+
         ref = FileReference(raw, path_str, resolved, is_dir)
         refs.append(ref)
-    
+
     return refs
 
 
@@ -182,24 +182,24 @@ def expand_at_references(text, working_dir):
     refs = parse_at_references(text, working_dir)
     if not refs:
         return text, "", refs
-    
+
     context_parts = []
     total_size = 0
     expanded_text = text
-    
+
     for ref in refs:
         if ref.error:
             continue
-        
+
         if ref.is_dir:
             # Directory: tree + files
             tree = _build_tree(ref.resolved_path)
             dir_files = _collect_dir_files(ref.resolved_path)
-            
+
             parts = [f"--- @{ref.path_str} (directory) ---"]
             parts.append(f"Tree:\n{tree}")
             parts.append("")
-            
+
             for rel_name, fpath in dir_files:
                 if total_size >= _MAX_TOTAL_SIZE:
                     parts.append(f"... [context size limit reached, {total_size} bytes] ...")
@@ -210,13 +210,13 @@ def expand_at_references(text, working_dir):
                     parts.append(content)
                     parts.append("")
                     total_size += len(content)
-            
+
             parts.append(f"--- end @{ref.path_str} ---")
             ref.content = "\n".join(parts)
             context_parts.append(ref.content)
         else:
             # Single file
-            content, truncated = _read_file_content(ref.resolved_path)
+            content, _truncated = _read_file_content(ref.resolved_path)
             if content is not None:
                 block = f"--- @{ref.path_str} ---\n{content}\n--- end @{ref.path_str} ---"
                 ref.content = block
@@ -224,7 +224,7 @@ def expand_at_references(text, working_dir):
                 total_size += len(content)
             else:
                 ref.error = f"cannot read: {ref.path_str}"
-    
+
     if not context_parts:
         return text, "", refs
 

@@ -4,15 +4,16 @@ import pytest
 
 import agent.think as think
 from agent.think import (
-    ThoughtStep,
     ThinkLog,
+    ThoughtStep,
+    _extract_partial_thought,
+    _parse_one,
+    has_think_blocks,
     parse_partial_thought,
     parse_think_blocks,
     strip_think_blocks,
-    has_think_blocks,
-    _extract_partial_thought,
-    _parse_one,
 )
+
 
 @pytest.fixture(autouse=True)
 def enable_think(monkeypatch):

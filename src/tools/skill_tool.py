@@ -1,8 +1,8 @@
 """Инструмент skill — загрузка скилла по имени."""
 
 from config.i18n import t as _i18n
+from skills import list_skills, load_skill
 from tools.models import ToolCall, ToolResult
-from skills import load_skill, list_skills
 
 
 def execute_skill(call: ToolCall) -> ToolResult:
@@ -49,7 +49,7 @@ def execute_skill(call: ToolCall) -> ToolResult:
 def _render_subagent_info() -> str:
     """Живой список моделей и пресетов субагентов — подставляется в скилл."""
     try:
-        from system_prompt import _build_subagent_models_block, _build_agent_presets_block
+        from system_prompt import _build_agent_presets_block, _build_subagent_models_block
     except Exception:
         return ""
     out = ""

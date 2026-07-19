@@ -22,7 +22,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from logger import logger
-
 from tools._paths import clean_path, resolve_path
 from tools.models import ToolCall, ToolResult
 
@@ -49,7 +48,7 @@ _EXT_BY_CT = {
 }
 
 # query|source|max -> (timestamp, results)
-_search_cache: "OrderedDict[str, tuple[float, list[dict]]]" = OrderedDict()
+_search_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
 
 
 # --------------------------------------------------------------------------- #
@@ -119,7 +118,7 @@ def _search_ddg(query: str, max_results: int, args: dict) -> list[dict]:
             warnings.simplefilter("ignore", RuntimeWarning)
             from ddgs import DDGS
     except ImportError:
-        raise RuntimeError("ddgs not installed. Run: uv add ddgs")
+        raise RuntimeError("ddgs not installed. Run: uv add ddgs")  # noqa: B904
 
     # ddgs поддерживает фильтры size/type_image/color/layout — пробрасываем
     # только те, что заданы (и игнорируем, если версия ddgs их не знает).
@@ -139,7 +138,7 @@ def _search_ddg(query: str, max_results: int, args: dict) -> list[dict]:
 
     out = []
     for r in raw or []:
-        out.append(
+        out.append(  # noqa: PERF401
             _norm(
                 image=r.get("image", ""),
                 title=r.get("title", ""),
@@ -163,7 +162,7 @@ def _get_api_key(name: str) -> str | None:
             v = keys.get(name)
             if isinstance(v, str) and v.strip():
                 return v.strip()
-    except Exception as e:  # noqa: BLE001 — отсутствие ключа не ошибка
+    except Exception as e:
         logger.debug("image_search: api key lookup failed for {}: {}", name, e)
     return None
 
@@ -252,7 +251,7 @@ def _gather_results(query: str, source: str, max_results: int, args: dict) -> li
             extra = fn(query, max_results, args)
             if extra:
                 results.extend(extra)
-        except Exception as e:  # noqa: BLE001 — сток упал, ddg уже есть
+        except Exception as e:  # noqa: PERF203
             logger.warning("image_search: stock source failed: {}", e)
     return results[: max(max_results, 1)]
 
@@ -266,10 +265,7 @@ def _safe_name(idx: int, url: str, content_type: str) -> str:
     if not ext:
         # пробуем расширение из URL
         tail = url.split("?")[0].rsplit(".", 1)
-        if len(tail) == 2 and 1 <= len(tail[1]) <= 5:
-            ext = "." + tail[1].lower()
-        else:
-            ext = ".jpg"
+        ext = "." + tail[1].lower() if len(tail) == 2 and 1 <= len(tail[1]) <= 5 else ".jpg"
     return base + ext
 
 
@@ -296,7 +292,7 @@ def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
                     out["error"] = f"too large (>{_MAX_DOWNLOAD_BYTES // (1024*1024)}MB)"
                     return out
             data = bytes(chunks)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         out["error"] = f"download failed: {e}"
         return out
 
@@ -316,7 +312,7 @@ def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
         with Image.open(BytesIO(data)) as im2:
             out["width"], out["height"] = im2.size
             out["format"] = im2.format
-    except Exception as e:  # noqa: BLE001 — не картинка / битый файл
+    except Exception as e:
         out["error"] = f"not a valid image: {e}"
         return out
 
@@ -327,7 +323,7 @@ def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
         path.write_bytes(data)
         out["ok"] = True
         out["path"] = path
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         out["error"] = f"write failed: {e}"
     return out
 
@@ -378,7 +374,7 @@ def execute_image_search(call: ToolCall) -> ToolResult:
             results = _gather_results(query, source, max_results, args)
         except RuntimeError as e:  # ddgs не установлен и т.п.
             return _err(str(e), command=query)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.error("image_search failed | query={!r} error={}", query, e)
             return _err(f"Search failed: {e}", command=query)
         # отсеиваем результаты без прямого URL картинки

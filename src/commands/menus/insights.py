@@ -26,7 +26,7 @@ def _run_async(coro):
         try:
             asyncio.set_event_loop(loop)
             result["value"] = loop.run_until_complete(coro)
-        except BaseException as e:  # noqa: BLE001 — пробрасываем в основной поток
+        except BaseException as e:
             result["error"] = e
         finally:
             loop.close()

@@ -56,7 +56,7 @@ def _signal_finish() -> None:
         return
     try:
         loop.call_soon_threadsafe(ev.set)
-    except Exception:  # noqa: BLE001 — loop закрыт/недоступен: не роняем поток
+    except Exception:
         logger.debug("background: signal_finish failed", exc_info=True)
 
 
@@ -94,10 +94,10 @@ def publish_background_result(result: ToolResult) -> None:
 
 
 def _run_job(job: _Job, cwd: str, env: dict) -> None:
-    run_kwargs = dict(
-        capture_output=True, text=True,
-        timeout=_BG_TIMEOUT, cwd=cwd, env=env,
-    )
+    run_kwargs = {
+        "capture_output": True, "text": True,
+        "timeout": _BG_TIMEOUT, "cwd": cwd, "env": env,
+    }
     if sys.platform != "win32":
         run_kwargs["executable"] = "/bin/bash"
     try:
@@ -124,7 +124,7 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
             job.status = "timeout"
             job.finished_at = time.monotonic()
         logger.warning("background job {} timeout {}s", job.id, _BG_TIMEOUT)
-    except Exception as e:  # noqa: BLE001 — фоновый поток не должен ронять CLI
+    except Exception as e:
         with _lock:
             job.output = f"Error: {e}"
             job.exit_code = -1

@@ -14,7 +14,7 @@ from collections import OrderedDict
 
 _MAX_ENTRIES = 200
 
-_cache: "OrderedDict[str, str]" = OrderedDict()
+_cache: OrderedDict[str, str] = OrderedDict()
 
 
 def _make_id(text: str) -> str:

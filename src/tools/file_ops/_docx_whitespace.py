@@ -135,11 +135,11 @@ def align_pairs(docx_texts: list[str], html_texts: list[str]) -> list[tuple[int,
     b = [collapse_ws(t) for t in html_texts]
     sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
     pairs: list[tuple[int, int]] = []
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+    for tag, i1, i2, j1, _j2 in sm.get_opcodes():
         if tag != "equal":
             continue
         for k in range(i2 - i1):
-            pairs.append((i1 + k, j1 + k))
+            pairs.append((i1 + k, j1 + k))  # noqa: PERF401
     return pairs
 
 
@@ -182,7 +182,7 @@ def _restore_ws_in_inner_html(inner: str, exact: str) -> str | None:
     if new_pieces is None:
         return None
     out_segs = list(segs)
-    for slot, piece in zip(text_seg_idx, new_pieces):
+    for slot, piece in zip(text_seg_idx, new_pieces, strict=False):
         out_segs[slot] = _h.escape(piece, quote=False)
     return "".join(out_segs)
 
@@ -309,7 +309,7 @@ def _redistribute_exact(exact: str, run_texts: list[str]) -> list[str] | None:
     ti = 0
     tn = len(exact)
     last = len(run_texts) - 1
-    for ridx, rt in enumerate(run_texts):
+    for _ridx, rt in enumerate(run_texts):
         nonws_count = sum(1 for c in rt if not c.isspace())
         buf: list[str] = []
         got = 0
@@ -348,7 +348,7 @@ def _restore_exact_text_across_runs(paragraph, exact: str) -> bool:
     new_texts = _redistribute_exact(exact, run_texts)
     if new_texts is None:
         return False
-    for te, new in zip(text_els, new_texts):
+    for te, new in zip(text_els, new_texts, strict=False):
         if te.text != new:
             te.text = new
             te.set(qn("xml:space"), "preserve")

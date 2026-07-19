@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator, Dict, List, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
 from apis.base import BaseProvider, _RetryableStreamError
+from apis.config import get_api_credentials, get_api_key
 from apis.messages import (
     AIMessage,
     AIMessageChunk,
@@ -25,19 +27,18 @@ from apis.messages import (
     ToolMessage,
 )
 from apis.models import ApiProviderDefinition
-from apis.config import get_api_key
 from logger import logger
+
 
 class GoogleGeminiProvider(BaseProvider):
     """HTTP-провайдер для Google Gemini generateContent API."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._definition_id: str = ""
         self._base_url: str = "https://generativelanguage.googleapis.com"
 
     def _get_api_key(self) -> str:
-        return get_api_key(self._definition_id)
+        return super()._get_api_key()
 
     def _endpoint(self, stream: bool) -> str:
         method = "streamGenerateContent" if stream else "generateContent"
@@ -47,7 +48,7 @@ class GoogleGeminiProvider(BaseProvider):
             url += "?alt=sse"
         return url
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         return {
             "Content-Type": "application/json",
             "x-goog-api-key": self._get_api_key(),
@@ -82,8 +83,8 @@ class GoogleGeminiProvider(BaseProvider):
         return [{"text": str(content)}] if content else []
 
     def _convert_messages_gemini(
-        self, messages: List[BaseMessage],
-    ) -> tuple[Optional[dict], List[Dict[str, Any]]]:
+        self, messages: list[BaseMessage],
+    ) -> tuple[dict | None, list[dict[str, Any]]]:
         """Возвращает (system_instruction, contents)."""
         system_parts: list[str] = []
         contents: list[dict] = []
@@ -145,7 +146,7 @@ class GoogleGeminiProvider(BaseProvider):
         return system_instruction, contents
 
     @staticmethod
-    def _convert_tools_gemini(tools: List[dict]) -> List[dict]:
+    def _convert_tools_gemini(tools: list[dict]) -> list[dict]:
         declarations = []
         for t in tools or []:
             fn = t.get("function") or t
@@ -162,17 +163,18 @@ class GoogleGeminiProvider(BaseProvider):
             return []
         return [{"function_declarations": declarations}]
 
-    def _build_generation_config(self, **kwargs: Any) -> Dict[str, Any]:
-        cfg: Dict[str, Any] = {
-            "temperature": kwargs.get("temperature", self.temperature),
-        }
+    def _build_generation_config(self, **kwargs: Any) -> dict[str, Any]:
+        cfg: dict[str, Any] = {}
+        temperature = kwargs.get("temperature", self.temperature)
+        if temperature is not None:
+            cfg["temperature"] = temperature
         mt = kwargs.get("max_tokens", self.max_tokens)
         if mt:
             cfg["maxOutputTokens"] = int(mt)
         return cfg
 
     @staticmethod
-    def _convert_usage_gemini(meta: Dict[str, Any]) -> Dict[str, Any]:
+    def _convert_usage_gemini(meta: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(meta, dict):
             return {}
         # promptTokenCount у Gemini уже включает cachedContentTokenCount —
@@ -188,9 +190,10 @@ class GoogleGeminiProvider(BaseProvider):
 
     # ── Public ──
 
-    async def ainvoke(self, messages: List[BaseMessage], **kwargs) -> AIMessage:
+    async def ainvoke(self, messages: list[BaseMessage], **kwargs) -> AIMessage:
+        self._reset_api_credential_index()
         sys_inst, contents = self._convert_messages_gemini(messages)
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "contents": contents,
             "generationConfig": self._build_generation_config(**kwargs),
         }
@@ -204,9 +207,10 @@ class GoogleGeminiProvider(BaseProvider):
         data = await self._http_post_raw(body, stream=False)
         return self._parse_gemini_response(data)
 
-    async def astream(self, messages: List[BaseMessage], **kwargs) -> AsyncIterator[AIMessageChunk]:
+    async def astream(self, messages: list[BaseMessage], **kwargs) -> AsyncIterator[AIMessageChunk]:
+        self._reset_api_credential_index()
         sys_inst, contents = self._convert_messages_gemini(messages)
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "contents": contents,
             "generationConfig": self._build_generation_config(**kwargs),
         }
@@ -218,7 +222,9 @@ class GoogleGeminiProvider(BaseProvider):
                 body["tools"] = t
 
         last_error: Exception | None = None
-        for attempt in range(self.max_retries):
+        attempt = 0
+        rate_limit_rotations = 0
+        while attempt < self.max_retries:
             yielded_any = False
             try:
                 async for chunk in self._astream_gemini(body):
@@ -227,6 +233,12 @@ class GoogleGeminiProvider(BaseProvider):
                 return
             except _RetryableStreamError as e:
                 last_error = e
+                if e.status_code == 429 and not yielded_any:
+                    if rate_limit_rotations < self._credential_count() - 1:
+                        rate_limit_rotations += 1
+                        self._rotate_api_credential(f"HTTP {e.status_code}")
+                        continue
+                    raise self._all_credentials_failed_error(e.status_code, last_error) from e
                 if attempt < self.max_retries - 1:
                     delay = self._calc_backoff(attempt)
                     logger.warning(
@@ -234,6 +246,7 @@ class GoogleGeminiProvider(BaseProvider):
                         f"attempt={attempt + 1}/{self.max_retries} | retry in {delay:.1f}s"
                     )
                     await asyncio.sleep(delay)
+                attempt += 1
             except (asyncio.TimeoutError, httpx.TimeoutException) as e:
                 last_error = TimeoutError(f"Stream timeout: {e}")
                 if attempt < self.max_retries - 1:
@@ -243,6 +256,7 @@ class GoogleGeminiProvider(BaseProvider):
                         f"attempt={attempt + 1}/{self.max_retries} | retry in {delay:.1f}s"
                     )
                     await asyncio.sleep(delay)
+                attempt += 1
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ProtocolError) as e:
                 # Сервер оборвал SSE-стрим. Если уже наpyield'или часть —
                 # повтор приведёт к дублированию, поэтому пробрасываем выше.
@@ -261,15 +275,16 @@ class GoogleGeminiProvider(BaseProvider):
                         f"attempt={attempt + 1}/{self.max_retries} | retry in {delay:.1f}s"
                     )
                     await asyncio.sleep(delay)
+                attempt += 1
 
         raise ValueError(
             f"{self._provider_name} stream error after {self.max_retries} attempts: {last_error}"
         )
 
-    async def _astream_gemini(self, body: Dict[str, Any]) -> AsyncIterator[AIMessageChunk]:
-        proxy = self._proxy or None
+    async def _astream_gemini(self, body: dict[str, Any]) -> AsyncIterator[AIMessageChunk]:
+        proxy = self._get_proxy() or None
         dynamic_timeout = self._calc_timeout({"messages": body.get("contents", [])})
-        client_kwargs: Dict[str, Any] = {"timeout": httpx.Timeout(dynamic_timeout, connect=30.0)}
+        client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(dynamic_timeout, connect=30.0)}
         if proxy:
             client_kwargs["proxy"] = proxy
 
@@ -277,85 +292,85 @@ class GoogleGeminiProvider(BaseProvider):
         tc_index = 0  # счётчик function calls в стриме
 
         client_kwargs.setdefault("limits", httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0))
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            async with client.stream(
-                "POST", url, json=body, headers=self._get_headers(),
-            ) as resp:
-                if resp.status_code in self._RETRYABLE_STATUS_CODES:
-                    error_text = (await resp.aread()).decode("utf-8", errors="ignore")
-                    raise _RetryableStreamError(
-                        resp.status_code,
-                        f"{self._provider_name} API Error {resp.status_code}: {error_text}",
-                    )
-                if resp.status_code != 200:
-                    error_text = (await resp.aread()).decode("utf-8", errors="ignore")
-                    raise ValueError(
-                        f"{self._provider_name} API Error {resp.status_code}: {error_text}"
-                    )
+        async with httpx.AsyncClient(**client_kwargs) as client, client.stream(
+            "POST", url, json=body, headers=self._get_headers(),
+        ) as resp:
+            if resp.status_code in self._RETRYABLE_STATUS_CODES:
+                error_text = (await resp.aread()).decode("utf-8", errors="ignore")
+                raise _RetryableStreamError(
+                    resp.status_code,
+                    f"{self._provider_name} API Error {resp.status_code}: {error_text}",
+                )
+            if resp.status_code != 200:
+                error_text = (await resp.aread()).decode("utf-8", errors="ignore")
+                raise ValueError(
+                    f"{self._provider_name} API Error {resp.status_code}: {error_text}"
+                )
 
-                line_buffer = ""
-                async for raw_bytes in resp.aiter_bytes():
-                    line_buffer += raw_bytes.decode("utf-8", errors="ignore")
-                    while "\n" in line_buffer:
-                        line, line_buffer = line_buffer.split("\n", 1)
-                        line = line.strip()
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data_str = line[len("data:"):].strip()
-                        if not data_str:
-                            continue
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
+            line_buffer = ""
+            async for raw_bytes in resp.aiter_bytes():
+                line_buffer += raw_bytes.decode("utf-8", errors="ignore")
+                while "\n" in line_buffer:
+                    line, line_buffer = line_buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
 
-                        candidates = event.get("candidates") or []
-                        if candidates:
-                            cand = candidates[0]
-                            content = cand.get("content") or {}
-                            for part in content.get("parts") or []:
-                                if not isinstance(part, dict):
-                                    continue
-                                if "text" in part:
-                                    text = part.get("text") or ""
-                                    if text:
-                                        yield AIMessageChunk(content=text)
-                                elif "functionCall" in part:
-                                    fc = part.get("functionCall") or {}
-                                    name = fc.get("name") or ""
-                                    args_obj = fc.get("args") or {}
-                                    yield AIMessageChunk(
-                                        content="",
-                                        tool_call_chunks=[{
-                                            "index": tc_index,
-                                            "id": f"call_gemini_{tc_index}",
-                                            "name": name,
-                                            "args": json.dumps(args_obj) if args_obj else "{}",
-                                        }],
-                                    )
-                                    tc_index += 1
+                    candidates = event.get("candidates") or []
+                    if candidates:
+                        cand = candidates[0]
+                        content = cand.get("content") or {}
+                        for part in content.get("parts") or []:
+                            if not isinstance(part, dict):
+                                continue
+                            if "text" in part:
+                                text = part.get("text") or ""
+                                if text:
+                                    yield AIMessageChunk(content=text)
+                            elif "functionCall" in part:
+                                fc = part.get("functionCall") or {}
+                                name = fc.get("name") or ""
+                                args_obj = fc.get("args") or {}
+                                yield AIMessageChunk(
+                                    content="",
+                                    tool_call_chunks=[{
+                                        "index": tc_index,
+                                        "id": f"call_gemini_{tc_index}",
+                                        "name": name,
+                                        "args": json.dumps(args_obj) if args_obj else "{}",
+                                    }],
+                                )
+                                tc_index += 1
 
-                        usage = event.get("usageMetadata")
-                        if usage:
-                            yield AIMessageChunk(
-                                content="",
-                                usage_metadata=self._convert_usage_gemini(usage),
-                            )
+                    usage = event.get("usageMetadata")
+                    if usage:
+                        yield AIMessageChunk(
+                            content="",
+                            usage_metadata=self._convert_usage_gemini(usage),
+                        )
 
-    async def _http_post_raw(self, body: Dict[str, Any], stream: bool = False) -> Dict[str, Any]:
+    async def _http_post_raw(self, body: dict[str, Any], stream: bool = False) -> dict[str, Any]:
         name = self._provider_name
         url = self._endpoint(stream=stream)
-        headers = self._get_headers()
-        proxy = self._proxy or None
         dynamic_timeout = self._calc_timeout({"messages": body.get("contents", [])})
         last_error: Exception | None = None
         attempt = 0
-
-        client_kwargs: Dict[str, Any] = {"timeout": httpx.Timeout(dynamic_timeout, connect=30.0)}
-        if proxy:
-            client_kwargs["proxy"] = proxy
+        rate_limit_rotations = 0
 
         while attempt < self.max_retries:
+            headers = self._get_headers()
+            proxy = self._get_proxy() or None
+            client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(dynamic_timeout, connect=30.0)}
+            if proxy:
+                client_kwargs["proxy"] = proxy
+
             try:
                 async with httpx.AsyncClient(**client_kwargs) as client:
                     resp = await client.post(url, json=body, headers=headers)
@@ -374,6 +389,15 @@ class GoogleGeminiProvider(BaseProvider):
                             await asyncio.sleep(delay)
                             continue
                         break
+                if resp.status_code == 429:
+                    last_error = ValueError(
+                        f"{name} API Error {resp.status_code}: {resp.text}"
+                    )
+                    if rate_limit_rotations < self._credential_count() - 1:
+                        rate_limit_rotations += 1
+                        self._rotate_api_credential(f"HTTP {resp.status_code}")
+                        continue
+                    raise self._all_credentials_failed_error(resp.status_code, last_error)
                 if resp.status_code in self._RETRYABLE_STATUS_CODES:
                     last_error = ValueError(
                         f"{name} API Error {resp.status_code}: {resp.text}"
@@ -412,7 +436,7 @@ class GoogleGeminiProvider(BaseProvider):
             f"{name} API Error after {self.max_retries} attempts: {last_error}"
         )
 
-    def _parse_gemini_response(self, data: Dict[str, Any]) -> AIMessage:
+    def _parse_gemini_response(self, data: dict[str, Any]) -> AIMessage:
         candidates = data.get("candidates") or []
         text_parts: list[str] = []
         tool_calls: list[dict] = []
@@ -447,6 +471,7 @@ class GoogleGeminiProvider(BaseProvider):
             },
         )
 
+
 def create_google_provider(
     definition: ApiProviderDefinition,
     model_id: str,
@@ -470,8 +495,8 @@ def create_google_provider(
         max_retries=definition.max_retries or 3,
     )
     provider._provider_name = definition.name
-    provider._definition_id = definition.id
     provider._proxy = definition.proxy
+    provider._api_credentials = get_api_credentials(definition.id)
     provider._base_url = (definition.base_url or "https://generativelanguage.googleapis.com").rstrip("/")
 
     logger.debug(f"Created Google provider: {definition.name} / {actual_model}")

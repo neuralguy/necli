@@ -16,7 +16,6 @@ import html
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -146,23 +145,22 @@ class IncomingMessage:
 
 
 class TelegramBridge:
-    _instance: Optional["TelegramBridge"] = None
+    _instance: TelegramBridge | None = None
 
     def __init__(self):
         self._bot = None  # aiogram.Bot
         self._dp = None   # aiogram.Dispatcher
-        self._polling_task: Optional[asyncio.Task] = None
-        self._sender_task: Optional[asyncio.Task] = None
-        self._send_queue: Optional[asyncio.Queue] = None
-        self.incoming_queue: Optional[asyncio.Queue] = None
-        self._chat_id: Optional[int] = None
+        self._polling_task: asyncio.Task | None = None
+        self._sender_task: asyncio.Task | None = None
+        self._send_queue: asyncio.Queue | None = None
+        self.incoming_queue: asyncio.Queue | None = None
+        self._chat_id: int | None = None
         self._running = False
         self._lock = asyncio.Lock()
-        self._typing_task: Optional[asyncio.Task] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._typing_task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._command_handlers: dict = {}
         self._callback_handler = None
-        self._reply_keyboard = None
         self._button_aliases: dict[str, str] = {}
         self.agent_busy: bool = False
         # Inline-approve tool-вызовов: approval_id → (concurrent.futures.Future, message_id)
@@ -170,7 +168,7 @@ class TelegramBridge:
         self._approval_seq: int = 0
 
     @classmethod
-    def instance(cls) -> "TelegramBridge":
+    def instance(cls) -> TelegramBridge:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
@@ -180,7 +178,7 @@ class TelegramBridge:
         return self._running
 
     @property
-    def chat_id(self) -> Optional[int]:
+    def chat_id(self) -> int | None:
         return self._chat_id
 
     async def start(self, token: str, chat_id: int) -> tuple[bool, str]:
@@ -249,7 +247,7 @@ class TelegramBridge:
             async def _on_cb(cb):  # type: ignore[no-redef]
                 data = cb.data or ""
                 # Approve tool-вызова имеет приоритет над меню-handler'ом.
-                if data.startswith("approve:") or data.startswith("deny:"):
+                if data.startswith(("approve:", "deny:")):
                     await self._resolve_approval(data, cb)
                     return
                 handler = self._callback_handler
@@ -367,7 +365,6 @@ class TelegramBridge:
             self._command_handlers = {}
             self._callback_handler = None
             self._button_aliases = {}
-            self._reply_keyboard = None
             for _aid, (fut, _mid) in list(self._pending_approvals.items()):
                 if not fut.done():
                     try:
@@ -466,7 +463,7 @@ class TelegramBridge:
 
     async def _send_approval_message(self, text: str, approval_id: str):
         """Отправляет сообщение с inline-кнопками allow/deny. Возвращает message_id."""
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         markup = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✅ Allow", callback_data=f"approve:{approval_id}"),
             InlineKeyboardButton(text="✗ Deny", callback_data=f"deny:{approval_id}"),
@@ -491,7 +488,7 @@ class TelegramBridge:
             logger.warning("tg approval send failed: %s", e)
             return None
 
-    def request_approval(self, text: str, timeout: float = 300.0) -> Optional[bool]:
+    def request_approval(self, text: str, timeout: float = 300.0) -> bool | None:
         """Sync: шлёт запрос с inline-кнопками allow/deny и ждёт нажатия.
 
         Возвращает True (allow), False (deny) или None (таймаут / бридж не активен).
@@ -543,7 +540,7 @@ class TelegramBridge:
                     return
             logger.debug("edit_inline_message failed: %s", e)
 
-    async def send_placeholder(self, text: str) -> Optional[int]:
+    async def send_placeholder(self, text: str) -> int | None:
         """Отправляет сообщение сразу (минуя очередь) и возвращает message_id.
 
         Используется для thinking-плейсхолдера, который потом редактируется.
@@ -614,7 +611,7 @@ class TelegramBridge:
         except Exception as e:
             logger.debug("edit_message_threadsafe failed: %s", e)
 
-    def send_placeholder_threadsafe(self, text: str) -> Optional[int]:
+    def send_placeholder_threadsafe(self, text: str) -> int | None:
         """Sync-safe send_placeholder: блокирующе ждёт результат (≤3 сек)."""
         if not self._running or self._loop is None:
             return None

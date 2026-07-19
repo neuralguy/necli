@@ -2,16 +2,20 @@
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 
+from agent.think import strip_partial_think_block, strip_think_blocks
+from planner import strip_plan_commands
 from tools import strip_tool_calls as _strip_tool_calls
 from tools.call_parser import (
-    find_next_complete_call as _find_next_complete_call_block,
-    find_next_partial_call as _find_next_partial_call_block,
     find_next_call_start as _find_next_call_start_block,
 )
-from planner import strip_plan_commands
-from agent.think import strip_think_blocks, strip_partial_think_block
+from tools.call_parser import (
+    find_next_complete_call as _find_next_complete_call_block,
+)
+from tools.call_parser import (
+    find_next_partial_call as _find_next_partial_call_block,
+)
+
 
 @dataclass
 class StreamToolMatch:
@@ -23,10 +27,10 @@ class StreamToolMatch:
     complete: bool
     attrs_header: str = ""
 
-def _find_next_tool_start(text: str, offset: int) -> Optional[int]:
+def _find_next_tool_start(text: str, offset: int) -> int | None:
     return _find_next_call_start_block(text, offset)
 
-def _find_next_complete_tool(text: str, offset: int) -> Optional[StreamToolMatch]:
+def _find_next_complete_tool(text: str, offset: int) -> StreamToolMatch | None:
     info = _find_next_complete_call_block(text, offset)
     if info is None:
         return None
@@ -42,7 +46,7 @@ def _find_next_complete_tool(text: str, offset: int) -> Optional[StreamToolMatch
         attrs_header=info.get("attrs_header", ""),
     )
 
-def _find_next_partial_tool(text: str, offset: int) -> Optional[StreamToolMatch]:
+def _find_next_partial_tool(text: str, offset: int) -> StreamToolMatch | None:
     info = _find_next_partial_call_block(text, offset)
     if info is None:
         return None
@@ -90,7 +94,11 @@ def _clean_display_text(text: str, strip_calls: bool = True) -> str:
     # strip_calls=False (native function-calling): fenced-блоки НЕ вырезаются —
     # модель вызывает инструменты через native tool_calls, а любой текст вида
     # :::call ... call::: в ответе печатается дословно как обычный текст.
-    from agent.sanitizer import _ROLE_LEAK_RE, strip_fake_runtime_tool_results, strip_fake_tool_output
+    from agent.sanitizer import (
+        _ROLE_LEAK_RE,
+        strip_fake_runtime_tool_results,
+        strip_fake_tool_output,
+    )
 
     result = _strip_proxy_markers(text)
     result = strip_fake_runtime_tool_results(result)

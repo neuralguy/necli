@@ -13,26 +13,25 @@ on_status (печатаются над активным prompt'ом благод
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tools
+from agent.messages import gather_proof
+from agent.sanitizer import sanitize_response
+from apis._retry import with_throttle_retry
+from apis.agent_adapter import (
+    ApiSession,
+    _content_to_text,
+    _ensure_tool_call_ids,
+    _tool_calls_to_text_blocks,
+)
+from apis.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from apis.registry import get_provider
+from apis.tool_schemas import get_tool_schemas
+from system_prompt import build_system_prompt, build_tool_results
 from tools import parse_tool_calls, strip_tool_calls
 from tools._paths import use_working_dir
 from tools.registry import execute_call
-from system_prompt import build_tool_results, build_system_prompt
-from agent.sanitizer import sanitize_response
-from agent.messages import gather_proof
-
-from apis.agent_adapter import (
-    ApiSession,
-    _tool_calls_to_text_blocks,
-    _ensure_tool_call_ids,
-    _content_to_text,
-)
-from apis.registry import get_provider
-from apis._retry import with_throttle_retry
-from apis.tool_schemas import get_tool_schemas
-from apis.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +160,7 @@ async def run_commit_agent(
     model_id: str,
     working_dir: str,
     hint: str = "",
-    on_status: Optional[Callable[[str], None]] = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> str:
     """Запускает фоновый commit-агентный цикл. Возвращает финальный текст."""
     def _status(msg: str) -> None:

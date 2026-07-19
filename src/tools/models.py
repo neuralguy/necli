@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -34,15 +33,15 @@ class ToolResult:
     output: str
     exit_code: int = 0
     command: str = ""
-    image_path: Optional[Path] = None
-    image_paths: Optional[list[Path]] = None
+    image_path: Path | None = None
+    image_paths: list[Path] | None = None
     elapsed: float = 0.0
     full_content: bool = False
     fatal: bool = False
     # patch_file: 1-based стартовые строки применённых блоков в ИСХОДНОМ файле
     # (до правки). Нужно для корректной нумерации diff-превью — после записи
     # find_text в файле уже нет, искать его поздно.
-    line_starts: Optional[list[int]] = None
+    line_starts: list[int] | None = None
 
     def to_dict(self) -> dict:
         d = {

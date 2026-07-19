@@ -5,9 +5,9 @@
 
 import json
 
-
 import apis.agent_adapter as aa
 from apis.messages import ToolMessage
+
 
 class TestContentToText:
     def test_plain_string(self):
@@ -43,20 +43,20 @@ class TestToolCallsToTextBlocks:
         assert "call:::" in out
         assert json.dumps({"command": "ls -la"}, ensure_ascii=False) in out
 
-    def test_write_file_content_in_body(self):
+    def test_create_file_content_in_body(self):
         out = aa._tool_calls_to_text_blocks([
-            {"name": "write_file", "args": {"path": "a.py", "content": "print(1)"}},
+            {"name": "create_file", "args": {"path": "a.py", "content": "print(1)"}},
         ])
-        assert ':::call write_file path="a.py"' in out
+        assert ':::call create_file path="a.py"' in out
         assert "print(1)" in out
 
-    def test_write_file_with_encoding(self):
+    def test_create_file_with_encoding(self):
         out = aa._tool_calls_to_text_blocks([
-            {"name": "write_file", "args": {"path": "a.bin", "content": "x", "encoding": "base64"}},
+            {"name": "create_file", "args": {"path": "a.bin", "content": "x", "encoding": "base64"}},
         ])
         assert 'encoding="base64"' in out
 
-    def test_create_file_treated_like_write_file(self):
+    def test_create_file_content_in_body_simple(self):
         out = aa._tool_calls_to_text_blocks([
             {"name": "create_file", "args": {"path": "new.txt", "content": "data"}},
         ])

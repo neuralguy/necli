@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from apis.messages import HumanMessage, AIMessage, ToolMessage
+from apis.messages import AIMessage, HumanMessage, ToolMessage
 from logger import logger
 
 
@@ -45,19 +45,19 @@ def _is_real_user(msg: Any) -> bool:
 
 _BLOCK_SEP = "\n---\n"
 _READ_CMD_RE = re.compile(r"^\$ (read_files?|read_file)\s+(.+)$")
-_WRITE_CMD_RE = re.compile(r"^\$ (write_file|patch_file|create_file)\s+(.+)$")
+_WRITE_CMD_RE = re.compile(r"^\$ (patch_file|create_file)\s+(.+)$")
 
 _READ_NAMES = {"read_files", "read_file"}
-_WRITE_NAMES = {"write_file", "patch_file", "create_file"}
+_WRITE_NAMES = {"patch_file", "create_file"}
 # Инструменты, чей ВЫВОД (не файл) вытесняется по возрасту: снимок состояния,
 # перечитать «тем же» нельзя — только повторный вызов. Применяем C (крупный
 # рано) и D (любой через _HARD_EVICT_ROUNDS), без A/B (нет пути/дедупа).
 _TOOL_EVICT_NAMES = {
-    "shell", "grep_files", "find_files", "tree", "ls", "web_search",
+    "shell", "web_search",
     "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
 }
 _TOOL_CMD_RE = re.compile(
-    r"^\$ (shell|grep_files|find_files|tree|ls|web_search|"
+    r"^\$ (shell|web_search|"
     r"lsp_definition|lsp_references|lsp_hover|lsp_diagnostics)\b(.*)$"
 )
 
@@ -102,7 +102,7 @@ def _extract_paths_from_cmd_tail(tail: str) -> list[str]:
 
 
 def _paths_from_args(args: Any) -> list[str]:
-    """Достаёт пути из native tool_call args (read_files/write_file/...)."""
+    """Достаёт пути из native tool_call args (read_files/create_file/...)."""
     if not isinstance(args, dict):
         return []
     p = args.get("path")
@@ -151,7 +151,7 @@ def _scan_round_writes(messages: list) -> dict[str, int]:
     """Для каждого file path → максимальный round его модификации (write/patch/create).
 
     Round = индекс user-сообщения (1-based). Сканирует ОБА формата:
-      - text-mode: '$ write_file ...' блоки внутри HumanMessage;
+      - text-mode: '$ create_file ...' блоки внутри HumanMessage;
       - native: AIMessage.tool_calls с именами write/patch/create.
     """
     writes: dict[str, int] = {}
@@ -216,8 +216,15 @@ def _should_evict(
     block_chars: int,
     write_rounds: dict[str, int],
     read_rounds: dict[str, int],
+    age_eviction: bool = True,
 ) -> str | None:
-    """Возвращает причину eviction или None. Применяет триггеры A/B/C/D."""
+    """Возвращает причину eviction или None. Применяет триггеры A/B/C/D.
+
+    age_eviction=False отключает возрастные триггеры C/D (Fix 2: их гейтит
+    порог контекста в caller — пока контекст мал, возрастное вытеснение не
+    нужно и только дробит prompt-cache). A/B (устаревший/дедуп) применяются
+    ВСЕГДА: это корректность, срабатывают редко (только при re-read/write).
+    """
     if not paths:
         return None
     # A. файл изменён в более позднем раунде
@@ -226,6 +233,8 @@ def _should_evict(
     # B. тот же путь прочитан позже — ранняя копия лишняя (дедуп)
     if any(read_rounds.get(p, 0) > block_round for p in paths):
         return "superseded by a later read of the same file"
+    if not age_eviction:
+        return None
     age = current_round - block_round
     # C. старое крупное чтение
     if age >= _KEEP_RECENT_ROUNDS and block_chars >= _MIN_EVICT_CHARS:
@@ -236,8 +245,16 @@ def _should_evict(
     return None
 
 
-def _should_evict_tool(block_round: int, current_round: int, block_chars: int) -> str | None:
-    """Возраст-вытеснение вывода инструмента: C (крупный рано) + D (любой через потолок)."""
+def _should_evict_tool(
+    block_round: int, current_round: int, block_chars: int,
+    age_eviction: bool = True,
+) -> str | None:
+    """Возраст-вытеснение вывода инструмента: C (крупный рано) + D (любой через потолок).
+
+    Чисто возрастное → при age_eviction=False (контекст мал) пропускаем.
+    """
+    if not age_eviction:
+        return None
     age = current_round - block_round
     if age >= _KEEP_RECENT_ROUNDS and block_chars >= _MIN_EVICT_CHARS:
         return f"stale tool output ({age} rounds old)"
@@ -337,6 +354,7 @@ def _prune_user_text(
     write_rounds: dict[str, int],
     read_rounds: dict[str, int],
     evicted_paths: set[str],
+    age_eviction: bool = True,
 ) -> str:
     """Заменяет старые read-блоки на плейсхолдер. Возвращает новый text.
 
@@ -356,7 +374,7 @@ def _prune_user_text(
             paths = _extract_paths_from_cmd_tail(cmd_tail)
             reason = _should_evict(
                 paths, user_round, current_round, len(block),
-                write_rounds, read_rounds,
+                write_rounds, read_rounds, age_eviction,
             )
             if reason is None:
                 new_blocks.append(block)
@@ -367,7 +385,7 @@ def _prune_user_text(
             continue
         mt = _TOOL_CMD_RE.match(first_line)
         if mt:
-            reason = _should_evict_tool(user_round, current_round, len(block))
+            reason = _should_evict_tool(user_round, current_round, len(block), age_eviction)
             if reason is None:
                 new_blocks.append(block)
                 continue
@@ -396,6 +414,7 @@ def _prune_native(
     write_rounds: dict[str, int],
     read_rounds: dict[str, int],
     evicted_paths: set[str],
+    age_eviction: bool = True,
 ) -> tuple[list, int, int]:
     """Native-проход: вытесняет старые read-ToolMessage.
 
@@ -441,7 +460,7 @@ def _prune_native(
             if t_round is None or t_round >= current_round:
                 result.append(msg)
                 continue
-            reason = _should_evict_tool(t_round, current_round, len(content))
+            reason = _should_evict_tool(t_round, current_round, len(content), age_eviction)
             if reason is None:
                 result.append(msg)
                 continue
@@ -484,7 +503,7 @@ def _prune_native(
             continue
         reason = _should_evict(
             paths, block_round, current_round, len(content),
-            write_rounds, read_rounds,
+            write_rounds, read_rounds, age_eviction,
         )
         if reason is None:
             result.append(msg)
@@ -501,18 +520,29 @@ def _prune_native(
     return result, pruned, saved
 
 
-def prune_messages(messages: list) -> tuple[list, dict]:
+def prune_messages(messages: list, age_eviction: bool = True) -> tuple[list, dict]:
     """Возвращает (новый список, stats). Оригинал не модифицируется.
 
-    stats: {"pruned_blocks": N, "saved_chars": M}
+    age_eviction (Fix 2): когда False — возрастные триггеры C/D и tool-age
+    отключены, остаются только A/B (устаревшие/дедуп, корректность) и
+    skill-вытеснение (синхрон с окном активности скилла). Caller выставляет
+    False пока контекст мал, чтобы не дробить prompt-cache почти каждый раунд.
+
+    stats: {"pruned_blocks": N, "saved_chars": M, "frozen_until": idx}
+      frozen_until — индекс ПОСЛЕ последнего «замороженного» (уже вытесненного)
+      сообщения; используется провайдером для стабильного cache breakpoint (Fix 3).
     """
     if not messages:
-        return list(messages), {"pruned_blocks": 0, "saved_chars": 0}
+        return list(messages), {"pruned_blocks": 0, "saved_chars": 0, "frozen_until": 0}
 
     current_round = sum(1 for m in messages if _is_real_user(m))
     if current_round <= 1:
         result, runtime_pruned, runtime_saved = _prune_runtime_tool_results(list(messages))
-        return result, {"pruned_blocks": runtime_pruned, "saved_chars": runtime_saved}
+        return result, {
+            "pruned_blocks": runtime_pruned,
+            "saved_chars": runtime_saved,
+            "frozen_until": _frozen_watermark(result),
+        }
 
     write_rounds = _scan_round_writes(messages)
     read_rounds = _scan_read_paths(messages)
@@ -535,7 +565,7 @@ def prune_messages(messages: list) -> tuple[list, dict]:
                 continue
             new_text = _prune_user_text(
                 text, round_idx, current_round, write_rounds, read_rounds,
-                evicted_paths,
+                evicted_paths, age_eviction,
             )
             if new_text != text:
                 pruned_blocks += new_text.count(_EVICT_MARKER) - text.count(_EVICT_MARKER)
@@ -549,6 +579,7 @@ def prune_messages(messages: list) -> tuple[list, dict]:
     # ── Pass 2: native read-ToolMessage ──
     result, native_pruned, native_saved = _prune_native(
         result, current_round, write_rounds, read_rounds, evicted_paths,
+        age_eviction,
     )
     pruned_blocks += native_pruned
     saved += native_saved
@@ -570,4 +601,25 @@ def prune_messages(messages: list) -> tuple[list, dict]:
         except Exception:
             logger.debug("pruner: read-cache invalidation failed", exc_info=True)
 
-    return result, {"pruned_blocks": pruned_blocks, "saved_chars": saved}
+    return result, {
+        "pruned_blocks": pruned_blocks,
+        "saved_chars": saved,
+        "frozen_until": _frozen_watermark(result),
+    }
+
+
+def _frozen_watermark(messages: list) -> int:
+    """Индекс ПОСЛЕ последнего сообщения с уже вытесненным контентом.
+
+    Эта граница — самая «стабильная» точка истории: всё до неё уже сжато в
+    плейсхолдеры и больше не изменится (eviction идемпотентен). Провайдер
+    ставит сюда ephemeral cache breakpoint (Fix 3), чтобы замороженный префикс
+    кэшировался долгосрочно, не сбрасываясь при вытеснении более свежих блоков.
+    Возвращает 0, если вытеснений ещё нет.
+    """
+    last = 0
+    for i, msg in enumerate(messages):
+        c = getattr(msg, "content", None)
+        if isinstance(c, str) and _EVICT_MARKER in c:
+            last = i + 1
+    return last

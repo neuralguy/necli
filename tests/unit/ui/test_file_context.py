@@ -11,6 +11,7 @@ from ui.file_context import (
     parse_at_references,
 )
 
+
 class TestReadFileContent:
     def test_normal_file(self, tmp_path):
         f = tmp_path / "a.txt"
@@ -164,7 +165,7 @@ class TestExpandAtReferences:
     def test_single_file_context(self, tmp_path):
         f = tmp_path / "hello.py"
         f.write_text("print('hi')")
-        text, ctx, refs = expand_at_references("@hello.py", str(tmp_path))
+        _text, ctx, refs = expand_at_references("@hello.py", str(tmp_path))
         assert "print('hi')" in ctx
         assert "--- @hello.py ---" in ctx
         assert "--- end @hello.py ---" in ctx
@@ -175,21 +176,21 @@ class TestExpandAtReferences:
         sub = tmp_path / "src"
         sub.mkdir()
         (sub / "x.py").write_text("X")
-        text, ctx, refs = expand_at_references("@src", str(tmp_path))
+        _text, ctx, _refs = expand_at_references("@src", str(tmp_path))
         assert "(directory)" in ctx
         assert "Tree:" in ctx
         assert "X" in ctx
         assert "--- end @src ---" in ctx
 
     def test_error_ref_skipped(self, tmp_path):
-        text, ctx, refs = expand_at_references("@missing.py", str(tmp_path))
+        _text, ctx, refs = expand_at_references("@missing.py", str(tmp_path))
         assert ctx == ""
         assert len(refs) == 1
         assert refs[0].error is not None
 
     def test_mixed_valid_and_invalid(self, tmp_path):
         (tmp_path / "real.py").write_text("real")
-        text, ctx, refs = expand_at_references("@real.py @missing.py", str(tmp_path))
+        _text, ctx, refs = expand_at_references("@real.py @missing.py", str(tmp_path))
         assert "real" in ctx
         assert len(refs) == 2
         errors = [r for r in refs if r.error]

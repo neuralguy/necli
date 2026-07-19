@@ -7,39 +7,23 @@ from collections.abc import Callable
 
 from config import READ_ONLY_TOOLS as _READ_ONLY_CANONICAL
 from logger import logger
-from tools.models import ToolCall, ToolResult
-from tools.shell import execute_shell
-
-
+from tools.expand_result import execute_expand_tool_result
 from tools.file_ops import (
-    read_files,
-    write_file,
-    patch_file,
-    create_file,
-    delete_file,
-    rename_file,
-    copy_file,
-    move_file,
     create_docx,
+    create_file,
     docx_screenshot,
-    apply_diff,
+    patch_file,
+    read_files,
 )
-from tools.dir_ops import (
-    ls,
-    tree,
-    mkdir,
-    rmdir,
-    find_files,
-    grep_files,
-)
+from tools.image_search import execute_image_search
+from tools.memory_tool import memory_list, memory_read, memory_write
+from tools.models import ToolCall, ToolResult
 from tools.poll import execute_poll
+from tools.shell import execute_shell
 from tools.skill_tool import execute_skill
 from tools.ssh import execute_ssh
 from tools.subagent import execute_subagent
 from tools.web_search import execute_web_search
-from tools.image_search import execute_image_search
-from tools.expand_result import execute_expand_tool_result
-from tools.memory_tool import memory_write, memory_list, memory_read
 
 
 # LSP-инструменты импортируются лениво, чтобы избежать циркулярного импорта:
@@ -69,22 +53,10 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "shell": execute_shell,
     "read_files": read_files,
     "read_file": read_files,  # alias
-    "write_file": write_file,
     "patch_file": patch_file,
     "create_file": create_file,
-    "delete_file": delete_file,
-    "rename_file": rename_file,
-    "copy_file": copy_file,
-    "move_file": move_file,
     "create_docx": create_docx,
     "docx_screenshot": docx_screenshot,
-    "apply_diff": apply_diff,
-    "ls": ls,
-    "tree": tree,
-    "mkdir": mkdir,
-    "rmdir": rmdir,
-    "find_files": find_files,
-    "grep_files": grep_files,
     "poll": execute_poll,
     "skill": execute_skill,
     "ssh": execute_ssh,
@@ -134,7 +106,7 @@ def _run_pre_tool_hooks(call: ToolCall) -> ToolResult | None:
                 exit_code=2,
                 command=call.command,
             )
-    except Exception as e:  # noqa: BLE001 — hooks никогда не роняют выполнение
+    except Exception as e:
         logger.opt(exception=True).warning("PreToolUse hook error ignored: {}", e)
     return None
 
@@ -162,7 +134,7 @@ def _run_post_tool_hooks(call: ToolCall, result: ToolResult) -> None:
         if ctx:
             sep = "\n\n" if result.output else ""
             result.output = f"{result.output}{sep}[hook] {ctx}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.opt(exception=True).warning("PostToolUse hook error ignored: {}", e)
 
 
@@ -191,6 +163,25 @@ def execute_call(call: ToolCall) -> ToolResult:
             exit_code=1,
             command=call.command,
         )
+
+    # Валидация/нормализация args по схеме инструмента ДО вызова handler'а:
+    # резолвит алиасы (new_name→new_path), коэрсит типы (line="5"→5) и даёт
+    # модели точную диагностику вместо невнятного симптома из handler'а.
+    from tools.arg_validation import validate_and_normalize
+
+    norm_args, arg_error = validate_and_normalize(
+        call.tool_name, call.args or {}, command=call.command,
+    )
+    if arg_error is not None:
+        logger.warning("execute_call: invalid args for {}: {}", call.tool_name, arg_error)
+        return ToolResult(
+            name=call.tool_name,
+            status="error",
+            output=arg_error,
+            exit_code=1,
+            command=call.command,
+        )
+    call.args = norm_args
 
     # `patches` тоже отрезаем — без него предпросмотр огромный.
     args_preview = {k: (v if not isinstance(v, str) or len(v) <= 120 else v[:120] + "…")

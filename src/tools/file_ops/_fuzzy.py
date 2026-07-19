@@ -64,7 +64,7 @@ def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
             last_line = text_lines[i + len(find_lines) - 1]
             if last_line.endswith('\n') and not new_replace.endswith(('\n', '\r')):
                 new_replace += eol
-            result_lines = text_lines[:i] + [new_replace] + text_lines[i + len(find_lines):]
+            result_lines = [*text_lines[:i], new_replace, *text_lines[i + len(find_lines):]]
             return ''.join(result_lines), True
 
     strip_find = [ln.strip() for ln in find_lines if ln.strip()]
@@ -88,7 +88,7 @@ def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
                 last_line = text_lines[i + len(strip_find) - 1]
                 if last_line.endswith('\n') and not new_replace.endswith(('\n', '\r')):
                     new_replace += eol
-                result_lines = text_lines[:i] + [new_replace] + text_lines[i + len(strip_find):]
+                result_lines = [*text_lines[:i], new_replace, *text_lines[i + len(strip_find):]]
                 return ''.join(result_lines), True
 
     return text, False

@@ -1,9 +1,8 @@
 PLANNING_MODE_BLOCK = r"""# Planning mode
 
 You are in PLANNING mode. This is a read-only engineering design/review mode, not implementation.
-Only read-only tools are available: read_files, grep_files, tree, ls, find_files, web_search, poll,
-skill. ALL write/execute tools (write_file, patch_file, create_file, delete_file, rename_file,
-copy_file, move_file, mkdir, rmdir, shell, ssh, subagent, create_docx) are BLOCKED by the system —
+Only read-only tools are available: read_files, web_search, poll,
+skill. ALL write/execute tools (patch_file, create_file, shell, ssh, subagent, create_docx) are BLOCKED by the system —
 attempting them returns an error.
 
 Behavior:

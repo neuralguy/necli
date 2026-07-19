@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -20,7 +19,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Run a shell command (git, pip, make, tests, etc.). "
                 "Do NOT use for file operations (cat/echo/tee/heredoc/sed for writes) — "
-                "use write_file/create_file/patch_file. "
+                "use create_file/patch_file. "
                 "`cd` is allowed and may be chained to enter any directory "
                 "(e.g. `cd /any/path && cmd`); it applies only within this single call. "
                 "Prefer separate calls for unrelated commands. "
@@ -96,26 +95,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "write_file",
-            "description": (
-                "Create or overwrite a file entirely. "
-                "Use only for new files or full rewrites of small files (<30 lines). "
-                "For editing existing files use patch_file."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "encoding": {"type": "string"},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "patch_file",
             "description": (
                 "Targeted file edit — ONE change per call. Use find/replace, "
@@ -140,12 +119,17 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "create_file",
-            "description": "Create a new file. Errors if file already exists.",
+            "description": (
+                "Create a new file OR fully overwrite an existing one. "
+                "Use for new files or full rewrites of small files (<30 lines). "
+                "For editing existing files use patch_file."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "content": {"type": "string"},
+                    "encoding": {"type": "string"},
                 },
                 "required": ["path", "content"],
             },
@@ -223,160 +207,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_file",
-            "description": "Delete a file.",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}},
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "rename_file",
-            "description": "Rename or move a file. Arguments: 'path' (source) and 'new_path' (destination). NOT 'source'/'destination', NOT 'new_name'.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "new_path": {"type": "string"},
-                },
-                "required": ["path", "new_path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "copy_file",
-            "description": "Copy a file or directory. Arguments: 'path' (source) and 'dest' (destination). NOT 'source'/'destination'.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "dest": {"type": "string"},
-                },
-                "required": ["path", "dest"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "move_file",
-            "description": "Move a file or directory. Arguments: 'path' (source) and 'dest' (destination). NOT 'source'/'destination'.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "dest": {"type": "string"},
-                },
-                "required": ["path", "dest"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "ls",
-            "description": "List directory contents.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "all": {"type": "boolean", "description": "Include hidden files."},
-                    "long": {"type": "boolean", "description": "Detailed format."},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "tree",
-            "description": "Display directory tree.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "depth": {"type": "integer", "description": "Max depth, default 3."},
-                    "all": {"type": "boolean"},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "mkdir",
-            "description": "Create a directory (including parents).",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}},
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "rmdir",
-            "description": "Remove a directory.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "force": {"type": "boolean", "description": "Recursive delete."},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "find_files",
-            "description": "Find files by name or glob pattern.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "pattern": {"type": "string", "description": "Glob pattern like '*.py'."},
-                    "name": {"type": "string", "description": "Exact filename."},
-                    "type": {"type": "string", "enum": ["file", "dir", "any"]},
-                    "depth": {"type": "integer"},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "grep_files",
-            "description": "Search text in files with regex or literal.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string"},
-                    "path": {"type": "string"},
-                    "glob": {"type": "string"},
-                    "ignore_case": {"type": "boolean"},
-                    "literal": {"type": "boolean"},
-                    "context": {"type": "integer"},
-                    "include_ignored": {
-                        "type": "boolean",
-                        "description": "If true, scan node_modules/.venv/dist/build/.git etc. Default false."
-                    }
-                },
-                "required": ["pattern"],
             },
         },
     },
@@ -509,29 +339,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "download_dir": {"type": "string", "description": "Target folder for downloads (default assets/images)."},
                 },
                 "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "apply_diff",
-            "description": (
-                "Apply a unified diff to the working tree via 'git apply' "
-                "(fallback to 'patch -p1'). Use for multi-hunk/multi-file refactors "
-                "where patch_file would need many separate calls. "
-                "Diff format: '--- a/path' / '+++ b/path' headers, '@@ ... @@' hunks. "
-                "Dry-run is performed before apply; on failure nothing is changed."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "diff": {
-                        "type": "string",
-                        "description": "Unified diff body ('--- a/path' / '+++ b/path' headers, '@@ ... @@' hunks).",
-                    },
-                },
-                "required": ["diff"],
             },
         },
     },
@@ -909,10 +716,9 @@ _SCHEMAS_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 def _mcp_signature() -> tuple:
     try:
         from apis.mcp_client import get_mcp_tool_schemas
-        names = tuple(sorted(
+        return tuple(sorted(
             s.get("function", {}).get("name", "") for s in get_mcp_tool_schemas()
         ))
-        return names
     except Exception:
         return ()
 
@@ -963,7 +769,7 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
     if cached is not None:
         return list(cached)
 
-    if mode in ("plan", "planning", "autonomous", "auto"):
+    if restricted_mode:
         allowed = (_AUTONOMOUS_TOOL_NAMES if mode in ("autonomous", "auto") else _PLANNING_TOOL_NAMES) | {"plan"}
         if think_on:
             allowed = allowed | {"think"}

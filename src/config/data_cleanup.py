@@ -244,7 +244,7 @@ def _dir_size(path: Path) -> int:
         for f in files:
             try:
                 total += os.lstat(os.path.join(root, f)).st_size
-            except OSError:
+            except OSError:  # noqa: PERF203
                 continue
     return total
 

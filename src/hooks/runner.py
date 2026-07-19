@@ -55,7 +55,7 @@ def _run_command_hook(
     except subprocess.TimeoutExpired:
         logger.warning("hook command timed out after {}s: {}", spec.timeout, spec.command[:80])
         return 124, "", f"hook timed out after {spec.timeout}s"
-    except Exception as e:  # noqa: BLE001 — hook не должен ронять агента
+    except Exception as e:
         logger.opt(exception=True).error("hook command failed: {}", e)
         return 1, "", f"{type(e).__name__}: {e}"
 
@@ -74,7 +74,7 @@ def _run_http_hook(spec: HookSpec, payload_json: str) -> tuple[int, str, str]:
         # 2xx → ок; иной статус трактуем как «не блок, но залогируем».
         code = 0 if resp.is_success else 1
         return code, body, "" if resp.is_success else f"HTTP {resp.status_code}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.opt(exception=True).error("hook http failed: {}", e)
         return 1, "", f"{type(e).__name__}: {e}"
 
@@ -153,7 +153,7 @@ def run_hooks(
         from config.hooks import load_hooks
 
         cfg = load_hooks()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.opt(exception=True).error("hooks: load failed: {}", e)
         return outcome
 
@@ -209,7 +209,7 @@ def _spawn_async(spec: HookSpec, payload_json: str, working_dir: str | None) -> 
 
         def _run_cmd_hook() -> None:
             try:
-                proc = subprocess.Popen(  # noqa: S602
+                proc = subprocess.Popen(
                     spec.command,
                     shell=True,
                     stdin=subprocess.PIPE,
@@ -227,9 +227,9 @@ def _spawn_async(spec: HookSpec, payload_json: str, working_dir: str | None) -> 
                 proc.kill()
                 proc.communicate()
                 logger.warning("hooks: async command hook timed out")
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.warning("hooks: async command hook failed: {}", e)
 
         threading.Thread(target=_run_cmd_hook, daemon=True).start()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("hooks: async spawn failed: {}", e)

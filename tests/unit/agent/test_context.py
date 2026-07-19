@@ -41,14 +41,6 @@ class TestEffectivePlanDir:
         assert ctx.effective_plan_dir == "/tmp/plans"
 
 
-class TestResetPlan:
-    def test_clears(self):
-        ctx = AgentContext()
-        ctx.plan = "some plan obj"
-        ctx.reset_plan()
-        assert ctx.plan is None
-
-
 class TestResetInterrupt:
     def test_clears_both_flags(self):
         ctx = AgentContext()
@@ -57,27 +49,5 @@ class TestResetInterrupt:
         ctx.reset_interrupt()
         assert ctx.interrupted is False
         assert ctx.hard_interrupted is False
-
-
-class TestToggleMode:
-    def test_agent_to_planning(self):
-        ctx = AgentContext(mode="agent")
-        assert ctx.toggle_mode() == "planning"
-        assert ctx.mode == "planning"
-
-    def test_planning_to_autonomous(self):
-        ctx = AgentContext(mode="planning")
-        assert ctx.toggle_mode() == "autonomous"
-
-    def test_autonomous_to_agent(self):
-        ctx = AgentContext(mode="autonomous")
-        assert ctx.toggle_mode() == "agent"
-
-    def test_full_cycle(self):
-        ctx = AgentContext(mode="agent")
-        ctx.toggle_mode()
-        ctx.toggle_mode()
-        ctx.toggle_mode()
-        assert ctx.mode == "agent"
 
 

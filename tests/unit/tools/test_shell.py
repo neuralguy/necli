@@ -3,13 +3,13 @@
 import subprocess
 from unittest.mock import patch
 
+from tools.models import ToolCall
 from tools.shell import (
-    execute_shell,
     _is_blocked,
     _is_file_write_via_shell,
     _strip_shell_prefix,
+    execute_shell,
 )
-from tools.models import ToolCall
 
 
 def _call(cmd: str) -> ToolCall:
@@ -36,7 +36,7 @@ class TestIsBlocked:
 class TestFileWriteViaShell:
     def test_heredoc_cat(self):
         msg = _is_file_write_via_shell("cat > x.py << EOF")
-        assert msg and "write_file" in msg
+        assert msg and "create_file" in msg
 
     def test_heredoc_tee(self):
         msg = _is_file_write_via_shell("tee x.py << EOF")
@@ -44,16 +44,16 @@ class TestFileWriteViaShell:
 
     def test_cat_redirect(self):
         msg = _is_file_write_via_shell("cat > x.py")
-        assert msg and "write_file" in msg
+        assert msg and "create_file" in msg
 
     def test_tee_redirect(self):
         # tee пишет в файл и без heredoc — блокируем.
         msg = _is_file_write_via_shell("echo hi | tee x.py")
-        assert msg and "write_file" in msg
+        assert msg and "create_file" in msg
 
     def test_tee_append_redirect(self):
         msg = _is_file_write_via_shell("echo hi | tee -a x.py")
-        assert msg and "write_file" in msg
+        assert msg and "create_file" in msg
 
     def test_echo_redirect(self):
         # echo-редирект — осознанно НЕ блокируем (мелкие inline-операции).
@@ -88,7 +88,7 @@ class TestFileWriteViaShell:
     def test_unbalanced_quotes_fail_safe(self):
         # При незакрытой кавычке остаёмся осторожными — блокируем реальную запись.
         msg = _is_file_write_via_shell('cat > x.py "unterminated')
-        assert msg and "write_file" in msg
+        assert msg and "create_file" in msg
 
 
 class TestStripShellPrefix:
@@ -149,7 +149,7 @@ class TestExecuteShell:
     def test_heredoc_blocked(self, tmp_workdir):
         r = execute_shell(_call("cat > x.py << EOF"))
         assert r.status == "error"
-        assert "write_file" in r.output
+        assert "create_file" in r.output
 
     def test_empty_command(self, tmp_workdir):
         r = execute_shell(_call(""))

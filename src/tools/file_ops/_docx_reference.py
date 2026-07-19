@@ -15,7 +15,6 @@ from pathlib import Path
 
 from logger import logger
 
-
 _REFERENCE_FILENAME = "docx_reference.docx"
 _BASE_FONT = "Times New Roman"
 _CODE_FONT = "Courier New"
@@ -39,10 +38,10 @@ def get_default_reference_path() -> Path:
 def _build_reference(out_path: Path) -> None:
     """Строит reference.docx через python-docx с нужными стилями."""
     from docx import Document
-    from docx.shared import Pt, Cm, RGBColor
     from docx.enum.text import WD_LINE_SPACING
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm, Pt, RGBColor
 
     doc = Document()
 
@@ -171,22 +170,22 @@ def _build_reference(out_path: Path) -> None:
 
 def _force_doc_defaults(doc, font_name: str, size_pt, color_rgb) -> None:
     """Устанавливает rFonts и sz в w:docDefaults — это перебивает тему Calibri."""
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 
     styles_el = doc.styles.element
-    docDefaults = styles_el.find(qn("w:docDefaults"))
+    docDefaults = styles_el.find(qn("w:docDefaults"))  # noqa: N806
     if docDefaults is None:
-        docDefaults = OxmlElement("w:docDefaults")
+        docDefaults = OxmlElement("w:docDefaults")  # noqa: N806
         styles_el.insert(0, docDefaults)
 
-    rPrDefault = docDefaults.find(qn("w:rPrDefault"))
+    rPrDefault = docDefaults.find(qn("w:rPrDefault"))  # noqa: N806
     if rPrDefault is None:
-        rPrDefault = OxmlElement("w:rPrDefault")
+        rPrDefault = OxmlElement("w:rPrDefault")  # noqa: N806
         docDefaults.append(rPrDefault)
-    rPr = rPrDefault.find(qn("w:rPr"))
+    rPr = rPrDefault.find(qn("w:rPr"))  # noqa: N806
     if rPr is None:
-        rPr = OxmlElement("w:rPr")
+        rPr = OxmlElement("w:rPr")  # noqa: N806
         rPrDefault.append(rPr)
     for old in rPr.findall(qn("w:rFonts")):
         rPr.remove(old)
@@ -199,22 +198,22 @@ def _force_doc_defaults(doc, font_name: str, size_pt, color_rgb) -> None:
     sz = OxmlElement("w:sz")
     sz.set(qn("w:val"), str(int(size_pt.pt * 2)))
     rPr.append(sz)
-    szCs = OxmlElement("w:szCs")
+    szCs = OxmlElement("w:szCs")  # noqa: N806
     szCs.set(qn("w:val"), str(int(size_pt.pt * 2)))
     rPr.append(szCs)
     for old in rPr.findall(qn("w:color")):
         rPr.remove(old)
     color = OxmlElement("w:color")
-    color.set(qn("w:val"), "{:02X}{:02X}{:02X}".format(color_rgb[0], color_rgb[1], color_rgb[2]))
+    color.set(qn("w:val"), f"{color_rgb[0]:02X}{color_rgb[1]:02X}{color_rgb[2]:02X}")
     rPr.append(color)
 
-    pPrDefault = docDefaults.find(qn("w:pPrDefault"))
+    pPrDefault = docDefaults.find(qn("w:pPrDefault"))  # noqa: N806
     if pPrDefault is None:
-        pPrDefault = OxmlElement("w:pPrDefault")
+        pPrDefault = OxmlElement("w:pPrDefault")  # noqa: N806
         docDefaults.append(pPrDefault)
-    pPr = pPrDefault.find(qn("w:pPr"))
+    pPr = pPrDefault.find(qn("w:pPr"))  # noqa: N806
     if pPr is None:
-        pPr = OxmlElement("w:pPr")
+        pPr = OxmlElement("w:pPr")  # noqa: N806
         pPrDefault.append(pPr)
     for old in pPr.findall(qn("w:spacing")):
         pPr.remove(old)
@@ -266,9 +265,9 @@ def _override_theme_fonts(doc, font_name: str) -> None:
 def _add_centered_style(doc, font_name, size, color) -> None:
     from docx.enum.style import WD_STYLE_TYPE
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-    from docx.shared import Cm
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm
 
     name = "Centered"
     if name in [s.name for s in doc.styles]:
@@ -293,9 +292,9 @@ def _add_centered_style(doc, font_name, size, color) -> None:
 def _add_right_style(doc, font_name, size, color) -> None:
     from docx.enum.style import WD_STYLE_TYPE
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-    from docx.shared import Cm
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm
 
     name = "RightAligned"
     if name in [s.name for s in doc.styles]:
@@ -323,16 +322,14 @@ def _setup_table_style(doc, font_name, size, color) -> None:
     """
     from docx.enum.style import WD_STYLE_TYPE
     from docx.enum.text import WD_LINE_SPACING
-    from docx.shared import Cm, Pt as _Pt
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm
+    from docx.shared import Pt as _Pt
 
     name = "Table"
     existing = [s.name for s in doc.styles]
-    if name in existing:
-        st = doc.styles[name]
-    else:
-        st = doc.styles.add_style(name, WD_STYLE_TYPE.TABLE)
+    st = doc.styles[name] if name in existing else doc.styles.add_style(name, WD_STYLE_TYPE.TABLE)
 
     f = st.font
     f.name = font_name
@@ -353,14 +350,14 @@ def _setup_table_style(doc, font_name, size, color) -> None:
     pf.space_after = _Pt(0)
 
     st_el = st.element
-    tblPr = st_el.find(qn("w:tblPr"))
+    tblPr = st_el.find(qn("w:tblPr"))  # noqa: N806
     if tblPr is None:
-        tblPr = OxmlElement("w:tblPr")
+        tblPr = OxmlElement("w:tblPr")  # noqa: N806
         st_el.append(tblPr)
 
     for old in tblPr.findall(qn("w:tblBorders")):
         tblPr.remove(old)
-    tblBorders = OxmlElement("w:tblBorders")
+    tblBorders = OxmlElement("w:tblBorders")  # noqa: N806
     for border_name in ("top", "left", "bottom", "right", "insideH", "insideV"):
         b = OxmlElement(f"w:{border_name}")
         b.set(qn("w:val"), "single")
@@ -372,7 +369,7 @@ def _setup_table_style(doc, font_name, size, color) -> None:
 
     for old in tblPr.findall(qn("w:tblCellMar")):
         tblPr.remove(old)
-    cellMar = OxmlElement("w:tblCellMar")
+    cellMar = OxmlElement("w:tblCellMar")  # noqa: N806
     for side, val in (("top", "60"), ("left", "108"), ("bottom", "60"), ("right", "108")):
         s = OxmlElement(f"w:{side}")
         s.set(qn("w:w"), val)
@@ -384,9 +381,9 @@ def _setup_table_style(doc, font_name, size, color) -> None:
 def _add_justify_style(doc, font_name, size, color) -> None:
     from docx.enum.style import WD_STYLE_TYPE
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-    from docx.shared import Cm
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm
 
     name = "Justified"
     if name in [s.name for s in doc.styles]:

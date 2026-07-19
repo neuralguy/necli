@@ -48,9 +48,9 @@ class TestToolResult:
         assert r.fatal is False
 
     def test_to_dict_no_full_content(self):
-        r = ToolResult(name="ls", status="ok", output="x")
+        r = ToolResult(name="shell", status="ok", output="x")
         d = r.to_dict()
-        assert d == {"name": "ls", "status": "ok", "output": "x", "exit_code": 0, "command": ""}
+        assert d == {"name": "shell", "status": "ok", "output": "x", "exit_code": 0, "command": ""}
         assert "full_content" not in d
 
     def test_to_dict_with_full_content(self):

@@ -1,57 +1,11 @@
 """Message building utilities for agent loop."""
 
-import asyncio
 import logging
 import os
 from datetime import datetime
-from pathlib import Path
 
-from system_prompt import build_tool_results
 from planner import Plan
-
-_TREE_IGNORE = frozenset({
-    "__pycache__", "node_modules", ".venv", "venv",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    "dist", "build", ".egg-info", ".tox", ".nox",
-    ".cache", ".idea", ".vscode", ".git",
-})
-_TREE_MAX_DEPTH = 2
-_TREE_MAX_ENTRIES = 500
-
-
-def _build_tree_lines(root: Path, max_depth: int = _TREE_MAX_DEPTH) -> list[str]:
-    """Минимальный нативный tree -L 2 с фильтрацией IGNORE_DIRS. Без size."""
-    lines = [f"{root.name or str(root)}/"]
-    count = [0]
-
-    def _walk(dir_path: Path, prefix: str, depth: int):
-        if count[0] >= _TREE_MAX_ENTRIES:
-            return
-        try:
-            entries = sorted(
-                (e for e in dir_path.iterdir() if e.name not in _TREE_IGNORE and not e.name.startswith(".")),
-                key=lambda e: (not e.is_dir(), e.name.lower()),
-            )
-        except (PermissionError, OSError):
-            return
-        for i, entry in enumerate(entries):
-            if count[0] >= _TREE_MAX_ENTRIES:
-                lines.append(f"{prefix}... (truncated)")
-                return
-            is_last = i == len(entries) - 1
-            connector = "└── " if is_last else "├── "
-            extension = "    " if is_last else "│   "
-            if entry.is_dir():
-                lines.append(f"{prefix}{connector}{entry.name}/")
-                count[0] += 1
-                if depth < max_depth:
-                    _walk(entry, prefix + extension, depth + 1)
-            else:
-                lines.append(f"{prefix}{connector}{entry.name}")
-                count[0] += 1
-
-    _walk(root, "", 1)
-    return lines
+from system_prompt import build_tool_results
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +35,13 @@ def _truncate(text: str, max_len: int | None = None) -> str:
 
 async def gather_proof(working_dir: str) -> str:
     try:
-        root = Path(working_dir)
-        date_str = datetime.now().strftime("%a %b %d %H:%M:%S %Z %Y").strip()
-        tree_lines = await asyncio.to_thread(_build_tree_lines, root)
+        # Время до секунд меняло system prompt на каждом ходе и сбрасывало
+        # provider prompt cache. Для агента достаточно стабильной даты.
+        date_str = datetime.now().strftime("%a %b %d %Y").strip()
         out = [
             f"Working directory: {working_dir}",
             f"Today's date: {date_str}",
         ]
-        if tree_lines:
-            out.append("Project structure:\n" + "\n".join(tree_lines))
         return "\n".join(out)
     except Exception as e:
         logger.debug("Proof collection failed: %s", e)
@@ -105,7 +57,7 @@ async def gather_dir_context(working_dir: str) -> str:
     напоминание о его наличии, если файл есть.
     """
     agents_path = os.path.join(working_dir, "AGENTS.md")
-    if os.path.isfile(agents_path):
+    if os.path.isfile(agents_path):  # noqa: ASYNC240
         return (
             "Note: AGENTS.md exists in the working dir (project-specific rules, "
             "pitfalls, conventions). Read it via read_files when a task touches "
@@ -134,9 +86,7 @@ def is_likely_truncated(text: str) -> bool:
         return False
     if text.count("```") % 2 != 0:
         return True
-    if text.endswith(","):
-        return True
-    return False
+    return bool(text.endswith(","))
 
 
 async def build_first_message(
@@ -171,7 +121,7 @@ async def build_first_message(
         except Exception:
             logger.debug("session notes load failed", exc_info=True)
     if history:
-        from prompts import CONVERSATION_CONTEXT_HEADER, CONVERSATION_CONTEXT_FOOTER
+        from prompts import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
         parts.append("\n" + CONVERSATION_CONTEXT_HEADER)
         for msg in history:
             role = msg["role"].upper()
@@ -248,7 +198,11 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
     # Внешние изменения файлов (не от агента) с прошлого раунда
     if ctx is not None and working_dir:
         try:
-            from agent.fs_watcher import take_snapshot_throttled, diff_snapshots, format_changes_block
+            from agent.fs_watcher import (
+                diff_snapshots,
+                format_changes_block,
+                take_snapshot_throttled,
+            )
             new_snap = take_snapshot_throttled(working_dir)
             old_snap = ctx.last_fs_snapshot
             if old_snap is not None:
@@ -264,7 +218,7 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
 
     # Статистика проекта и шага
     if working_dir:
-        from agent.project_stats import build_stats_line, StepTracker
+        from agent.project_stats import StepTracker, build_stats_line
         tracker = step_tracker or StepTracker()
         stats_line = build_stats_line(working_dir, tracker)
         if stats_line:

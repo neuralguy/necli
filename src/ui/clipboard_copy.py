@@ -8,7 +8,6 @@ Windows: clip.exe
 import os
 import shutil
 import subprocess
-from typing import Optional
 
 from logger import logger
 
@@ -19,7 +18,7 @@ def _real_env() -> dict:
     return env
 
 
-def copy_to_clipboard(text: str) -> Optional[str]:
+def copy_to_clipboard(text: str) -> str | None:
     """Копирует текст в системный буфер. Возвращает None при успехе, иначе строку с ошибкой."""
     if not text:
         return "empty text"

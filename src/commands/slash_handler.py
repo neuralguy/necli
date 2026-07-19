@@ -4,22 +4,21 @@ import subprocess
 from rich.console import Console
 from rich.rule import Rule
 
-from logger import logger
-import config
-from config.i18n import t as tr
 import agent as gsagent
+import config
 import session.storage as storage
+from commands.helpers import (
+    _print_response_separator,
+    _print_session_switch,
+    _run_with_interrupt,
+)
+from commands.interactive_state import InteractiveState
+from commands.slash import SlashResult
+from config.i18n import t as tr
+from logger import logger
 from session import Session
 from skills import reset_active_skills
 from tools._paths import set_working_dir as _set_wd
-
-from commands.helpers import (
-    _run_with_interrupt,
-    _print_session_switch,
-    _print_response_separator,
-)
-from commands.slash import SlashResult
-from commands.interactive_state import InteractiveState
 
 console = Console()
 
@@ -99,7 +98,7 @@ async def _handle_tg_toggle(enable: bool, state: InteractiveState) -> None:
             return
         if ok:
             console.print(f"  [green]✓[/green] Telegram: [dim]{info}[/dim]")
-            from agent.tg_menu import register_tg_menu, _build_reply_keyboard
+            from agent.tg_menu import _build_reply_keyboard, register_tg_menu
             register_tg_menu(state)
             bridge.send(
                 f"🟢 <b>necli-api</b> bridge enabled\n"
@@ -190,7 +189,9 @@ async def _handle_compress(state: InteractiveState) -> None:
     compress_prompt = COMPRESS_PROMPT + history_text
 
     from apis.agent_adapter import (
-        api_compress_history, get_api_session, api_new_chat,
+        api_compress_history,
+        api_new_chat,
+        get_api_session,
     )
     try:
         with console.status(f"[bold cyan]{tr('sh.compressing')}[/bold cyan]", spinner="dots"):
@@ -244,7 +245,9 @@ async def _handle_compress_incremental(state: InteractiveState) -> bool:
     compress_prompt = COMPRESS_PROMPT + history_text
 
     from apis.agent_adapter import (
-        api_compress_history, api_new_chat, restore_api_session_history,
+        api_compress_history,
+        api_new_chat,
+        restore_api_session_history,
     )
     with console.status(f"[bold cyan]{tr('sh.compressing')}[/bold cyan]", spinner="dots"):
         compressed = await api_compress_history(compress_prompt)

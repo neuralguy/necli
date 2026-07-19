@@ -1,6 +1,6 @@
 """Единое форматирование timestamps по МСК."""
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 MSK = timezone(timedelta(hours=3))
 

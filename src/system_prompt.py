@@ -5,31 +5,31 @@ import subprocess
 from datetime import datetime
 
 from prompts import (
+    AGENT_MODE_BLOCK,
+    AGENT_RULES_BLOCK,
+    AUTONOMOUS_MODE_BLOCK,
     BASE_HEADER,
-    TONE_AND_OUTPUT_BLOCK,
-    ORCHESTRATION_TRIGGER_BLOCK,
+    CRAFT_BLOCK,
+    DELIVERABLE_DISCIPLINE_BLOCK,
     EFFICIENCY_BLOCK,
     FENCED_SYNTAX_BLOCK,
-    LSP_TOOLS_BLOCK,
-    WEB_SEARCH_BLOCK,
-    AGENT_RULES_BLOCK,
-    DELIVERABLE_DISCIPLINE_BLOCK,
-    CRAFT_BLOCK,
-    VERIFICATION_GATE_BLOCK,
-    AGENT_MODE_BLOCK,
-    PLANNING_MODE_BLOCK,
-    AUTONOMOUS_MODE_BLOCK,
-    SUBAGENTS_BLOCK,
     LANGUAGE_BLOCK,
+    LSP_TOOLS_BLOCK,
+    ORCHESTRATION_TRIGGER_BLOCK,
+    PLANNING_MODE_BLOCK,
+    SUBAGENTS_BLOCK,
+    TONE_AND_OUTPUT_BLOCK,
     TOOL_FORMAT_TEXT_BLOCK,
-    tool_format_block_for,
-    execution_model_block_for,
-    response_structure_block_for,
-    planning_block_for,
+    VERIFICATION_GATE_BLOCK,
+    WEB_SEARCH_BLOCK,
     docx_block_for,
+    execution_model_block_for,
     hard_constraints_block_for,
-    tool_strategy_block_for,
+    planning_block_for,
+    response_structure_block_for,
     think_block_for,
+    tool_format_block_for,
+    tool_strategy_block_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,10 @@ def _build_environment_block(working_dir: str = "", mode: str = "agent") -> str:
         "You have been invoked in the following environment:",
         f"- Primary working directory: {cwd}",
         f"- Platform: {platform.system()} {platform.release()} ({platform.machine()})",
-        f"- Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        # Дата — только до дня. Минуты/секунды меняли системник КАЖДУЮ минуту и
+        # инвалидировали prompt-cache префикс (tools+system) почти на каждом
+        # запросе. День достаточно для модели и стабилен в рамках сессии.
+        f"- Date: {datetime.now().strftime('%Y-%m-%d')}",
         f"- Mode: {mode}",
     ]
 
@@ -70,13 +73,10 @@ def _git_brief(cwd: str) -> str:
         if head.returncode != 0:
             return ""
         branch = head.stdout.strip() or "(detached)"
-
-        status = subprocess.run(
-            ["git", "-C", cwd, "status", "--porcelain"],
-            capture_output=True, text=True, timeout=2,
-        )
-        dirty = "dirty" if status.returncode == 0 and status.stdout.strip() else "clean"
-        return f"branch={branch}, {dirty}"
+        # Только имя ветки. Флаг dirty/clean менялся при каждом редактировании
+        # файла и инвалидировал prompt-cache префикс системника. Состояние
+        # рабочего дерева модель при необходимости узнаёт через `git status`.
+        return f"branch={branch}"
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return ""
 
@@ -97,8 +97,8 @@ def _model_brief() -> str:
 
 def _build_subagent_models_block() -> str:
     try:
-        from apis.registry import list_api_models
         from apis.agent_adapter import get_api_session
+        from apis.registry import list_api_models
     except Exception:
         return ""
 
@@ -270,10 +270,8 @@ def _resolve_native_tools() -> bool:
 # имена (web_search/ssh/subagent) убираются из списка, пока их скилл
 # не загружен — модель не должна видеть инструмент до активации скилла.
 _TOOLS_LIST_ORDER = [
-    "shell", "read_files", "write_file", "patch_file", "create_file",
-    "delete_file", "rename_file", "copy_file", "move_file", "ls", "tree",
-    "mkdir", "rmdir", "find_files", "grep_files", "poll",
-    "ssh", "web_search", "subagent", "skill",
+    "shell", "read_files", "patch_file", "create_file",
+    "poll", "ssh", "web_search", "subagent", "skill",
     "create_docx", "docx_screenshot",
     "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
     "memory_write", "memory_list", "memory_read",
@@ -286,6 +284,29 @@ def _short_arg_desc(text: str, limit: int = 80) -> str:
     if len(one_line) > limit:
         one_line = one_line[: limit - 1].rstrip() + "…"
     return one_line
+
+
+def _param_type_str(pinfo: dict) -> str:
+    """Извлекает читаемое имя типа из JSON-схемы параметра."""
+    if "enum" in pinfo:
+        return " | ".join(repr(v) for v in pinfo["enum"])
+    if "oneOf" in pinfo:
+        types = []
+        for alt in pinfo["oneOf"]:
+            t = alt.get("type", "any")
+            if t == "array" and "items" in alt:
+                t = f"array of {alt['items'].get('type', 'any')}"
+            types.append(t)
+        return " | ".join(types)
+    t = pinfo.get("type", "any")
+    if t == "array" and "items" in pinfo:
+        items = pinfo["items"]
+        if isinstance(items, dict):
+            it = items.get("type", "any")
+            if it == "object":
+                it = "object"
+            return f"array of {it}"
+    return t
 
 
 def _tool_signature(schema: dict) -> str:
@@ -307,16 +328,12 @@ def _tool_signature(schema: dict) -> str:
 def _build_tools_list_block(active_skills: set | None, native_tools: bool = True) -> str:
     """S5 TOOLS — единый блок про инструменты.
 
-    В fenced-режиме модель НЕ получает JSON-схемы через bind_tools, поэтому имена
-    аргументов берутся ОТСЮДА — единый источник правды (TOOL_SCHEMAS). Каждый
-    инструмент: `tool(req, [opt]) — краткое описание`. Гейтящиеся незагруженными
-    скиллами инструменты исключаются.
+    Каждый инструмент отображается ПОЛНОЙ JSON-схемой (json.dumps с indent=2).
+    Гейтящиеся незагруженными скиллами инструменты исключаются.
 
-    Чтобы всё про инструменты не было раскидано по секциям, в fenced-режиме этот
-    блок собирает в ОДНУ секцию S5: синтаксис вызова через :::call (FENCED_SYNTAX_BLOCK)
-    + список инструментов с сигнатурами + LSP-заметки (LSP_TOOLS_BLOCK). В native
-    синтаксис не нужен (его роль выполняет function calling), а LSP-args дублируют
-    схемы из bind_tools — поэтому там только список.
+    В fenced-режиме этот блок собирает в ОДНУ секцию S5: синтаксис вызова
+    (FENCED_SYNTAX_BLOCK) + полные схемы + LSP-заметки. В native — только
+    схемы (синтаксис даёт function calling).
     """
     try:
         from skills.registry import is_tool_gated_out as _is_tool_gated_out
@@ -327,8 +344,6 @@ def _build_tools_list_block(active_skills: set | None, native_tools: bool = True
     from apis.tool_schemas import TOOL_SCHEMAS
 
     by_name = {s["function"]["name"]: s for s in TOOL_SCHEMAS}
-    # Канонический порядок S5.0 + хвост из тех схем, что не перечислены в нём
-    # (apply_diff, expand_tool_result, plan, think и т.п. — кроме гейтящихся).
     listed = list(_TOOLS_LIST_ORDER)
     extra = [
         n for n in by_name
@@ -336,6 +351,27 @@ def _build_tools_list_block(active_skills: set | None, native_tools: bool = True
     ]
     order = listed + extra
 
+    if native_tools:
+        # В native схемы идут через bind_tools — в промте только компактный список.
+        lines = []
+        for tool in order:
+            if _is_tool_gated_out(tool, active_skills):
+                continue
+            schema = by_name.get(tool)
+            if schema is None:
+                continue
+            sig = _tool_signature(schema)
+            desc = _short_arg_desc(schema["function"].get("description", ""))
+            lines.append(f"  {sig}{(' — ' + desc) if desc else ''}")
+
+        return (
+            "## Available tools\n\n"
+            "Each tool is shown with its arguments: required first, optional in brackets. "
+            "Use exactly these argument names.\n\n"
+            + "\n".join(lines)
+        )
+
+    # Fenced: параметры инструментов текстом (модель не получает схемы через bind_tools).
     lines = []
     for tool in order:
         if _is_tool_gated_out(tool, active_skills):
@@ -343,24 +379,31 @@ def _build_tools_list_block(active_skills: set | None, native_tools: bool = True
         schema = by_name.get(tool)
         if schema is None:
             continue
-        sig = _tool_signature(schema)
-        desc = _short_arg_desc(schema["function"].get("description", ""))
-        lines.append(f"  {sig}{(' — ' + desc) if desc else ''}")
+        fn = schema["function"]
+        desc = fn.get("description", "").strip()
+        params = (fn.get("parameters") or {}).get("properties") or {}
+        required = set((fn.get("parameters") or {}).get("required") or [])
+        lines.append(f"### {tool}")
+        if desc:
+            lines.append(desc)
+            lines.append("")
+        if params:
+            for pname, pinfo in sorted(params.items(), key=lambda x: (x[0] not in required, x[0])):
+                ptype = _param_type_str(pinfo)
+                req_mark = "" if pname in required else ", optional"
+                pdesc = pinfo.get("description", "")
+                line = f"  {pname}: {ptype}{req_mark}"
+                if pdesc:
+                    line += f" — {pdesc}"
+                lines.append(line)
+        lines.append("")
 
     list_section = (
         "## Available tools\n\n"
-        "Each tool is shown with its arguments: required first, optional in brackets. "
+        "Each tool is shown with its full parameter schema: name, type, required/optional, description. "
         "Use exactly these argument names.\n\n"
         + "\n".join(lines)
     )
-
-    # В native всё про инструменты — только список: синтаксис вызова обеспечивает
-    # function calling, а аргументы дублируются JSON-схемами через bind_tools.
-    if native_tools:
-        return list_section
-
-    # В fenced весь tool-материал склеиваем в ОДНУ секцию S5: формат вызова
-    # (:::call) → список инструментов с сигнатурами → LSP-заметки.
     return "\n\n".join([FENCED_SYNTAX_BLOCK, list_section, LSP_TOOLS_BLOCK])
 
 
@@ -445,7 +488,7 @@ def _build_memory_block(working_dir: str = "") -> str:
 
         block = format_memory_block(working_dir or None)
         return ("\n\n" + block) if block else ""
-    except Exception:  # noqa: BLE001 — память не должна ломать сборку промпта
+    except Exception:
         logger.debug("memory block build failed", exc_info=True)
         return ""
 

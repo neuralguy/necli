@@ -2,27 +2,28 @@
 
 import pytest
 
-from system_prompt import build_system_prompt, build_tool_results
 from prompts import (
-    SYSTEM_PROMPT,
-    _assemble_default_system_prompt,
     BASE_HEADER,
-    tool_format_block_for,
-    execution_model_block_for,
-    response_structure_block_for,
-    planning_block_for,
-    tool_strategy_block_for,
-    docx_block_for,
-    hard_constraints_block_for,
-    think_block_for,
-    TOOL_FORMAT_BLOCK,
     DOCX_BLOCK,
     HARD_CONSTRAINTS_BLOCK,
+    SYSTEM_PROMPT,
+    TOOL_FORMAT_BLOCK,
+    _assemble_default_system_prompt,
+    docx_block_for,
+    execution_model_block_for,
+    hard_constraints_block_for,
+    planning_block_for,
+    response_structure_block_for,
+    think_block_for,
+    tool_format_block_for,
+    tool_strategy_block_for,
 )
 from prompts._base import (
-    TOOL_FORMAT_BLOCK_NATIVE,
     HARD_CONSTRAINTS_BLOCK_NATIVE,
+    TOOL_FORMAT_BLOCK_NATIVE,
 )
+from system_prompt import build_system_prompt, build_tool_results
+
 
 def _build(**kw):
     # Явно фиксируем native_tools/think_enabled, чтобы не зависеть от
@@ -32,7 +33,7 @@ def _build(**kw):
     # По умолчанию активируем все гейтящие скиллы — тесты ниже проверяют
     # СОДЕРЖИМОЕ блоков (web/orchestration/workflows), которые теперь гейтятся
     # скиллами. Сам гейтинг проверяется отдельно в TestSkillGatingInPrompt.
-    kw.setdefault("active_skills", {"web", "ssh", "subagents"})  # noqa
+    kw.setdefault("active_skills", {"web", "ssh", "subagents"})
     return build_system_prompt(**kw)
 
 class TestBuildSystemPrompt:
@@ -281,27 +282,29 @@ class TestBlockSelectors:
 class TestBuildToolResults:
     def test_empty_list(self):
         out = build_tool_results([])
-        assert "<tool_output>" in out
-        assert "</tool_output>" in out
+        assert "<runtime_tool_results" in out
+        assert "</runtime_tool_results>" in out
 
     def test_single_result_header_and_output(self):
         out = build_tool_results([{"command": "ls", "exit_code": 0, "output": "file.txt"}])
-        assert "$ ls" in out
+        assert 'command="ls"' in out
         assert "file.txt" in out
-        assert "[exit" not in out
+        assert "exit_code" not in out
 
     def test_non_zero_exit_in_header(self):
         out = build_tool_results([{"command": "false", "exit_code": 1, "output": ""}])
-        assert "$ false [exit 1]" in out
+        assert 'command="false"' in out
+        assert 'exit_code="1"' in out
 
     def test_multiple_results_joined(self):
         out = build_tool_results([
             {"command": "a", "exit_code": 0, "output": "1"},
             {"command": "b", "exit_code": 0, "output": "2"},
         ])
-        assert "---" in out
-        assert "$ a" in out
-        assert "$ b" in out
+        assert '<result index="1"' in out
+        assert '<result index="2"' in out
+        assert 'command="a"' in out
+        assert 'command="b"' in out
 
     def test_falls_back_to_name_when_no_command(self):
         out = build_tool_results([{"name": "read_files", "output": "x"}])

@@ -3,14 +3,14 @@
 import pytest
 
 from apis.registry import (
+    _parse_definition,
+    _parse_model,
+    get_definition,
+    list_api_models,
+    list_providers,
     load_all,
     reload_providers,
-    get_definition,
-    list_providers,
-    list_api_models,
     resolve_api_model,
-    _parse_model,
-    _parse_definition,
 )
 
 
@@ -103,17 +103,17 @@ class TestListApiModels:
 class TestResolveApiModel:
     def test_exact_model_id(self, isolated_data):
         reload_providers()
-        result = resolve_api_model("gpt-5")
+        result = resolve_api_model("gpt-5.5")
         assert result is not None
         provider_id, model_id = result
         assert provider_id == "openai"
-        assert model_id == "gpt-5"
+        assert model_id == "gpt-5.5"
 
     def test_exact_display_name(self, isolated_data):
         reload_providers()
-        result = resolve_api_model("Claude Opus 4.7")
+        result = resolve_api_model("Claude Opus 4.8")
         assert result is not None
-        assert result[1] == "claude-opus-4-7"
+        assert result[1] == "claude-opus-4-8"
 
     def test_unknown(self, isolated_data):
         reload_providers()
@@ -121,7 +121,7 @@ class TestResolveApiModel:
 
     def test_case_insensitive(self, isolated_data):
         reload_providers()
-        result = resolve_api_model("GPT-5")
+        result = resolve_api_model("GPT-5.5")
         assert result is not None
 
 
@@ -134,8 +134,30 @@ class TestGetProvider:
         with pytest.raises(ValueError):
             r.get_provider("dis", "any")
 
-    def test_unknown_raises(self, isolated_data):
+    def test_anthropic_env_token_and_base_url(self, isolated_data, monkeypatch):
         from apis import registry as r
+
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-env-token")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.com")
         reload_providers()
-        with pytest.raises(KeyError):
-            r.get_provider("totally-unknown", "any")
+
+        provider = r.get_provider("anthropic", "claude-sonnet-4-6")
+        assert provider._base_url == "https://gateway.example.com"
+        assert provider._get_api_key() == "sk-env-token"
+        headers = provider._get_headers()
+        assert headers["Authorization"] == "Bearer sk-env-token"
+        assert "x-api-key" not in headers
+
+    def test_anthropic_stored_key_still_uses_x_api_key(self, isolated_data, monkeypatch):
+        from apis import registry as r
+        from apis.config import set_api_key
+
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        set_api_key("anthropic", "sk-stored-key")
+        reload_providers()
+
+        provider = r.get_provider("anthropic", "claude-sonnet-4-6")
+        headers = provider._get_headers()
+        assert headers["x-api-key"] == "sk-stored-key"
+        assert "Authorization" not in headers

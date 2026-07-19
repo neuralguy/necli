@@ -16,8 +16,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from logger import logger
 from config.paths import BASE_DIR
+from logger import logger
+
 
 def _sources_dir() -> Path:
     d = BASE_DIR / "docx_sources"
@@ -133,6 +134,9 @@ def delete_template(docx_path: Path) -> None:
 
 
 __all__ = [
-    "save_source", "load_source", "delete_source",
-    "save_template", "load_template",
+    "delete_source",
+    "load_source",
+    "load_template",
+    "save_source",
+    "save_template",
 ]

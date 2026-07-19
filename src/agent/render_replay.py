@@ -14,7 +14,6 @@ from agent.render_store import (
     deserialize_tool_result,
 )
 
-
 console = Console(file=sys.__stdout__, force_terminal=True)
 
 # Сюда commands/helpers._print_welcome сохраняет параметры для replay.
@@ -39,7 +38,7 @@ def replay(store: RenderStore, *, expand: bool = False) -> None:
     """expand=True → compact-preview раскрывается полностью, False → свёрнутый вид."""
     if not store.items:
         return
-    from agent.display import set_replay_active, set_expanded_preview
+    from agent.display import set_expanded_preview, set_replay_active
 
     set_replay_active(True)
     # Флаг persistent: остаётся между replay'ями (toggle через Ctrl+O).
@@ -55,8 +54,8 @@ def replay(store: RenderStore, *, expand: bool = False) -> None:
 
 
 def _replay_inner(store: RenderStore) -> None:
-    from agent.display import show_tool_combined, show_command, render_md_panel
     import agent.display as _ad
+    from agent.display import render_md_panel, show_command, show_tool_combined
 
     _saved_ad = _ad.console
     _ad.console = console
@@ -65,7 +64,7 @@ def _replay_inner(store: RenderStore) -> None:
         for item in store.items:
             try:
                 _replay_item(item, show_tool_combined, show_command, render_md_panel)
-            except Exception:
+            except Exception:  # noqa: PERF203
                 from logger import logger
                 logger.opt(exception=True).debug("replay item failed: kind={}", item.kind)
     finally:
@@ -179,9 +178,8 @@ def print_session_history(necli_session, *, max_messages: int = 20) -> None:
     if max_messages > 0:
         visible = visible[-max_messages:]
 
-    from agent.display import set_replay_active, set_expanded_preview, render_md_panel
-    from agent.display import show_command
     import agent.display as _ad
+    from agent.display import render_md_panel, set_expanded_preview, set_replay_active, show_command
     from tools.parser import parse_tool_calls, strip_tool_calls
 
     _saved_ad = _ad.console
@@ -238,7 +236,7 @@ def _replay_welcome() -> None:
                 id = sid
                 title = ""
                 message_count = 0
-                models_used = []
+                models_used = []  # noqa: RUF012
                 raw_input_tokens = 0
                 output_tokens = 0
                 total_cost = 0.0
@@ -263,8 +261,9 @@ def _replay_welcome() -> None:
 
 
 def _print_user_line(text: str, status: str = "") -> None:
-    from config.themes import t as theme
     from wcwidth import wcswidth
+
+    from config.themes import t as theme
 
     try:
         import os as _os

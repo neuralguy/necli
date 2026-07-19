@@ -14,7 +14,6 @@ import re
 from html.parser import HTMLParser
 from io import StringIO
 
-
 _BLOCK_TAGS = {"p", "div", "ul", "ol", "table", "blockquote", "pre",
                "h1", "h2", "h3", "h4", "h5", "h6"}
 _VOID_TAGS = {"br", "hr", "img", "meta", "link", "input", "col"}
@@ -140,7 +139,7 @@ _KNOWN_HTML_TAGS = {
     "legend", "label", "button", "select", "option", "optgroup",
     "textarea", "form", "datalist", "output", "progress", "meter",
     "ruby", "rt", "rp", "canvas", "svg", "math", "iframe", "embed",
-    "object", "param", "map", "area", "noscript", "base", "wbr",
+    "object", "param", "map", "area", "noscript", "base",
 }
 
 
@@ -176,7 +175,7 @@ def extract_stray_angles(html: str) -> tuple[str, list[str]]:
 
     stash: list[str] = []
 
-    def _repl_literal(m: "re.Match[str]") -> str:
+    def _repl_literal(m: re.Match[str]) -> str:
         name = m.group(1).lower()
         if name in _KNOWN_HTML_TAGS:
             return m.group(0)
@@ -184,7 +183,7 @@ def extract_stray_angles(html: str) -> tuple[str, list[str]]:
         stash.append(m.group(0))
         return f"{_STRAY_PH_PREFIX}{idx}X"
 
-    def _repl_entity(m: "re.Match[str]") -> str:
+    def _repl_entity(m: re.Match[str]) -> str:
         name = m.group(1).lower()
         if name in _KNOWN_HTML_TAGS:
             return m.group(0)
@@ -229,7 +228,7 @@ def restore_stray_angles(docx_path, stash: list[str]) -> None:
             if _STRAY_PH_PREFIX not in txt:
                 continue
 
-            def _sub(m: "re.Match[str]") -> str:
+            def _sub(m: re.Match[str]) -> str:
                 idx = int(m.group(1))
                 return stash[idx] if 0 <= idx < len(stash) else m.group(0)
 
@@ -257,7 +256,7 @@ def wrap_table_cells(html: str) -> str:
     # на время парсинга и возвращаем дословно.
     stash: list[str] = []
 
-    def _mask(m: "re.Match[str]") -> str:
+    def _mask(m: re.Match[str]) -> str:
         stash.append(m.group(0))
         return f"\x00PRE{len(stash) - 1}\x00"
 
@@ -307,12 +306,12 @@ def extract_code_blocks(html: str) -> tuple[str, list[tuple[str, str]]]:
     """
     stash: list[tuple[str, str]] = []
 
-    def _block(m: "re.Match[str]") -> str:
+    def _block(m: re.Match[str]) -> str:
         idx = len(stash)
         stash.append(("block", _decode_entities(m.group(1))))
         return f"<pre><code>{_CODE_PH_PREFIX}{idx}X</code></pre>"
 
-    def _inline(m: "re.Match[str]") -> str:
+    def _inline(m: re.Match[str]) -> str:
         body = m.group(1)
         # Не трогаем <code>, чьё тело — уже выставленный нами плейсхолдер
         # (он остался от блочной замены <pre><code>…</code></pre>).
@@ -339,8 +338,8 @@ def restore_code_blocks(docx_path, stash: list[tuple[str, str]]) -> None:
         return
 
     from docx import Document
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 
     doc = Document(str(docx_path))
 

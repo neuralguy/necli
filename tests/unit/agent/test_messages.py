@@ -4,11 +4,10 @@ import asyncio
 
 from agent.messages import (
     _truncate,
+    gather_dir_context,
+    gather_proof,
     is_api_proxy_error,
     is_likely_truncated,
-    _build_tree_lines,
-    gather_proof,
-    gather_dir_context,
 )
 
 
@@ -72,37 +71,11 @@ class TestIsLikelyTruncated:
         assert is_likely_truncated(text) is False
 
 
-class TestBuildTreeLines:
-    def test_root_present(self, tmp_workdir):
-        (tmp_workdir / "a.py").write_text("x")
-        lines = _build_tree_lines(tmp_workdir, max_depth=1)
-        # первая строка — имя корня
-        assert lines[0].endswith("/")
-        assert any("a.py" in ln for ln in lines)
-
-    def test_ignores_pycache(self, tmp_workdir):
-        (tmp_workdir / "__pycache__").mkdir()
-        (tmp_workdir / "__pycache__" / "ignored.pyc").write_text("x")
-        (tmp_workdir / "visible.py").write_text("y")
-        lines = _build_tree_lines(tmp_workdir, max_depth=2)
-        assert any("visible.py" in ln for ln in lines)
-        assert not any("__pycache__" in ln for ln in lines)
-
-    def test_ignores_hidden(self, tmp_workdir):
-        (tmp_workdir / ".secret").write_text("x")
-        (tmp_workdir / "open.py").write_text("y")
-        lines = _build_tree_lines(tmp_workdir)
-        assert any("open.py" in ln for ln in lines)
-        assert not any(".secret" in ln for ln in lines)
-
-
 class TestGatherProof:
-    def test_returns_workdir_and_date_and_tree(self, tmp_workdir):
-        (tmp_workdir / "a.py").write_text("x")
+    def test_returns_workdir_and_date(self, tmp_workdir):
         result = asyncio.run(gather_proof(str(tmp_workdir)))
         assert str(tmp_workdir) in result
         assert "date" in result.lower() or "Today" in result
-        assert "a.py" in result
 
 
 class TestGatherDirContext:

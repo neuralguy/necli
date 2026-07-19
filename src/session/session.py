@@ -5,22 +5,20 @@ import shutil
 import time
 import uuid
 from datetime import datetime
-from typing import Optional
 
 import config
 import models as app_models
 from logger import logger
-from session.message import Message
-from session.tokens import count_tokens
 from session._time import MSK, format_msk
+from session.message import Message
 
 
 class Session:
     def __init__(
         self,
-        session_id: Optional[str] = None,
-        title: Optional[str] = None,
-        site: Optional[str] = None,
+        session_id: str | None = None,
+        title: str | None = None,
+        site: str | None = None,
     ):
         self.id = session_id or self._generate_id()
         self.title = title or ""
@@ -88,7 +86,7 @@ class Session:
     def _last_message_id(self) -> str:
         return self.messages[-1].id if self.messages else ""
 
-    def add_user_message(self, content: str, model: str = "", attachments: Optional[list] = None) -> Message:
+    def add_user_message(self, content: str, model: str = "", attachments: list | None = None) -> Message:
         is_first_user = not any(m.role == "user" for m in self.messages)
         msg = Message(
             role="user", content=content, model=model,
@@ -113,8 +111,8 @@ class Session:
         content: str,
         model: str = "",
         duration: float = 0.0,
-        usage: Optional[dict] = None,
-        thoughts: Optional[list] = None,
+        usage: dict | None = None,
+        thoughts: list | None = None,
     ) -> Message:
         msg = Message(
             role="assistant", content=content, model=model,
@@ -150,7 +148,7 @@ class Session:
             return
         for m in self.messages:
             if m.role != "assistant" and m.tokens > 0:
-                m.tokens = max(1, int(round(m.tokens * ratio)))
+                m.tokens = max(1, round(m.tokens * ratio))
 
     def add_system_message(self, content: str, model: str = "") -> Message:
         msg = Message(role="system", content=content, model=model)
@@ -186,7 +184,7 @@ class Session:
         parent_id = self.messages[idx].parent_id or ""
         alts = list(self._branch_alternatives.get(parent_id, []))
         active = self.messages[idx]
-        merged = alts + [active]
+        merged = [*alts, active]
         merged.sort(key=lambda m: getattr(m, "timestamp", 0.0) or 0.0)
         return merged
 
@@ -397,21 +395,6 @@ class Session:
     @property
     def raw_input_tokens(self) -> int:
         return sum(m.tokens for m in self.messages if m.role in ("user", "system", "tool_result"))
-
-    @property
-    def estimated_input_tokens(self) -> int:
-        """Независимая эвристическая оценка input-токенов (count_tokens по content).
-
-        В отличие от raw_input_tokens, НЕ затронута _reconcile_input_tokens —
-        считается заново из текста сообщений. Нужна чтобы показать расхождение
-        с usage провайдера (напр. onlysq отдаёт input_tokens в ~87× больше
-        реального биллинга — см. статус-бар «оценка vs провайдер»).
-        """
-        return sum(
-            count_tokens(m.content, m.model)
-            for m in self.messages
-            if m.role in ("user", "system", "tool_result")
-        )
 
     @property
     def total_tokens(self) -> int:

@@ -1,8 +1,9 @@
 import sys
 
 from rich.console import Console
-from config.ssh import list_hosts, add_host, remove_host, parse_host_string
+
 from config.i18n import t as _
+from config.ssh import add_host, list_hosts, parse_host_string, remove_host
 from tools.ssh import check_connection
 from ui.menu import select_menu
 

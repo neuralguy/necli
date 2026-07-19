@@ -4,6 +4,7 @@ import pytest
 
 from agent import agent_presets
 
+
 @pytest.fixture
 def presets_dir(isolated_data, monkeypatch):
     """Изолирует AGENTS_DIR внутри isolated_data/.data/agents."""

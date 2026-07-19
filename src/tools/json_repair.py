@@ -6,7 +6,6 @@ single quotes, unquoted keys, greedy content extraction.
 
 import json
 import re
-from typing import Optional
 
 
 def robust_json_loads(text: str) -> dict | list | None:
@@ -107,7 +106,7 @@ def robust_json_loads(text: str) -> dict | list | None:
     return None
 
 
-def _swap_single_quote_delimiters(s: str) -> Optional[str]:
+def _swap_single_quote_delimiters(s: str) -> str | None:
     """Swap only single-quotes that act as JSON string delimiters to double-quotes.
 
     A single-quote is treated as a delimiter when it opens/closes a string at a
@@ -164,7 +163,7 @@ def _swap_single_quote_delimiters(s: str) -> Optional[str]:
         return None
     return "".join(out)
 
-def greedy_extract_content_json(text: str) -> Optional[dict]:
+def greedy_extract_content_json(text: str) -> dict | None:
     text = text.strip()
 
     content_start_re = re.compile(r'"content"\s*:\s*"')
@@ -209,7 +208,7 @@ def greedy_extract_content_json(text: str) -> Optional[dict]:
     return other_fields
 
 
-def _find_content_close_quote(text: str) -> Optional[int]:
+def _find_content_close_quote(text: str) -> int | None:
     candidates = []
     i = len(text) - 1
     while i >= 0:
@@ -339,7 +338,7 @@ def _fix_invalid_escapes(text: str) -> str:
     return "".join(result)
 
 
-def extract_field_value(text: str, field: str) -> Optional[str]:
+def extract_field_value(text: str, field: str) -> str | None:
     patterns = [
         f'"{field}"\\s*:\\s*"',
         f"'{field}'\\s*:\\s*'",
@@ -391,7 +390,7 @@ def extract_field_value(text: str, field: str) -> Optional[str]:
 
 def _extract_content_value_greedy(
     text: str, value_start: int, quote_char: str
-) -> Optional[str]:
+) -> str | None:
     remaining = text[value_start:]
 
     best_end = None
@@ -412,10 +411,7 @@ def _extract_content_value_greedy(
                 break
         i -= 1
 
-    if best_end is None:
-        raw_value = remaining
-    else:
-        raw_value = remaining[:best_end]
+    raw_value = remaining if best_end is None else remaining[:best_end]
 
     return decode_json_string_value(raw_value)
 

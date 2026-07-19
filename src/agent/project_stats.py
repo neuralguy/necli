@@ -2,12 +2,11 @@
 
 import os
 import re
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from logger import logger
 from config import is_ignored_dir
-
+from logger import logger
 
 # Расширения, которые считаем «кодом» для подсчёта строк
 _CODE_EXTENSIONS = {
@@ -47,7 +46,7 @@ def count_project_stats(working_dir: str) -> tuple[int, int]:
             fpath = Path(dirpath) / fname
             suffix = fpath.suffix.lower()
             # Файлы без расширения, но с известным именем
-            if suffix not in _CODE_EXTENSIONS:
+            if suffix not in _CODE_EXTENSIONS:  # noqa: SIM102
                 if fname.lower() not in ("makefile", "dockerfile", "rakefile", "gemfile", "procfile"):
                     continue
 
@@ -72,8 +71,7 @@ class StepTracker:
 
     def record(self, tool_name: str, result_output: str, args: dict | None = None):
         """Записывает дельту по результату tool call."""
-        if tool_name in ("write_file", "create_file", "patch_file", "delete_file",
-                         "rename_file", "copy_file", "move_file"):
+        if tool_name in ("create_file", "patch_file"):
             path = (args or {}).get("path", "")
             if path:
                 self.files_changed.add(path)
@@ -88,15 +86,10 @@ class StepTracker:
         if tool_name == "patch_file":
             self._parse_patch_stats(result_output)
 
-        elif tool_name == "write_file":
-            self._parse_write_stats(result_output)
-
         elif tool_name == "create_file":
             self._parse_create_stats(result_output)
 
-        elif tool_name == "delete_file":
-            # Удалённый файл — все строки минус, но мы не знаем сколько было
-            pass
+
 
     def _parse_patch_stats(self, output: str):
         """Парсит summary patch_file: '✓ path updated (3 changed, +5 added, -2 removed)'."""
@@ -107,19 +100,13 @@ class StepTracker:
         if m:
             self.lines_removed += int(m.group(1))
 
-    def _parse_write_stats(self, output: str):
-        """Парсит вывод write_file для подсчёта строк.
-
-        Формат: "✓ path: created, N lines" / "✓ path: overwritten, N lines".
-        Перезапись считаем изменением файла (дельту строк точно не знаем),
-        поэтому строки прибавляем только для созданного файла.
-        """
-        m = re.search(r":\s*created,\s*(\d+)\s+lines?", output)
-        if m:
-            self.lines_added += int(m.group(1))
-
     def _parse_create_stats(self, output: str):
-        """Парсит вывод create_file: "✓ Created: path (N lines)"."""
+        """Парсит вывод create_file: "✓ Created: path (N lines)".
+
+        Для перезаписи ("✓ Overwritten: …") дельту строк точно не знаем, поэтому
+        строки прибавляем только для созданного файла (файл всё равно отмечен
+        изменённым через files_changed выше).
+        """
         m = re.search(r"Created:.*\((\d+)\s+lines?\)", output)
         if m:
             self.lines_added += int(m.group(1))

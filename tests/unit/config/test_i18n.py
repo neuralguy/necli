@@ -5,18 +5,33 @@ import string
 import pytest
 
 from config.i18n import (
-    EN, RU, DE, FR, ZH,
-    SUPPORTED_LANGS, LANG_DISPLAY, _TABLES,
-    get_lang, set_lang, t,
+    _TABLES,
+    DE,
+    EN,
+    FR,
+    LANG_DISPLAY,
+    RU,
+    SUPPORTED_LANGS,
+    ZH,
+    get_lang,
+    set_lang,
+    t,
 )
 
 # Известные пробелы перевода в исходниках: эти ключи отсутствуют в указанных
 # языках и осознанно резолвятся через fallback EN внутри t(). Тест фиксирует
 # текущее состояние, а не маскирует его — список виден явно.
+_KNOWN_MISSING_BASE = {
+    "help.copy", "help.proxy", "sh.copy_ok", "sh.copy_empty", "sh.copy_fail",
+    "api.prompt_cache", "api.prompt_cache_hint", "api.prompt_cache_off", "api.prompt_cache_on",
+    "proxy.clear", "proxy.clear_hint", "proxy.cleared", "proxy.current", "proxy.enter",
+    "proxy.header", "proxy.invalid", "proxy.none", "proxy.schemes_hint", "proxy.set",
+    "proxy.set_hint", "proxy.title",
+}
 _KNOWN_MISSING = {
-    "de": {"help.copy", "sh.copy_ok", "sh.copy_empty", "sh.copy_fail"},
-    "fr": {"help.copy", "sh.copy_ok", "sh.copy_empty", "sh.copy_fail"},
-    "zh": {"help.copy", "sh.copy_ok", "sh.copy_empty", "sh.copy_fail"},
+    "de": set(_KNOWN_MISSING_BASE),
+    "fr": set(_KNOWN_MISSING_BASE),
+    "zh": set(_KNOWN_MISSING_BASE),
     "ru": set(),
 }
 

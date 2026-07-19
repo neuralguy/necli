@@ -26,7 +26,7 @@ def test_cache_concurrent_mutation_thread_safe():
             for i in range(200):
                 _cache_put(f"http://t{n}-{i}", str(i))
                 _cache_get(f"http://t{n}-{i}")
-        except BaseException as exc:  # noqa: BLE001 - record for assertion
+        except BaseException as exc:
             errors.append(exc)
 
     threads = [_threading.Thread(target=worker, args=(n,)) for n in range(8)]

@@ -6,18 +6,19 @@
 """
 
 from apis._context_pruner import (
-    prune_messages,
-    _extract_paths_from_cmd_tail,
-    _paths_from_args,
-    _scan_round_writes,
-    _scan_read_paths,
-    _should_evict,
+    _BLOCK_SEP,
+    _EVICT_MARKER,
     _KEEP_RECENT_ROUNDS,
     _MIN_EVICT_CHARS,
-    _EVICT_MARKER,
-    _BLOCK_SEP,
+    _extract_paths_from_cmd_tail,
+    _paths_from_args,
+    _scan_read_paths,
+    _scan_round_writes,
+    _should_evict,
+    prune_messages,
 )
-from apis.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from apis.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
 
 def _big(n: int = _MIN_EVICT_CHARS + 500) -> str:
     return "x" * n
@@ -68,7 +69,7 @@ class TestPathsFromArgs:
 class TestScanWrites:
     def test_text_mode_write(self):
         msgs = [
-            HumanMessage(content="$ write_file a.py\nok"),
+            HumanMessage(content="$ create_file a.py\nok"),
             HumanMessage(content="next"),
         ]
         writes = _scan_round_writes(msgs)
@@ -85,8 +86,8 @@ class TestScanWrites:
 
     def test_keeps_max_round(self):
         msgs = [
-            HumanMessage(content="$ write_file a.py\nx"),
-            HumanMessage(content="$ write_file a.py\ny"),
+            HumanMessage(content="$ create_file a.py\nx"),
+            HumanMessage(content="$ create_file a.py\ny"),
         ]
         assert _scan_round_writes(msgs) == {"a.py": 2}
 
@@ -149,7 +150,7 @@ class TestPruneMessagesBasic:
     def test_empty(self):
         out, stats = prune_messages([])
         assert out == []
-        assert stats == {"pruned_blocks": 0, "saved_chars": 0}
+        assert stats == {"pruned_blocks": 0, "saved_chars": 0, "frozen_until": 0}
 
     def test_single_round_untouched(self):
         msgs = [SystemMessage(content="sys"), HumanMessage(content=_read_block("a.py", _big()))]
@@ -161,8 +162,8 @@ class TestPruneMessagesBasic:
         msgs = [
             SystemMessage(content="sys"),
             HumanMessage(content=_read_block("a.py", _big())),
-            AIMessage(content="$ write_file a.py\nok"),
-            HumanMessage(content="$ write_file a.py\nok"),
+            AIMessage(content="$ create_file a.py\nok"),
+            HumanMessage(content="$ create_file a.py\nok"),
             HumanMessage(content="last"),
         ]
         out, _ = prune_messages(msgs)
@@ -173,7 +174,7 @@ class TestPruneMessagesBasic:
         orig_body = _read_block("a.py", _big())
         msgs = [
             HumanMessage(content=orig_body),
-            HumanMessage(content="$ write_file a.py\nok"),
+            HumanMessage(content="$ create_file a.py\nok"),
             HumanMessage(content="last"),
         ]
         prune_messages(msgs)
@@ -183,7 +184,7 @@ class TestPruneTextMode:
     def test_modified_later_evicted(self):
         msgs = [
             HumanMessage(content=_read_block("a.py", _big())),  # round1 read
-            HumanMessage(content="$ write_file a.py\nok"),       # round2 write
+            HumanMessage(content="$ create_file a.py\nok"),       # round2 write
             HumanMessage(content="last"),                        # round3 (current)
         ]
         out, stats = prune_messages(msgs)
@@ -208,7 +209,7 @@ class TestPruneTextMode:
         # 1 чтение в round1, далее много пустых раундов → age >= KEEP, размер большой
         msgs = [HumanMessage(content=_read_block("a.py", _big()))]
         for i in range(_KEEP_RECENT_ROUNDS + 1):
-            msgs.append(HumanMessage(content=f"round {i}"))
+            msgs.append(HumanMessage(content=f"round {i}"))  # noqa: PERF401
         out, stats = prune_messages(msgs)
         assert _EVICT_MARKER in out[0].content
         assert stats["pruned_blocks"] == 1
@@ -216,7 +217,7 @@ class TestPruneTextMode:
     def test_small_read_not_evicted_by_age(self):
         msgs = [HumanMessage(content=_read_block("a.py", "tiny"))]
         for i in range(_KEEP_RECENT_ROUNDS + 1):
-            msgs.append(HumanMessage(content=f"round {i}"))
+            msgs.append(HumanMessage(content=f"round {i}"))  # noqa: PERF401
         out, stats = prune_messages(msgs)
         assert _EVICT_MARKER not in out[0].content
         assert stats["pruned_blocks"] == 0
@@ -224,7 +225,7 @@ class TestPruneTextMode:
     def test_last_round_never_touched(self):
         # большой read в последнем (current) раунде + write раньше — но current не трогаем
         msgs = [
-            HumanMessage(content="$ write_file a.py\nok"),       # round1 write
+            HumanMessage(content="$ create_file a.py\nok"),       # round1 write
             HumanMessage(content="q2"),                          # round2
             HumanMessage(content=_read_block("a.py", _big())),   # round3 current read
         ]
@@ -235,7 +236,7 @@ class TestPruneTextMode:
     def test_placeholder_keeps_command_line(self):
         msgs = [
             HumanMessage(content=_read_block("a.py", _big())),
-            HumanMessage(content="$ write_file a.py\nok"),
+            HumanMessage(content="$ create_file a.py\nok"),
             HumanMessage(content="last"),
         ]
         out, _ = prune_messages(msgs)
@@ -247,7 +248,7 @@ class TestPruneTextMode:
         block_b = _read_block("b.py", _big())
         msgs = [
             HumanMessage(content=block_a + _BLOCK_SEP + block_b),  # round1
-            HumanMessage(content="$ write_file a.py\nok"),          # round2 modifies a only
+            HumanMessage(content="$ create_file a.py\nok"),          # round2 modifies a only
             HumanMessage(content="last"),                           # round3 current
         ]
         out, stats = prune_messages(msgs)
@@ -261,7 +262,7 @@ class TestPruneTextMode:
     def test_already_evicted_idempotent(self):
         msgs = [
             HumanMessage(content=_read_block("a.py", _big())),
-            HumanMessage(content="$ write_file a.py\nok"),
+            HumanMessage(content="$ create_file a.py\nok"),
             HumanMessage(content="last"),
         ]
         out1, _ = prune_messages(msgs)
@@ -276,8 +277,8 @@ class TestPruneNative:
             AIMessage(content="", tool_calls=[_tc("read_files", "a.py", "r1")]),
             ToolMessage(content=_big(), tool_call_id="r1", name="read_files"),
             HumanMessage(content="q2"),
-            AIMessage(content="", tool_calls=[_tc("write_file", "a.py", "w1")]),
-            ToolMessage(content="written", tool_call_id="w1", name="write_file"),
+            AIMessage(content="", tool_calls=[_tc("create_file", "a.py", "w1")]),
+            ToolMessage(content="written", tool_call_id="w1", name="create_file"),
             HumanMessage(content="last"),  # round3 current
         ]
         out, stats = prune_messages(msgs)
@@ -289,8 +290,8 @@ class TestPruneNative:
     def test_native_current_round_not_evicted(self):
         msgs = [
             HumanMessage(content="q1"),
-            AIMessage(content="", tool_calls=[_tc("write_file", "a.py", "w1")]),
-            ToolMessage(content="ok", tool_call_id="w1", name="write_file"),
+            AIMessage(content="", tool_calls=[_tc("create_file", "a.py", "w1")]),
+            ToolMessage(content="ok", tool_call_id="w1", name="create_file"),
             HumanMessage(content="q2 last"),  # round2 current
             AIMessage(content="", tool_calls=[_tc("read_files", "a.py", "r1")]),
             ToolMessage(content=_big(), tool_call_id="r1", name="read_files"),
@@ -320,7 +321,7 @@ class TestPruneNative:
             HumanMessage(content="last"),
             ToolMessage(content=_big(), tool_call_id="orphan", name="read_files"),
         ]
-        out, stats = prune_messages(msgs)
+        _out, stats = prune_messages(msgs)
         # tool_call_id не найден среди read-вызовов → не трогаем
         assert stats["pruned_blocks"] == 0
 
@@ -330,8 +331,8 @@ class TestPruneNative:
             AIMessage(content="", tool_calls=[_tc("read_files", "a.py", "r1")]),
             ToolMessage(content=_big(), tool_call_id="r1", name="read_files"),
             HumanMessage(content="q2"),
-            AIMessage(content="", tool_calls=[_tc("write_file", "a.py", "w1")]),
-            ToolMessage(content="ok", tool_call_id="w1", name="write_file"),
+            AIMessage(content="", tool_calls=[_tc("create_file", "a.py", "w1")]),
+            ToolMessage(content="ok", tool_call_id="w1", name="create_file"),
             HumanMessage(content="last"),
         ]
         out, _ = prune_messages(msgs)
@@ -387,7 +388,7 @@ class TestSkillEviction:
                 HumanMessage(content="$ skill web\n# WEB body " + "y" * 100)]  # round 2
         for i in range(3, _SKILL_EVICT_ROUNDS + 4):
             msgs += [AIMessage(content="ok"), HumanMessage(content=f"q{i}")]
-        out, stats = prune_messages(msgs)
+        out, _stats = prune_messages(msgs)
         skill_blocks = [m.content for m in out
                         if isinstance(m, HumanMessage) and "skill web" in m.content]
         assert any(_EVICT_MARKER in c for c in skill_blocks)

@@ -10,11 +10,10 @@ import shutil
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 
 @lru_cache(maxsize=1)
-def find_pandoc() -> Optional[str]:
+def find_pandoc() -> str | None:
     """Возвращает абсолютный путь к pandoc или None. Кэшируется на процесс."""
     found = shutil.which("pandoc")
     if found:
@@ -23,8 +22,8 @@ def find_pandoc() -> Optional[str]:
         return None
 
     candidates = [
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Pandoc" / "pandoc.exe",
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Pandoc" / "pandoc.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Pandoc" / "pandoc.exe",  # noqa: SIM112
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Pandoc" / "pandoc.exe",  # noqa: SIM112
         Path(os.environ.get("LOCALAPPDATA", "")) / "Pandoc" / "pandoc.exe",
     ]
     for cand in candidates:

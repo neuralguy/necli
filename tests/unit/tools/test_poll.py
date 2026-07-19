@@ -3,6 +3,7 @@ import pytest
 
 from tools.poll import execute_poll
 
+
 @pytest.fixture
 def stub_run_poll(monkeypatch):
     """Подменяет ui.poll.run_poll, чтобы не запускать интерактивный UI."""

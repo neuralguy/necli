@@ -1,11 +1,10 @@
 from dataclasses import dataclass, field
-from typing import Optional
 
 from rich.console import Console
 from rich.markup import escape
 
-from session import Session
 import session.storage as storage
+from session import Session
 
 console = Console()
 
@@ -17,8 +16,8 @@ class InteractiveState:
     session: Session
     msg_num: int = 0
     cur_model: str = ""
-    last_elapsed: Optional[float] = None
-    pending_context: Optional[list[dict]] = None
+    last_elapsed: float | None = None
+    pending_context: list[dict] | None = None
 
     workdir: str = ""
     prompt_input: object = None  # ui.prompt.InputPrompt

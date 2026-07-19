@@ -21,7 +21,7 @@ def _read_file_cached(abs_path: str) -> str | None:
         cached = _LOCATE_CACHE.get(abs_path)
         if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
             return cached[2]
-        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(abs_path, encoding="utf-8", errors="replace") as f:
             content = f.read()
         if len(_LOCATE_CACHE) >= _LOCATE_CACHE_MAX:
             _LOCATE_CACHE.pop(next(iter(_LOCATE_CACHE)))

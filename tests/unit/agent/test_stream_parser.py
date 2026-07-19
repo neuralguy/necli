@@ -3,10 +3,10 @@
 from rich.console import Console
 
 from agent.stream_parser import (
+    _clean_display_text,
     _find_next_complete_tool,
     _find_next_partial_tool,
     _find_next_tool_start,
-    _clean_display_text,
 )
 from agent.stream_render import render_partial_tool
 

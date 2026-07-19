@@ -9,6 +9,7 @@ from io import StringIO
 from rich.console import Console, Group
 from rich.text import Text
 
+
 def render_theme_preview(colors: dict, width: int = 76) -> str:
     """Рендерит компактные блоки UI в заданной палитре (формат без рамок)."""
     accent = colors.get("accent", "#4a9eff")

@@ -5,7 +5,6 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from config.paths import BASE_DIR
 
@@ -31,7 +30,7 @@ class SkillInfo:
     description: str
     path: Path
     disable_model_invocation: bool = False
-    _body: Optional[str] = field(default=None, repr=False)
+    _body: str | None = field(default=None, repr=False)
 
     @property
     def body(self) -> str:
@@ -67,7 +66,7 @@ def _load_body(skill_path: Path) -> str:
     return body.strip()
 
 
-def _load_skill_info(skill_dir: Path) -> Optional[SkillInfo]:
+def _load_skill_info(skill_dir: Path) -> SkillInfo | None:
     skill_md = skill_dir / SKILL_FILENAME
     if not skill_md.exists():
         return None
@@ -107,7 +106,7 @@ def list_skills() -> list[SkillInfo]:
     return discover_skills()
 
 
-def load_skill(name: str) -> Optional[SkillInfo]:
+def load_skill(name: str) -> SkillInfo | None:
     for skill in discover_skills():
         if skill.name == name:
             return skill
@@ -118,7 +117,7 @@ def load_skill(name: str) -> Optional[SkillInfo]:
     return None
 
 
-def create_skill(name: str, description: str, content: str) -> Optional[SkillInfo]:
+def create_skill(name: str, description: str, content: str) -> SkillInfo | None:
     USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     skill_dir = USER_SKILLS_DIR / name
     skill_dir.mkdir(parents=True, exist_ok=True)

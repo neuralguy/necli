@@ -239,8 +239,9 @@ class TestExtractParser:
 
 def test_extract_memories_writes_valid_items(mem_workdir, monkeypatch):
     import asyncio
+
     import apis.agent_adapter as aa
-    from memory import scan_memories, extract_memories
+    from memory import extract_memories, scan_memories
 
     async def fake_api(prompt):
         assert "TRANSCRIPT" in prompt and "EXISTING MEMORIES" in prompt
@@ -258,6 +259,7 @@ def test_extract_memories_writes_valid_items(mem_workdir, monkeypatch):
 
 def test_extract_memories_empty_transcript_is_noop(mem_workdir, monkeypatch):
     import asyncio
+
     import apis.agent_adapter as aa
     from memory import extract_memories
 
@@ -270,6 +272,7 @@ def test_extract_memories_empty_transcript_is_noop(mem_workdir, monkeypatch):
 
 def test_extract_memories_swallows_model_error(mem_workdir, monkeypatch):
     import asyncio
+
     import apis.agent_adapter as aa
     from memory import extract_memories
 

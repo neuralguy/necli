@@ -1,12 +1,10 @@
 """Интерактивное меню со стрелками в стиле Rovo Dev."""
 
+import re
 import shutil
 import sys
-from io import StringIO
 import unicodedata
-
-from ui._keyreader import drain_keys as _drain_keys, drain_text_keys as _drain_text_keys, raw_mode
-from typing import Optional
+from io import StringIO
 
 from rich.console import Console
 from rich.panel import Panel
@@ -14,8 +12,12 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-from session._time import format_relative
 from config.themes import t
+from session._time import format_relative
+from ui._keyreader import drain_keys as _drain_keys
+from ui._keyreader import drain_text_keys as _drain_text_keys
+from ui._keyreader import raw_mode
+
 
 def _format_context_limit(limit: int) -> str:
     if limit >= 1_000_000:
@@ -78,7 +80,6 @@ def clear_lines(n: int):
 
 def _strip_ansi(text: str) -> str:
     """Удаляет ANSI-escape последовательности для подсчёта видимой ширины."""
-    import re
     return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', text)
 
 
@@ -160,7 +161,7 @@ def select_menu(
     title: str = "",
     allow_back: bool = False,
     allow_forward: bool = False,
-) -> Optional[int]:
+) -> int | None:
     """
     Показывает интерактивное меню со стрелками.
 
@@ -179,8 +180,8 @@ def select_menu(
     selected = current
     total = len(items)
 
-    RESET = '\x1b[0m'
-    DIM = '\x1b[2m'
+    RESET = '\x1b[0m'  # noqa: N806
+    DIM = '\x1b[2m'  # noqa: N806
 
     def _hex_to_ansi_fg(h: str) -> str:
         h = h.lstrip('#')
@@ -192,11 +193,11 @@ def select_menu(
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         return f'\x1b[48;2;{r};{g};{b}m'
 
-    BOLD_BLUE = '\x1b[1m' + _hex_to_ansi_fg(t('accent'))
-    GREEN = _hex_to_ansi_fg(t('success'))
-    BOLD = '\x1b[1m'
-    WHITE = '\x1b[38;2;255;255;255m'
-    BG_SELECT = _hex_to_ansi_bg(t('bg_select'))
+    BOLD_BLUE = '\x1b[1m' + _hex_to_ansi_fg(t('accent'))  # noqa: N806
+    GREEN = _hex_to_ansi_fg(t('success'))  # noqa: N806
+    BOLD = '\x1b[1m'  # noqa: N806
+    WHITE = '\x1b[38;2;255;255;255m'  # noqa: N806
+    BG_SELECT = _hex_to_ansi_bg(t('bg_select'))  # noqa: N806
 
     def _render():
         lines = []
@@ -210,17 +211,14 @@ def select_menu(
                 text = f"{BG_SELECT}{BOLD}{WHITE} {label}{RESET}"
                 if hint:
                     text += f"  {BG_SELECT}{BOLD}{WHITE}{hint}{RESET}"
-                if is_active:
-                    text += f"  {GREEN}◄{RESET}"
-                lines.append(f"  {marker}{text}")
             else:
                 marker = " "
                 text = f"  {label}"
                 if hint:
                     text += f"  {DIM}{hint}{RESET}"
-                if is_active:
-                    text += f"  {GREEN}◄{RESET}"
-                lines.append(f"  {marker}{text}")
+            if is_active:
+                text += f"  {GREEN}◄{RESET}"
+            lines.append(f"  {marker}{text}")
         return lines
 
     if allow_back and allow_forward:
@@ -240,8 +238,7 @@ def select_menu(
                 parts.append(f"  {title}")
             else:
                 parts.append(f"  {DIM}{title}{RESET}")
-        for line in _render():
-            parts.append(line)
+        parts.extend(_render())
         parts.append(hint_line)
         return '\n'.join(parts)
 
@@ -262,7 +259,7 @@ def select_menu(
                 elif key == 'enter':
                     clear_lines(rendered_count)
                     return selected
-                elif key == 'ctrl-c' or key == 'escape':
+                elif key in ('ctrl-c', 'escape'):
                     clear_lines(rendered_count)
                     return None
                 elif key == 'left' and allow_back:
@@ -290,7 +287,7 @@ def select_menu(
 def select_session_menu(
     sessions: list[dict],
     current_id: str = "",
-) -> Optional[int]:
+) -> int | None:
     """
     Интерактивное меню сессий в стиле панели с таблицей.
     Pinned sessions всегда сверху. P — toggle pin для выделенной сессии.
@@ -299,7 +296,8 @@ def select_session_menu(
     if not sessions:
         return None
 
-    from config.pinned import get_pinned, toggle as toggle_pin
+    from config.pinned import get_pinned
+    from config.pinned import toggle as toggle_pin
 
     # Работаем по индексам исходного списка; внутри сортируем по pin.
     # original_indices_sorted — массив исходных индексов в порядке отображения.
@@ -362,9 +360,8 @@ def select_session_menu(
         return scroll_off, scroll_off + max_visible, scroll_off
 
     scroll_offset = 0
-    if need_scroll:
-        if initial_selected >= max_visible:
-            scroll_offset = min(initial_selected, total - max_visible)
+    if need_scroll and initial_selected >= max_visible:
+        scroll_offset = min(initial_selected, total - max_visible)
 
     def render_fn(sel: int) -> str:
         nonlocal scroll_offset
@@ -445,15 +442,14 @@ def select_session_menu(
             total = len(order)
             scroll_offset = 0
             return (True, 0, total)
-        if key == "ctrl-p":
-            if 0 <= sel < len(order):
-                sid = sessions[order[sel]].get("id", "")
-                if sid:
-                    toggle_pin(sid)
-                    order = _filtered_order()
-                    total = len(order)
-                    scroll_offset = 0
-                    return (True, 0, total)
+        if key == "ctrl-p" and 0 <= sel < len(order):
+            sid = sessions[order[sel]].get("id", "")
+            if sid:
+                toggle_pin(sid)
+                order = _filtered_order()
+                total = len(order)
+                scroll_offset = 0
+                return (True, 0, total)
         return None
 
     result_pos = _panel_menu_direct(
@@ -472,21 +468,47 @@ def select_api_model_menu(
     api_models: list,
     current_id: str = "",
     provider_name: str = "",
-) -> Optional[int]:
-    """Меню выбора API-модели в стиле таблицы с ценами и контекстом."""
+    group_labels: list[str] | None = None,
+) -> int | None:
+    """Меню выбора API-модели с поиском/фильтрацией по названию и ID.
+
+    group_labels: если задан (параллельно api_models), секции формируются по
+    этим меткам (напр. провайдерам) с сохранением исходного порядка. Иначе —
+    группировка по семейству модели с сортировкой.
+    """
     if not api_models:
         return None
 
     from models import model_group, model_group_order
 
-    def _group_of(m) -> str:
+    def _group_of_idx(i: int) -> str:
+        if group_labels is not None:
+            return group_labels[i]
+        m = api_models[i]
         return model_group(m.display_name or m.id)
 
-    order = sorted(
-        range(len(api_models)),
-        key=lambda i: (model_group_order(_group_of(api_models[i])),
-                       api_models[i].display_name),
-    )
+    def _sorted_indices() -> list[int]:
+        if group_labels is not None:
+            return list(range(len(api_models)))
+        return sorted(
+            range(len(api_models)),
+            key=lambda i: (model_group_order(_group_of_idx(i)),
+                           api_models[i].display_name),
+        )
+
+    query = ""
+
+    def _matches(orig_idx: int) -> bool:
+        if not query:
+            return True
+        m = api_models[orig_idx]
+        haystack = f"{m.display_name} {m.id}".casefold()
+        return query.casefold() in haystack
+
+    def _filtered_order() -> list[int]:
+        return [i for i in _sorted_indices() if _matches(i)]
+
+    order = _filtered_order()
 
     initial_selected = 0
     for pos, orig in enumerate(order):
@@ -499,26 +521,23 @@ def select_api_model_menu(
     render_width = max(20, out_console.width - 1)
 
     term_h = shutil.get_terminal_size((80, 24)).lines
-    max_visible = max(3, term_h - 6)
-    need_scroll = total > max_visible
+    max_visible = max(3, term_h - 10)
 
-    def _viewport(sel: int, scroll_off: int) -> tuple[int, int, int]:
-        if not need_scroll:
-            return 0, total, 0
+    def _viewport(sel: int, scroll_off: int, n: int) -> tuple[int, int, int]:
+        if n <= max_visible:
+            return 0, n, 0
         if sel < scroll_off:
             scroll_off = sel
         elif sel >= scroll_off + max_visible:
             scroll_off = sel - max_visible + 1
-        scroll_off = max(0, min(scroll_off, total - max_visible))
+        scroll_off = max(0, min(scroll_off, n - max_visible))
         return scroll_off, scroll_off + max_visible, scroll_off
 
     scroll_offset = 0
-    if need_scroll and initial_selected >= max_visible:
-        scroll_offset = min(initial_selected, total - max_visible)
 
     def render_fn(sel: int) -> str:
         nonlocal scroll_offset
-        vp_start, vp_end, scroll_offset = _viewport(sel, scroll_offset)
+        vp_start, vp_end, scroll_offset = _viewport(sel, scroll_offset, total)
 
         table = Table(
             show_header=True,
@@ -528,16 +547,16 @@ def select_api_model_menu(
             show_edge=False,
             show_lines=False,
         )
-        table.add_column("Model", min_width=22, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("Input", justify="right", min_width=7, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("Output", justify="right", min_width=7, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("Context", justify="right", min_width=8, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("ID", min_width=20, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("Model", min_width=16, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("In", justify="right", min_width=5, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("Out", justify="right", min_width=5, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("Ctx", justify="right", min_width=6, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("ID", min_width=14, no_wrap=True, header_style="bold dim yellow")
 
-        prev_group = _group_of(api_models[order[vp_start - 1]]) if vp_start > 0 else None
+        prev_group = _group_of_idx(order[vp_start - 1]) if 0 < vp_start < len(order) else None
         for pos in range(vp_start, vp_end):
             m = api_models[order[pos]]
-            group = _group_of(m)
+            group = _group_of_idx(order[pos])
             if group != prev_group:
                 table.add_row(
                     Text(group.upper(), style="bold dim yellow"),
@@ -572,7 +591,7 @@ def select_api_model_menu(
             )
 
         scroll_hint = ""
-        if need_scroll:
+        if total > max_visible:
             scroll_hint = f"({sel + 1}/{total})"
             if vp_start > 0 and vp_end < total:
                 scroll_hint = f"↑{vp_start} ↓{total - vp_end} " + scroll_hint
@@ -581,6 +600,8 @@ def select_api_model_menu(
             elif vp_end < total:
                 scroll_hint = f"↓{total - vp_end} " + scroll_hint
 
+        search_text = f"🔍 {query}▌" if query else "🔍 type to search by name or id..."
+        search_style = "bold cyan" if query else "dim"
         title = f"Models: {provider_name}" if provider_name else "Model selection"
         panel = Panel(
             table,
@@ -591,14 +612,53 @@ def select_api_model_menu(
             border_style="dim",
             padding=(0, 1),
         )
+        search_panel = Panel(
+            Text(search_text, style=search_style),
+            title="Search",
+            title_align="left",
+            border_style="cyan" if query else "dim",
+            padding=(0, 1),
+        )
 
         buf = StringIO()
         render_console = Console(file=buf, highlight=False, force_terminal=True, width=render_width)
+        render_console.print(search_panel)
         render_console.print(panel)
         return buf.getvalue()
 
-    result_pos = _panel_menu_direct(render_fn, sys.stderr, "↑↓ navigate · enter select · esc cancel",
-                                    total, initial_selected)
+    def on_key(key: str, sel: int):
+        nonlocal order, query, scroll_offset, total
+        if key == "backspace":
+            if query:
+                query = query[:-1]
+                order = _filtered_order()
+                total = len(order)
+                scroll_offset = 0
+                return (True, min(sel, max(0, total - 1)), total)
+            return None
+        if key == "escape":
+            if query:
+                query = ""
+                order = _filtered_order()
+                total = len(order)
+                scroll_offset = 0
+                return (True, min(sel, max(0, total - 1)), total)
+            return (False, sel, total)
+        if len(key) == 1 and key.isprintable():
+            query += key
+            order = _filtered_order()
+            total = len(order)
+            scroll_offset = 0
+            return (True, 0, total)
+        return None
+
+    result_pos = _panel_menu_direct(
+        render_fn, sys.stderr,
+        "type to search · ↑↓ navigate · enter select · backspace delete · esc clear/cancel",
+        total, initial_selected,
+        on_key=on_key,
+        text_input=True,
+    )
     if result_pos is None:
         return None
     return order[result_pos]
@@ -614,7 +674,7 @@ def _panel_menu_direct(
     text_input: bool = False,
     allow_back: bool = False,
     allow_forward: bool = False,
-) -> Optional[int]:
+) -> int | None:
     """
     Общий цикл навигации для панельных меню без мигания.
     render_fn(selected: int) -> str — рендерит панель.
@@ -622,8 +682,8 @@ def _panel_menu_direct(
         Callback для кастомных клавиш. Возвращает (handled, new_selected, new_total)
         если клавиша обработана, иначе None.
     """
-    DIM = '\x1b[2m'
-    RESET = '\x1b[0m'
+    DIM = '\x1b[2m'  # noqa: N806
+    RESET = '\x1b[0m'  # noqa: N806
     if allow_back and allow_forward:
         nav_suffix = " · ←→ steps"
     elif allow_back:

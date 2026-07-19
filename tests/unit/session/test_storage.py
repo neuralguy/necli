@@ -4,8 +4,11 @@ import json
 
 from session.session import Session
 from session.storage import (
-    save, load, list_sessions, get_statistics,
     _recalc_model_cost,
+    get_statistics,
+    list_sessions,
+    load,
+    save,
 )
 
 

@@ -2,14 +2,13 @@
 
 import json
 import time
-from typing import Optional
 
 import config
 import models as app_models
 from logger import logger
+from session._time import format_msk, format_msk_short
 from session.message import Message
 from session.session import Session
-from session._time import format_msk, format_msk_short
 
 
 def _recalc_model_cost(model: str, mdata: dict) -> float:
@@ -97,7 +96,7 @@ def _save_summary(session: Session):
     )
 
 
-def load(session_id: str) -> Optional[Session]:
+def load(session_id: str) -> Session | None:
     session_dir = config.SESSIONS_DIR / session_id
     if session_dir.exists():
         return _load_from_dir(session_dir)
@@ -105,21 +104,21 @@ def load(session_id: str) -> Optional[Session]:
     matches = []
     for d in config.SESSIONS_DIR.iterdir():
         if d.is_dir() and d.name.startswith(session_id):
-            matches.append(d)
+            matches.append(d)  # noqa: PERF401
     if len(matches) == 1:
         return _load_from_dir(matches[0])
 
     if not matches:
         for d in config.SESSIONS_DIR.iterdir():
             if d.is_dir() and session_id in d.name:
-                matches.append(d)
+                matches.append(d)  # noqa: PERF401
         if len(matches) == 1:
             return _load_from_dir(matches[0])
 
     return None
 
 
-def _load_from_dir(session_dir) -> Optional[Session]:
+def _load_from_dir(session_dir) -> Session | None:
     history_path = session_dir / "history.json"
     if not history_path.exists():
         logger.warning("session.load: no history.json in {}", session_dir)
@@ -209,7 +208,7 @@ def _first_user_message_title(msgs: list, fallback: str) -> str:
     return fallback
 
 
-def _read_summary(session_dir) -> Optional[dict]:
+def _read_summary(session_dir) -> dict | None:
     summary_path = session_dir / "summary.json"
     if not summary_path.exists():
         return None
@@ -254,7 +253,7 @@ def _recalc_summary_total_cost(data: dict) -> float:
     return total
 
 
-def _read_summary_from_history(session_dir) -> Optional[dict]:
+def _read_summary_from_history(session_dir) -> dict | None:
     history_path = session_dir / "history.json"
     if not history_path.exists():
         return None

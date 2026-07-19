@@ -35,6 +35,7 @@ class TestExecutorPreservesContextVars:
     def test_executor_uses_copy_context(self):
         # Сам executor должен оборачивать вызов в copy_context().run.
         import inspect
+
         import agent.executor as ex
 
         src = inspect.getsource(ex)

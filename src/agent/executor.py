@@ -8,18 +8,18 @@ from functools import partial
 
 from rich.console import Console
 from rich.live import Live
+from rich.panel import Panel
 from rich.text import Text
 
 import tools
 from agent.display import (
-    _w,
     _compact_title_text,
+    _w,
     exec_spinner_frames,
 )
-from rich.panel import Panel
+from config.themes import t
 from logger import logger
 from tools.parser import MAX_TOOL_CALLS_PER_MESSAGE
-from config.themes import t
 
 console = Console()
 
@@ -196,7 +196,7 @@ def _execute_single(
     )
 
     if (result.status == "ok"
-            and call.tool_name in ("write_file", "create_file", "patch_file")
+            and call.tool_name in ("create_file", "patch_file")
             and (call.args or {}).get("path")):
         try:
             from config.lsp import get_auto_diagnostics
@@ -220,7 +220,7 @@ def _execute_single(
     # само исполнение почти мгновенно. Поэтому в финальном статичном выводе
     # показываем это streaming-время (@@WRITE_TIME=N@@ из subtitle), иначе таймер
     # схлопывался в 0.0s. Для shell/read оставляем реальное время исполнения.
-    if call.tool_name in ("write_file", "create_file", "patch_file", "create_docx"):
+    if call.tool_name in ("create_file", "patch_file", "create_docx"):
         wt = _extract_write_time(final_subtitle)
         if wt is not None and wt > result.elapsed:
             result.elapsed = wt
@@ -240,7 +240,7 @@ def _execute_single(
 def _make_overflow_results(dropped: list[tools.ToolCall]) -> list[tools.ToolResult]:
     out = []
     for call in dropped:
-        out.append(tools.ToolResult(
+        out.append(tools.ToolResult(  # noqa: PERF401
             name=call.tool_name,
             status="error",
             output=(

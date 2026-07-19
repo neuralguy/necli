@@ -2,10 +2,11 @@
 
 import agent.diff_render as dr
 from agent.diff_render import (
+    _LOCATE_CACHE,
     _locate_find_in_file,
     _read_file_cached,
-    _LOCATE_CACHE,
 )
+
 
 def setup_function(_):
     _LOCATE_CACHE.clear()

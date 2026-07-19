@@ -65,9 +65,9 @@ def _git(args: list[str], workdir: str, *, check: bool = True) -> tuple[int, str
             capture_output=True, text=True, timeout=_GIT_TIMEOUT, env=env,
         )
     except FileNotFoundError:
-        raise RuntimeError("git CLI not found — /undo requires git")
+        raise RuntimeError("git CLI not found — /undo requires git")  # noqa: B904
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"git {args[0]} timed out after {_GIT_TIMEOUT}s")
+        raise RuntimeError(f"git {args[0]} timed out after {_GIT_TIMEOUT}s")  # noqa: B904
     if check and r.returncode != 0:
         raise RuntimeError(
             f"git {' '.join(args)} failed (exit={r.returncode}): "
@@ -112,7 +112,7 @@ def snapshot_round(workdir: str, label: str = "") -> None:
         if not _ensure_store(workdir):
             return
         _git(["add", "-A"], workdir, check=False)
-        rc, out, _ = _git(["status", "--porcelain"], workdir, check=False)
+        _rc, out, _ = _git(["status", "--porcelain"], workdir, check=False)
         msg = (label or "round").strip()[:200] or "round"
         _git(["commit", "--allow-empty", "-m", msg], workdir, check=False)
         # Верхушка timeline = новый HEAD (отрезает старое «будущее» после undo).
@@ -132,7 +132,7 @@ def cleanup_store(workdir: str) -> int:
             for file_name in files:
                 try:
                     size += os.lstat(os.path.join(root, file_name)).st_size
-                except OSError:
+                except OSError:  # noqa: PERF203
                     continue
         import shutil
         shutil.rmtree(store_root, ignore_errors=True)

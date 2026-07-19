@@ -18,7 +18,7 @@ def test_gated_tools_is_union():
     expected = set()
     for tools in SKILL_TOOLS.values():
         expected |= tools
-    assert GATED_TOOLS == expected
+    assert expected == GATED_TOOLS
 
 
 def test_web_skill_tools():

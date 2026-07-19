@@ -2,10 +2,9 @@
 
 import time
 import uuid
-from typing import Optional
 
-from session.tokens import count_tokens
 from session._time import format_msk
+from session.tokens import count_tokens
 
 
 def _new_msg_id() -> str:
@@ -26,8 +25,17 @@ class Message:
     """
 
     __slots__ = (
-        "role", "content", "model", "timestamp", "tokens", "duration", "usage",
-        "id", "parent_id", "attachments", "thoughts",
+        "attachments",
+        "content",
+        "duration",
+        "id",
+        "model",
+        "parent_id",
+        "role",
+        "thoughts",
+        "timestamp",
+        "tokens",
+        "usage",
     )
 
     def __init__(
@@ -35,14 +43,14 @@ class Message:
         role: str,
         content: str,
         model: str = "",
-        timestamp: Optional[float] = None,
-        tokens: Optional[int] = None,
-        duration: Optional[float] = None,
-        usage: Optional[dict] = None,
-        id: Optional[str] = None,
-        parent_id: Optional[str] = None,
-        attachments: Optional[list] = None,
-        thoughts: Optional[list] = None,
+        timestamp: float | None = None,
+        tokens: int | None = None,
+        duration: float | None = None,
+        usage: dict | None = None,
+        id: str | None = None,
+        parent_id: str | None = None,
+        attachments: list | None = None,
+        thoughts: list | None = None,
     ):
         self.role = role
         self.content = content

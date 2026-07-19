@@ -80,7 +80,8 @@ def _clear_lines(n: int):
 
 
 def _input_custom_answer(question: str) -> str:
-    from rich.console import Console  # noqa: F811 — local instance
+    from rich.console import Console
+
     from config.themes import t
     console = Console()
     console.print(f"  [bold {t('accent')}]? {question}[/bold {t('accent')}]")
@@ -142,7 +143,7 @@ def run_poll_step(
                     if answer:
                         options.append(answer)
                         checked.add(len(options) - 1)
-                    all_options = options + ["\u0421\u0432\u043e\u0439 \u043e\u0442\u0432\u0435\u0442\u2026", "\u0414\u0430\u043b\u0435\u0435"]
+                    all_options = [*options, "Свой ответ…", "Далее"]
                     selected = len(options) + 1
                     rendered = _render_poll(question, all_options, selected, step_info, multiple, checked, len(options))
                     sys.stdout.write(rendered + '\n')

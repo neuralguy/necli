@@ -1,12 +1,16 @@
 from rich.console import Console
 
+from config.i18n import t as _
 from config.permissions import (
-    get_decision, get_scope, set_decision, reset_tool, reset_all,
+    get_decision,
+    get_scope,
+    reset_all,
+    reset_tool,
+    set_decision,
 )
+from config.themes import t
 from tools.registry import list_tools
 from ui.menu import select_menu
-from config.themes import t
-from config.i18n import t as _
 
 console = Console()
 

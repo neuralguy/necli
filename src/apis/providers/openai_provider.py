@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from apis.providers.custom_provider import CustomHttpProvider, create_custom_provider
-from apis.models import ApiProviderDefinition
 from apis.config import get_api_key
+from apis.models import ApiProviderDefinition
+from apis.providers.custom_provider import CustomHttpProvider, create_custom_provider
 from logger import logger
 
 

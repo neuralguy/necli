@@ -3,14 +3,14 @@
 import pytest
 
 from tools.call_parser import (
-    parse_call_calls,
-    strip_call_calls,
-    has_call_calls,
-    iter_call_blocks,
+    find_next_call_start,
     find_next_complete_call,
     find_next_partial_call,
-    find_next_call_start,
+    has_call_calls,
+    iter_call_blocks,
     normalize_call_markers,
+    parse_call_calls,
+    strip_call_calls,
 )
 
 
@@ -39,12 +39,12 @@ class TestBasicParsing:
         text = (
             _wrap("read_files", '{"path": "a.py"}')
             + "between\n"
-            + _wrap("ls", '{"path": "."}')
+            + _wrap("shell", '{"command": "ls"}')
         )
         calls = parse_call_calls(text)
         assert len(calls) == 2
         assert calls[0].tool_name == "read_files"
-        assert calls[1].tool_name == "ls"
+        assert calls[1].tool_name == "shell"
 
     def test_inline_triple_colon_after_sentence_parses(self):
         text = 'Пробую системный Chromium.:::call shell\n{"command": "echo ok"}\ncall:::'
@@ -74,7 +74,7 @@ class TestKnownToolsCoverage:
 
     def test_body_with_triple_backticks(self):
         body = 'print(1)\n```python\nnested\n```\nafter'
-        text = f':::call write_file path="a.py"\n{body}\ncall:::\n'
+        text = f':::call create_file path="a.py"\n{body}\ncall:::\n'
         calls = parse_call_calls(text)
         assert len(calls) == 1
         assert "nested" in calls[0].args["content"]
@@ -82,7 +82,7 @@ class TestKnownToolsCoverage:
 
     def test_body_with_tildes(self):
         body = 'text\n~~~\nstuff\n~~~\nmore'
-        text = f':::call write_file path="a.py"\n{body}\ncall:::\n'
+        text = f':::call create_file path="a.py"\n{body}\ncall:::\n'
         calls = parse_call_calls(text)
         assert len(calls) == 1
         assert "~~~" in calls[0].args["content"]
@@ -90,7 +90,7 @@ class TestKnownToolsCoverage:
 
 class TestAttrs:
     def test_path_attr(self):
-        text = _wrap("write_file", "print('hi')", attrs='path="a.py"')
+        text = _wrap("create_file", "print('hi')", attrs='path="a.py"')
         calls = parse_call_calls(text)
         assert len(calls) == 1
         assert calls[0].args["path"] == "a.py"
@@ -104,14 +104,14 @@ class TestAttrs:
         assert isinstance(calls[0].args["line"], int)
 
     def test_bool_attr_true(self):
-        text = _wrap("find_files", '{"pattern":"*.py"}', attrs="all=true")
+        text = _wrap("shell", '{"command": "ls"}', attrs="background=true")
         calls = parse_call_calls(text)
-        assert calls[0].args.get("all") is True
+        assert calls[0].args.get("background") is True
 
     def test_bool_attr_false(self):
-        text = _wrap("find_files", '{"pattern":"*.py"}', attrs="all=false")
+        text = _wrap("shell", '{"command": "ls"}', attrs="background=false")
         calls = parse_call_calls(text)
-        assert calls[0].args.get("all") is False
+        assert calls[0].args.get("background") is False
 
     def test_unquoted_value(self):
         text = _wrap("read_files", "{}", attrs="path=a.py")
@@ -126,8 +126,8 @@ class TestAttrs:
 
 
 class TestContentTools:
-    def test_write_file_requires_path(self):
-        text = _wrap("write_file", "content")
+    def test_create_file_requires_path(self):
+        text = _wrap("create_file", "content")
         assert parse_call_calls(text) == []
 
     def test_create_file_with_content(self):
@@ -136,14 +136,14 @@ class TestContentTools:
         assert calls[0].args["content"] == "print('x')"
 
     def test_content_strips_one_trailing_newline(self):
-        text = _wrap("write_file", "abc\n", attrs='path="a.py"')
+        text = _wrap("create_file", "abc\n", attrs='path="a.py"')
         calls = parse_call_calls(text)
         assert calls[0].args["content"] == "abc"
 
-    def test_write_file_command_alias(self):
-        text = _wrap("write_file", "x", attrs='path="a.py"')
+    def test_create_file_command_alias(self):
+        text = _wrap("create_file", "x", attrs='path="a.py"')
         calls = parse_call_calls(text)
-        assert calls[0].command == "write_file a.py"
+        assert calls[0].command == "create_file a.py"
 
 
 class TestPatchFile:
@@ -184,14 +184,6 @@ class TestPatchFile:
         assert parse_call_calls(text) == []
 
 
-class TestApplyDiff:
-    def test_diff_body(self):
-        diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new"
-        text = _wrap("apply_diff", diff)
-        calls = parse_call_calls(text)
-        assert calls[0].args["diff"] == diff
-
-
 class TestUnknownTool:
     def test_unknown_returns_no_calls(self):
         text = _wrap("totally_unknown_tool", "{}")
@@ -208,7 +200,7 @@ class TestShellAlias:
 
 class TestStripAndDetect:
     def test_has_call_calls_true(self):
-        text = _wrap("ls", "{}")
+        text = _wrap("shell", "{}")
         assert has_call_calls(text) is True
 
     def test_has_call_calls_false(self):
@@ -225,7 +217,7 @@ class TestStripAndDetect:
         assert parse_call_calls(text) == []
 
     def test_strip_removes_blocks(self):
-        text = "before\n" + _wrap("ls", "{}") + "after"
+        text = "before\n" + _wrap("shell", "{}") + "after"
         result = strip_call_calls(text)
         assert ":::call" not in result
         assert "call:::" not in result
@@ -235,10 +227,10 @@ class TestStripAndDetect:
 
 class TestTruncatedAndStream:
     def test_find_next_complete(self):
-        text = _wrap("ls", "{}")
+        text = _wrap("shell", "{}")
         info = find_next_complete_call(text)
         assert info is not None
-        assert info["tool_name"] == "ls"
+        assert info["tool_name"] == "shell"
 
     def test_find_next_partial_unclosed(self):
         text = ':::call read_files\n{"path": "a'
@@ -254,15 +246,15 @@ class TestTruncatedAndStream:
 
 class TestIterCallBlocks:
     def test_yields_match_and_call(self):
-        text = _wrap("ls", "{}") + _wrap("read_files", '{"path": "a.py"}')
+        text = _wrap("shell", "{}") + _wrap("read_files", '{"path": "a.py"}')
         pairs = list(iter_call_blocks(text))
         assert len(pairs) == 2
         m1, call1 = pairs[0]
-        assert call1.tool_name == "ls"
-        assert m1.group("name") == "ls"
+        assert call1.tool_name == "shell"
+        assert m1.group("name") == "shell"
 
 
-@pytest.mark.parametrize("tool", ["read_files", "ls", "tree", "shell", "grep_files"])
+@pytest.mark.parametrize("tool", ["read_files", "shell", "poll", "create_file"])
 def test_known_tools_parse(tool):
     text = _wrap(tool, '{"path": "."}')
     calls = parse_call_calls(text)
@@ -282,8 +274,8 @@ class TestNormalizeMalformedMarkers:
         assert len(calls) == 1 and calls[0].args == {"path": "a.py"}
 
     def test_code_double_colon_preserved(self):
-        # std::call_once в теле write_file НЕ должен превратиться в маркер
-        text = ':::call write_file path="x.cpp"\nstd::call_once(flag, fn);\ncall:::'
+        # std::call_once в теле create_file НЕ должен превратиться в маркер
+        text = ':::call create_file path="x.cpp"\nstd::call_once(flag, fn);\ncall:::'
         assert "std::call_once" in normalize_call_markers(text)
 
     def test_unknown_tool_not_normalized(self):
@@ -329,11 +321,11 @@ class TestTwoColonMarkerAllPaths:
         assert info is not None and info["tool_name"] == "read_files"
 
     def test_stream_start(self):
-        assert find_next_call_start("prefix\n::call ls\n{}\ncall::\n", 0) is not None
+        assert find_next_call_start("prefix\n::call shell\n{}\ncall::\n", 0) is not None
 
     def test_mixed_two_open_three_close(self):
-        calls = parse_call_calls("::call ls\n{}\ncall:::\n")
-        assert len(calls) == 1 and calls[0].tool_name == "ls"
+        calls = parse_call_calls("::call shell\n{}\ncall:::\n")
+        assert len(calls) == 1 and calls[0].tool_name == "shell"
 
     def test_midline_double_colon_not_a_call(self):
         # foo::call ВНЕ начала строки — не вызов (якорь ^ защищает код/прозу).

@@ -4,8 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from commands.slash import _handle_slash, _normalize_cmd, SlashResult
 from commands.registry import COMMANDS
+from commands.slash import SlashResult, _handle_slash, _normalize_cmd
+
 
 @pytest.fixture
 def session():

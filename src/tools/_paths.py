@@ -11,10 +11,9 @@ import contextvars
 import os
 from pathlib import Path
 
-
 _working_dir_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "necli_working_dir",
-    default=os.getcwd(),
+    default=os.getcwd(),  # noqa: B039
 )
 
 
@@ -95,7 +94,7 @@ def clean_path(val) -> str:
     if not isinstance(val, str):
         val = str(val)
     val = val.strip()
-    if len(val) >= 2:
+    if len(val) >= 2:  # noqa: SIM102
         if (val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'"):
             val = val[1:-1]
     return val

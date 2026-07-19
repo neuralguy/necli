@@ -13,7 +13,7 @@ tool_calls имеют форму [{"id": str, "name": str, "args": dict, "type":
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 class BaseMessage:
@@ -54,8 +54,8 @@ class AIMessage(BaseMessage):
     def __init__(
         self,
         content: Any = "",
-        tool_calls: Optional[list] = None,
-        usage_metadata: Optional[dict] = None,
+        tool_calls: list | None = None,
+        usage_metadata: dict | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(content, **kwargs)
@@ -69,15 +69,15 @@ class AIMessageChunk(AIMessage):
     def __init__(
         self,
         content: Any = "",
-        tool_calls: Optional[list] = None,
-        tool_call_chunks: Optional[list] = None,
-        usage_metadata: Optional[dict] = None,
+        tool_calls: list | None = None,
+        tool_call_chunks: list | None = None,
+        usage_metadata: dict | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(content, tool_calls=tool_calls, usage_metadata=usage_metadata, **kwargs)
         self.tool_call_chunks: list = list(tool_call_chunks or [])
 
-    def __add__(self, other: "AIMessageChunk") -> "AIMessageChunk":
+    def __add__(self, other: AIMessageChunk) -> AIMessageChunk:
         if not isinstance(other, AIMessageChunk):
             return NotImplemented
 
@@ -171,10 +171,10 @@ def _tc_chunks_to_tool_calls(chunks: list) -> list:
 
 
 __all__ = [
-    "BaseMessage",
-    "SystemMessage",
-    "HumanMessage",
     "AIMessage",
-    "ToolMessage",
     "AIMessageChunk",
+    "BaseMessage",
+    "HumanMessage",
+    "SystemMessage",
+    "ToolMessage",
 ]

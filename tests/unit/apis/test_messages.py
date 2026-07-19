@@ -3,10 +3,10 @@
 from apis.messages import (
     AIMessage,
     AIMessageChunk,
+    BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
-    BaseMessage,
     _merge_tool_call_chunks,
     _tc_chunks_to_tool_calls,
 )
@@ -39,7 +39,7 @@ class TestBasic:
         assert m.usage_metadata == {}
 
     def test_ai_message_with_tools(self):
-        tc = [{"id": "1", "name": "ls", "args": {}, "type": "tool_call"}]
+        tc = [{"id": "1", "name": "shell", "args": {}, "type": "tool_call"}]
         m = AIMessage(content="", tool_calls=tc)
         assert m.tool_calls == tc
 
@@ -110,22 +110,22 @@ class TestChunkAdd:
     def test_tool_call_chunks_accumulate(self):
         a = AIMessageChunk(
             content="",
-            tool_call_chunks=[{"index": 0, "id": "t1", "name": "ls", "args": '{"p'}],
+            tool_call_chunks=[{"index": 0, "id": "t1", "name": "shell", "args": '{"c'}],
         )
         b = AIMessageChunk(
             content="",
-            tool_call_chunks=[{"index": 0, "args": 'ath": "."}'}],
+            tool_call_chunks=[{"index": 0, "args": 'ommand": "ls"}'}],
         )
         merged = a + b
         # tool_call_chunks склеились в один по index=0
         assert len(merged.tool_call_chunks) == 1
         ch = merged.tool_call_chunks[0]
         assert ch["id"] == "t1"
-        assert ch["name"] == "ls"
-        assert ch["args"] == '{"path": "."}'
+        assert ch["name"] == "shell"
+        assert ch["args"] == '{"command": "ls"}'
         # И tool_calls финальные — с распарсенными args
         assert merged.tool_calls
-        assert merged.tool_calls[0]["args"] == {"path": "."}
+        assert merged.tool_calls[0]["args"] == {"command": "ls"}
 
 
 class TestMergeToolCallChunks:
@@ -151,23 +151,23 @@ class TestMergeToolCallChunks:
 
 class TestTcChunksToToolCalls:
     def test_valid_json_args(self):
-        chunks = [{"index": 0, "id": "t1", "name": "ls", "args": '{"path": "."}'}]
+        chunks = [{"index": 0, "id": "t1", "name": "shell", "args": '{"command": "ls"}'}]
         result = _tc_chunks_to_tool_calls(chunks)
-        assert result == [{"id": "t1", "name": "ls", "args": {"path": "."}, "type": "tool_call"}]
+        assert result == [{"id": "t1", "name": "shell", "args": {"command": "ls"}, "type": "tool_call"}]
 
     def test_empty_args_string(self):
-        chunks = [{"index": 0, "id": "t1", "name": "ls", "args": ""}]
+        chunks = [{"index": 0, "id": "t1", "name": "shell", "args": ""}]
         result = _tc_chunks_to_tool_calls(chunks)
         assert result[0]["args"] == {}
 
     def test_invalid_json_preserves_raw_error(self):
-        chunks = [{"index": 0, "id": "t1", "name": "ls", "args": "not json"}]
+        chunks = [{"index": 0, "id": "t1", "name": "shell", "args": "not json"}]
         result = _tc_chunks_to_tool_calls(chunks)
         assert result[0]["args"]["_invalid_json"] is True
         assert result[0]["args"]["_raw_args"] == "not json"
         assert "Expecting value" in result[0]["args"]["_parse_error"]
 
     def test_dict_args_passthrough(self):
-        chunks = [{"index": 0, "id": "t1", "name": "ls", "args": {"x": 1}}]
+        chunks = [{"index": 0, "id": "t1", "name": "shell", "args": {"x": 1}}]
         result = _tc_chunks_to_tool_calls(chunks)
         assert result[0]["args"] == {"x": 1}

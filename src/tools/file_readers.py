@@ -7,8 +7,6 @@ from pathlib import Path
 from logger import logger
 from tools.file_ops._pandoc import find_pandoc as _find_pandoc
 
-
-
 _IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp",
     ".bmp", ".tiff", ".tif", ".ico", ".svg",
@@ -48,9 +46,9 @@ def _rows_to_markdown(rows: list[list[str]], total: int) -> str:
 
     truncated = total > _TABLE_TRUNCATE_THRESHOLD
     display_rows: list = (
-        rows[: _TABLE_HEAD_ROWS + 1] + [None] + rows[-_TABLE_TAIL_ROWS:]
+        [*rows[:_TABLE_HEAD_ROWS + 1], None, *rows[-_TABLE_TAIL_ROWS:]]
         if truncated
-        else list(rows)
+        else rows
     )
 
     md_lines: list[str] = []
@@ -106,7 +104,7 @@ def _read_csv(path: Path, encoding: str = "utf-8") -> str:
     delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
 
     try:
-        with open(path, "r", encoding=encoding, errors="replace", newline="") as f:
+        with open(path, encoding=encoding, errors="replace", newline="") as f:
             reader = csv.reader(f, delimiter=delimiter)
             rows, total = _collect_limited_rows(reader)
     except Exception as e:
@@ -253,6 +251,7 @@ def _read_docx_via_pandoc(path: Path) -> str | None:
     # разметка пробелами (центрирование) и отступы кода — ломается round-trip.
     try:
         from docx import Document as _WsDocument
+
         from tools.file_ops._docx_whitespace import restore_into_html as _ws_restore_html
         _ws_doc = _WsDocument(str(path))
         html = _ws_restore_html(html, _ws_doc)
@@ -281,7 +280,6 @@ def _rewrite_media_paths(html: str, media_dir: Path) -> str:
     в HTML относительные src="media/имя.png". Подменяем их на абсолютные пути,
     чтобы при повторном create_docx картинки находились на диске.
     """
-    import re
 
     def repl(match: "re.Match[str]") -> str:
         before, src, after = match.group(1), match.group(2), match.group(3)
@@ -327,7 +325,7 @@ def _para_style_attrs(para) -> dict:
     try:
         from docx.enum.text import WD_ALIGN_PARAGRAPH
     except ImportError:
-        WD_ALIGN_PARAGRAPH = None
+        WD_ALIGN_PARAGRAPH = None  # noqa: N806
 
     if WD_ALIGN_PARAGRAPH is not None:
         align = _effective_alignment(para)
@@ -471,7 +469,7 @@ def _enrich_html_with_docx_styles(html: str, path: Path) -> str:
 
         result_parts.append(f"<{tag}{attrs}>")
         last_end = m.end()
-        idx += 1
+        idx += 1  # noqa: SIM113
 
     result_parts.append(html[last_end:])
     return "".join(result_parts)
@@ -696,7 +694,7 @@ def _read_pdf(path: Path) -> str:
                 md_rows.append("| " + " | ".join(norm[0]) + " |")
                 md_rows.append("| " + " | ".join("---" for _ in range(width)) + " |")
                 for row in norm[1:]:
-                    md_rows.append("| " + " | ".join(row) + " |")
+                    md_rows.append("| " + " | ".join(row) + " |")  # noqa: PERF401
                 page_parts.append("\n".join(md_rows))
 
         parts.append("\n\n".join(page_parts))

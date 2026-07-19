@@ -3,45 +3,52 @@
 import asyncio
 import os
 import time
+from collections import Counter
 from pathlib import Path
-
-from rich.console import Console
 
 import config
 import tools
-from tools import strip_tool_calls, truncate_after_last_tool_call
-from system_prompt import build_system_prompt
-from collections import Counter
-
-from planner import (
-    parse_plan_commands,
-    strip_plan_commands,
-    apply_plan_commands,
-    save_plan_file,
-    load_plan_file,
-    delete_plan_file,
-    resolve_plan_command_focus,
-)
-from tools.registry import is_tool_allowed, build_blocked_result
-from tools.background import drain_finished_results
-from agent.think import strip_think_blocks, parse_think_blocks
 from agent.context import AgentContext
-from agent.sanitizer import sanitize_response
-from agent.executor import execute_and_show_async
 from agent.events import RichEventHandler
-from agent.stream import LiveStream, StreamEarlyAbort
-from logger import logger
-from tools.subagent import set_subagent_context
+from agent.executor import execute_and_show_async
 from agent.messages import (
-    gather_proof as _gather_proof,
-    is_api_proxy_error as _is_api_proxy_error,
-    is_likely_truncated as _is_likely_truncated,
-    build_first_message,
-    _build_result_message,
-    build_structured_tool_results as _build_structured_tool_results,
     _build_result_extras,
+    _build_result_message,
+    build_first_message,
+)
+from agent.messages import (
     build_continue_message as _build_continue_message,
 )
+from agent.messages import (
+    build_structured_tool_results as _build_structured_tool_results,
+)
+from agent.messages import (
+    gather_proof as _gather_proof,
+)
+from agent.messages import (
+    is_api_proxy_error as _is_api_proxy_error,
+)
+from agent.messages import (
+    is_likely_truncated as _is_likely_truncated,
+)
+from agent.sanitizer import sanitize_response
+from agent.stream import LiveStream, StreamEarlyAbort
+from agent.think import parse_think_blocks, strip_think_blocks
+from logger import logger
+from planner import (
+    apply_plan_commands,
+    delete_plan_file,
+    load_plan_file,
+    parse_plan_commands,
+    resolve_plan_command_focus,
+    save_plan_file,
+    strip_plan_commands,
+)
+from system_prompt import build_system_prompt
+from tools import strip_tool_calls, truncate_after_last_tool_call
+from tools.background import drain_finished_results
+from tools.registry import build_blocked_result, is_tool_allowed
+from tools.subagent import set_subagent_context
 
 
 def _api_uses_native_tools() -> bool:
@@ -54,8 +61,6 @@ def _api_uses_native_tools() -> bool:
         logger.debug("native-tools detection failed", exc_info=True)
         return False
 
-console = Console()
-
 MAX_ITERATIONS = 500
 
 
@@ -67,7 +72,7 @@ def _format_history_block(history, *, leading_newline: bool = False) -> str:
     """
     if not history:
         return ""
-    from prompts import CONVERSATION_CONTEXT_HEADER, CONVERSATION_CONTEXT_FOOTER
+    from prompts import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
     header = ("\n" if leading_newline else "") + CONVERSATION_CONTEXT_HEADER
     parts = [header]
     for h_msg in history:
@@ -147,9 +152,7 @@ def _is_control_only_response(
         for tc in (native_tool_calls or [])
         if isinstance(tc, dict)
     ]
-    if native_names and all(name in ("think", "plan") for name in native_names):
-        return True
-    return False
+    return bool(native_names and all(name in ("think", "plan") for name in native_names))
 
 
 def _wrap_with_telegram(handler):
@@ -202,7 +205,7 @@ def _collect_image_paths(results: list[tools.ToolResult]) -> list[Path]:
             paths.append(r.image_path)
         for p in (r.image_paths or []):
             if p and p.exists():
-                paths.append(p)
+                paths.append(p)  # noqa: PERF401
     return paths
 
 
@@ -211,10 +214,7 @@ def _native_tool_calls_to_calls(native_calls: list[dict] | None) -> list[tools.T
     for tc in native_calls or []:
         name = tc.get("name") or "shell"
         args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
-        if name == "shell":
-            command = str(args.get("command") or "shell")
-        else:
-            command = name
+        command = str(args.get("command") or "shell") if name == "shell" else name
         calls.append(tools.ToolCall(command=command, tool_name=name, args=args, raw=""))
     return calls
 
@@ -280,7 +280,7 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         api_proof = await _gather_proof(ctx.working_dir)
         # Активные скиллы определяют видимость гейтящихся инструментов
         # (web_search/image_search/ssh/subagent) — и в промте, и в схемах.
-        active_skills = current_active_skills()
+        active_skills = current_active_skills(tool_results)
         api_sys = build_system_prompt(
             proof=api_proof, mode=ctx.mode, working_dir=ctx.working_dir,
             active_skills=active_skills,
@@ -355,7 +355,7 @@ async def _send_via_api(text, on_chunk, images, tool_results=None, extras=None, 
     mode = ctx.mode if ctx else "agent"
     # tools только в native (см. _stream_send).
     api_tools = (
-        get_tool_schemas(mode, current_active_skills())
+        get_tool_schemas(mode, current_active_skills(tool_results))
         if _resolve_native_tools() else None
     )
     result = await api_send_message(
@@ -432,7 +432,7 @@ def _run_user_prompt_hooks(user_message: str, ctx: AgentContext) -> str | None:
                 ctx.event_handler.on_status(f"⛔ {reason}", level="warning")
             return None
         return outcome.context_text
-    except Exception as e:  # noqa: BLE001 — hooks не роняют агента
+    except Exception as e:
         logger.opt(exception=True).warning("UserPromptSubmit hook error ignored: {}", e)
         return ""
 
@@ -457,7 +457,7 @@ def _fire_stop_hooks(final_text: str, ctx: AgentContext) -> str:
         for msg in outcome.system_messages:
             if ctx.event_handler:
                 ctx.event_handler.on_status(f"🪝 {msg}", level="info")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.opt(exception=True).warning("Stop hook error ignored: {}", e)
     return final_text
 
@@ -584,12 +584,12 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
 
         if ws_calls:
             ws_results = await execute_and_show_async([c for _, c in ws_calls], event_handler=ctx.event_handler)
-            for (idx, _), r in zip(ws_calls, ws_results):
+            for (idx, _), r in zip(ws_calls, ws_results, strict=False):
                 indexed_results.append((idx, r))
 
         if plain_calls:
             plain_results = await execute_and_show_async([c for _, c in plain_calls], event_handler=ctx.event_handler)
-            for (idx, _), r in zip(plain_calls, plain_results):
+            for (idx, _), r in zip(plain_calls, plain_results, strict=False):
                 indexed_results.append((idx, r))
 
         results = [r for _, r in sorted(indexed_results, key=lambda x: x[0])]
@@ -645,7 +645,7 @@ async def _execute_subagent_call(
     ctx: AgentContext,
 ) -> tools.ToolResult:
     """Выполняет вызов subagent с мультиплексным отображением."""
-    from agent.subagent import SubagentTask, SubagentOrchestrator, format_subagent_results
+    from agent.subagent import SubagentOrchestrator, SubagentTask, format_subagent_results
     from agent.subagent_render import SubagentBuffer, SubagentTracker
     from tools.subagent_specs import build_subagent_task_specs
 
@@ -815,15 +815,11 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             session_dir=str(session.dir) if session else None,
         )
 
-    if session and not is_continuation:
-        proof = await _gather_proof(ctx.working_dir)
-        system_overhead = build_system_prompt(proof=proof, mode=ctx.mode, working_dir=ctx.working_dir)
-        hist_block = _format_history_block(history, leading_newline=True)
-        if hist_block:
-            system_overhead += hist_block
-        session.add_system_message(system_overhead, model=model or "")
-    elif session and is_continuation and history:
-        session.add_system_message(_format_history_block(history), model=model or "")
+    # Не пишем runtime/system/history context в persisted necli Session.
+    # API-история живёт в apis.agent_adapter.ApiSession и получает system_prompt
+    # отдельно на каждом запросе. Если сохранять эти блоки как session.system,
+    # они потом восстанавливаются как часть диалога, дублируют/двигают историю и
+    # ухудшают prompt-cache prefix matching.
 
     first_images = images
     msg_num = 1
@@ -841,7 +837,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
 
     _process_plan_commands(full_response, ctx, already_processed=plan_processed)
 
-    for iteration in range(MAX_ITERATIONS):
+    for _iteration in range(MAX_ITERATIONS):
         if _is_api_proxy_error(full_response):
             if ctx.event_handler:
                 ctx.event_handler.on_status(

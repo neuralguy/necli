@@ -4,10 +4,10 @@ import os
 
 from tools._paths import (
     WorkingDirectory,
-    resolve_path,
     clean_path,
-    set_working_dir,
     get_working_dir,
+    resolve_path,
+    set_working_dir,
 )
 
 

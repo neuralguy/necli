@@ -9,7 +9,7 @@ RESPONSE_TIMEOUT = int(os.getenv("NECLI_TIMEOUT", str(get("response_timeout", 18
 TARGET_MODEL: str = os.getenv("NECLI_MODEL", get("model", "Claude Opus 4.6"))
 
 # Канонический набор игнорируемых директорий для всех обходов ФС:
-# tree, grep_files, find_files, fs_watcher snapshot, project_stats.
+# tree, grep_files, fs_watcher snapshot, project_stats.
 IGNORE_DIRS: frozenset[str] = frozenset({
     ".git", ".hg", ".svn",
     "__pycache__", "node_modules", "bower_components", "vendor",
@@ -30,9 +30,7 @@ def is_ignored_dir(name: str) -> bool:
     """
     if name in IGNORE_DIRS:
         return True
-    if name.endswith(".egg-info"):
-        return True
-    return False
+    return bool(name.endswith(".egg-info"))
 
 
 # Канонический набор read-only инструментов (доступен в plan-mode,
@@ -43,7 +41,7 @@ def is_ignored_dir(name: str) -> bool:
 # LSP-инструменты семантически read-only (навигация/диагностика, ничего не
 # пишут) — поэтому доступны и в plan-режиме главного агента, и plan-субагентам.
 READ_ONLY_TOOLS: frozenset[str] = frozenset({
-    "read_files", "grep_files", "tree", "ls", "find_files",
+    "read_files",
     "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
     "memory_list", "memory_read",
 })

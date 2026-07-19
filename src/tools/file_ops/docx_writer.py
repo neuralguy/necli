@@ -16,24 +16,37 @@ from __future__ import annotations
 import re
 import subprocess
 import uuid
+
 from logger import logger
-from tools._paths import resolve_path, clean_path, get_working_dir
-from tools.models import ToolCall, ToolResult
+from tools._paths import clean_path, get_working_dir, resolve_path
 from tools.file_ops._docx_reference import get_default_reference_path
-from tools.file_ops._html_preprocess import (
-    wrap_table_cells as _wrap_table_cells,
-    extract_code_blocks as _extract_code_blocks,
-    restore_code_blocks as _restore_code_blocks,
-    extract_stray_angles as _extract_stray_angles,
-    restore_stray_angles as _restore_stray_angles,
-)
-from tools.file_ops._pandoc import find_pandoc as _find_pandoc, install_hint as _install_hint
 from tools.file_ops._docx_sources import (
-    save_source as _save_docx_source,
-    load_template as _load_docx_template,
     iter_templates as _iter_docx_templates,
 )
-
+from tools.file_ops._docx_sources import (
+    load_template as _load_docx_template,
+)
+from tools.file_ops._docx_sources import (
+    save_source as _save_docx_source,
+)
+from tools.file_ops._html_preprocess import (
+    extract_code_blocks as _extract_code_blocks,
+)
+from tools.file_ops._html_preprocess import (
+    extract_stray_angles as _extract_stray_angles,
+)
+from tools.file_ops._html_preprocess import (
+    restore_code_blocks as _restore_code_blocks,
+)
+from tools.file_ops._html_preprocess import (
+    restore_stray_angles as _restore_stray_angles,
+)
+from tools.file_ops._html_preprocess import (
+    wrap_table_cells as _wrap_table_cells,
+)
+from tools.file_ops._pandoc import find_pandoc as _find_pandoc
+from tools.file_ops._pandoc import install_hint as _install_hint
+from tools.models import ToolCall, ToolResult
 
 # Конвертация CSS-единиц шрифта в pt (python-docx Pt):
 #   1px ≈ 0.75pt (96 dpi: 1pt = 1/72in, 1px = 1/96in → 72/96 = 0.75);
@@ -66,11 +79,15 @@ def _find_matching_template(out_path, content: str):
         return tpl
 
     try:
-        from docx import Document
-        from tools.file_ops._docx_whitespace import (
-            tree_walk_paragraphs, parse_html_blocks, collapse_ws,
-        )
         import difflib
+
+        from docx import Document
+
+        from tools.file_ops._docx_whitespace import (
+            collapse_ws,
+            parse_html_blocks,
+            tree_walk_paragraphs,
+        )
 
         want_texts = [
             collapse_ws(b["text"]) for b in parse_html_blocks(content)
@@ -162,7 +179,7 @@ def _fix_math_parens(content: str) -> str:
             i = j
         return "".join(out), stash
 
-    def _rewrite(match: "re.Match[str]") -> str:
+    def _rewrite(match: re.Match[str]) -> str:
         block = match.group(0)
         block, stash = _mask_text_args(block)
         # Маркируем уже-завёрнутые \left( и \right), чтобы не дублировать.
@@ -191,7 +208,7 @@ def _preprocess_html(content: str) -> str:
     content = _fix_math_parens(content)
     stripped = content.strip()
     low = stripped.lower()
-    if low.startswith("<!doctype") or low.startswith("<html"):
+    if low.startswith(("<!doctype", "<html")):
         return content
     return (
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"></head>"
@@ -330,7 +347,7 @@ def _apply_styles_to_docx(docx_path, styles: list[dict]) -> None:
         # уже ищет первое вхождение внутри абзаца. Для inline-стилей это
         # приемлемо (повторы с разным стилем — редкий случай); точное
         # сопоставление потребовало бы проброса data-sty-id через pandoc.
-        for p, ptext in zip(paras, para_texts):
+        for p, ptext in zip(paras, para_texts, strict=False):
             if snippet not in ptext:
                 continue
             if rgb or font_name or size_pt or bg_rgb:
@@ -353,8 +370,9 @@ def _apply_run_format(paragraph, snippet: str, *, rgb=None, font_name=None, size
     применении стилей), и к styled-клону доклеивается формат.
     """
     from copy import deepcopy
-    from docx.oxml.ns import qn
+
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 
     full_text = paragraph.text
     pos = full_text.find(snippet)
@@ -416,7 +434,7 @@ def _apply_run_format(paragraph, snippet: str, *, rgb=None, font_name=None, size
             for old in rpr.findall(qn("w:color")):
                 rpr.remove(old)
             color_el = OxmlElement("w:color")
-            color_el.set(qn("w:val"), "{:02X}{:02X}{:02X}".format(rgb[0], rgb[1], rgb[2]))
+            color_el.set(qn("w:val"), f"{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}")
             rpr.append(color_el)
         if font_name:
             for old in rpr.findall(qn("w:rFonts")):
@@ -440,7 +458,7 @@ def _apply_run_format(paragraph, snippet: str, *, rgb=None, font_name=None, size
             shd = OxmlElement("w:shd")
             shd.set(qn("w:val"), "clear")
             shd.set(qn("w:color"), "auto")
-            shd.set(qn("w:fill"), "{:02X}{:02X}{:02X}".format(bg[0], bg[1], bg[2]))
+            shd.set(qn("w:fill"), f"{bg[0]:02X}{bg[1]:02X}{bg[2]:02X}")
             rpr.append(shd)
 
     # Для каждого затронутого run: клонируем его, делаем сегменты,
@@ -512,6 +530,11 @@ def _capture_table_widths(html: str) -> tuple[str, list[int | None]]:
     return html, widths
 
 
+def _para_style_name(paragraph) -> str:
+    """Имя стиля параграфа в нижнем регистре ('' если стиль не задан)."""
+    return (paragraph.style.name or "" if paragraph.style else "").lower()
+
+
 def _post_process_docx(docx_path, table_widths: list | None = None) -> None:
     """Добавляет границы всем таблицам и page-break перед каждым H1.
 
@@ -530,7 +553,7 @@ def _post_process_docx(docx_path, table_widths: list | None = None) -> None:
 
     h1_seen = False
     for para in doc.paragraphs:
-        if (para.style.name or "" if para.style else "").lower() == "heading 1":
+        if _para_style_name(para) == "heading 1":
             if h1_seen:
                 _insert_page_break_before(para)
             h1_seen = True
@@ -550,7 +573,7 @@ def _para_has_image(paragraph) -> bool:
 def _para_alignment(paragraph) -> str | None:
     """Возвращает 'center'/'right'/'justify'/'left' либо None, читая pPr/jc напрямую."""
     from docx.oxml.ns import qn
-    pPr = paragraph._element.find(qn("w:pPr"))
+    pPr = paragraph._element.find(qn("w:pPr"))  # noqa: N806
     if pPr is None:
         return None
     jc = pPr.find(qn("w:jc"))
@@ -561,12 +584,12 @@ def _para_alignment(paragraph) -> str | None:
 
 def _zero_first_line_indent(paragraph) -> None:
     """Обнуляет red-line (firstLine) у параграфа, сохраняя прочие отступы."""
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
     p_el = paragraph._element
-    pPr = p_el.find(qn("w:pPr"))
+    pPr = p_el.find(qn("w:pPr"))  # noqa: N806
     if pPr is None:
-        pPr = OxmlElement("w:pPr")
+        pPr = OxmlElement("w:pPr")  # noqa: N806
         p_el.insert(0, pPr)
     ind = pPr.find(qn("w:ind"))
     if ind is None:
@@ -590,15 +613,13 @@ def _fix_paragraph_indents(doc) -> None:
     """
     prev_was_image = False
     for para in doc.paragraphs:
-        style_name = (para.style.name or "" if para.style else "").lower()
+        style_name = _para_style_name(para)
         is_heading = style_name.startswith("heading") or style_name in ("title", "subtitle")
         has_img = _para_has_image(para)
         align = _para_alignment(para)
 
-        if not is_heading:
-            if align in ("center", "right"):
-                _zero_first_line_indent(para)
-            elif prev_was_image and para.text.strip():
+        if not is_heading:  # noqa: SIM102
+            if align in ("center", "right") or (prev_was_image and para.text.strip()):
                 _zero_first_line_indent(para)
 
         prev_was_image = has_img
@@ -611,18 +632,18 @@ def _ensure_table_borders(table, width_pct: int | None = None) -> None:
     отрисовать таблицу и схлопывает её. Принудительно ставим tblW=pct/5000
     (=100%) и равные ширины колонок.
     """
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 
     tbl_el = table._element
-    tblPr = tbl_el.find(qn("w:tblPr"))
+    tblPr = tbl_el.find(qn("w:tblPr"))  # noqa: N806
     if tblPr is None:
-        tblPr = OxmlElement("w:tblPr")
+        tblPr = OxmlElement("w:tblPr")  # noqa: N806
         tbl_el.insert(0, tblPr)
 
     for old in tblPr.findall(qn("w:tblW")):
         tblPr.remove(old)
-    tblW = OxmlElement("w:tblW")
+    tblW = OxmlElement("w:tblW")  # noqa: N806
     tblW.set(qn("w:type"), "pct")
     # Уважаем ширину из HTML (style="width:N%"); по умолчанию — 100%.
     tblW.set(qn("w:w"), str(width_pct if width_pct is not None else 5000))
@@ -630,13 +651,13 @@ def _ensure_table_borders(table, width_pct: int | None = None) -> None:
 
     for old in tblPr.findall(qn("w:tblLayout")):
         tblPr.remove(old)
-    tblLayout = OxmlElement("w:tblLayout")
+    tblLayout = OxmlElement("w:tblLayout")  # noqa: N806
     tblLayout.set(qn("w:type"), "autofit")
     tblPr.append(tblLayout)
 
     for old in tblPr.findall(qn("w:tblBorders")):
         tblPr.remove(old)
-    tblBorders = OxmlElement("w:tblBorders")
+    tblBorders = OxmlElement("w:tblBorders")  # noqa: N806
     for border_name in ("top", "left", "bottom", "right", "insideH", "insideV"):
         b = OxmlElement(f"w:{border_name}")
         b.set(qn("w:val"), "single")
@@ -650,10 +671,10 @@ def _ensure_table_borders(table, width_pct: int | None = None) -> None:
     if n_cols > 0:
         total_pct = width_pct if width_pct is not None else 5000
         col_width = total_pct // n_cols
-        tblGrid = tbl_el.find(qn("w:tblGrid"))
+        tblGrid = tbl_el.find(qn("w:tblGrid"))  # noqa: N806
         if tblGrid is not None:
             tbl_el.remove(tblGrid)
-        tblGrid = OxmlElement("w:tblGrid")
+        tblGrid = OxmlElement("w:tblGrid")  # noqa: N806
         for _ in range(n_cols):
             gc = OxmlElement("w:gridCol")
             gc.set(qn("w:w"), str(_PAGE_TEXT_WIDTH_TWIPS // n_cols))
@@ -663,13 +684,13 @@ def _ensure_table_borders(table, width_pct: int | None = None) -> None:
         for row in table.rows:
             for cell in row.cells:
                 tc = cell._element
-                tcPr = tc.find(qn("w:tcPr"))
+                tcPr = tc.find(qn("w:tcPr"))  # noqa: N806
                 if tcPr is None:
-                    tcPr = OxmlElement("w:tcPr")
+                    tcPr = OxmlElement("w:tcPr")  # noqa: N806
                     tc.insert(0, tcPr)
                 for old in tcPr.findall(qn("w:tcW")):
                     tcPr.remove(old)
-                tcW = OxmlElement("w:tcW")
+                tcW = OxmlElement("w:tcW")  # noqa: N806
                 tcW.set(qn("w:type"), "pct")
                 tcW.set(qn("w:w"), str(col_width))
                 tcPr.append(tcW)
@@ -679,9 +700,9 @@ def _ensure_table_borders(table, width_pct: int | None = None) -> None:
                 # устанавливаем пустой стиль = inherited Normal с обнулённым отступом.
                 for p in cell.paragraphs:
                     p_el = p._element
-                    pPr = p_el.find(qn("w:pPr"))
+                    pPr = p_el.find(qn("w:pPr"))  # noqa: N806
                     if pPr is None:
-                        pPr = OxmlElement("w:pPr")
+                        pPr = OxmlElement("w:pPr")  # noqa: N806
                         p_el.insert(0, pPr)
                     for old in pPr.findall(qn("w:pStyle")):
                         pPr.remove(old)
@@ -702,13 +723,13 @@ def _ensure_table_borders(table, width_pct: int | None = None) -> None:
 
 
 def _insert_page_break_before(paragraph) -> None:
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 
     p_el = paragraph._element
-    pPr = p_el.find(qn("w:pPr"))
+    pPr = p_el.find(qn("w:pPr"))  # noqa: N806
     if pPr is None:
-        pPr = OxmlElement("w:pPr")
+        pPr = OxmlElement("w:pPr")  # noqa: N806
         p_el.insert(0, pPr)
     for old in pPr.findall(qn("w:pageBreakBefore")):
         pPr.remove(old)

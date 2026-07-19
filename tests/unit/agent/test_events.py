@@ -5,6 +5,7 @@ from agent.events import (
     RichEventHandler,
 )
 
+
 class TestProtocol:
     def test_rich_handler_satisfies_protocol(self):
         assert isinstance(RichEventHandler(), AgentEventHandler)
@@ -18,7 +19,7 @@ class TestProtocol:
 class TestRichEventHandler:
     def test_on_tool_start_stores_pending(self, make_tool_call):
         h = RichEventHandler()
-        call = make_tool_call("ls")
+        call = make_tool_call("shell")
         h.on_tool_start(call, subtitle="sub")
         assert h._pending_call is call
         assert h._pending_subtitle == "sub"
@@ -36,7 +37,7 @@ class TestRichEventHandler:
         monkeypatch.setattr(display, "show_tool_combined", fake_combined)
 
         h = RichEventHandler()
-        call = make_tool_call("ls")
+        call = make_tool_call("shell")
         h.on_tool_start(call, subtitle="sub")
         result = object()
         h.on_tool_result(result)
@@ -67,6 +68,7 @@ class TestRichEventHandler:
     def test_on_status_prints(self):
         h = RichEventHandler()
         import io
+
         from rich.console import Console
 
         buf = io.StringIO()
@@ -77,6 +79,7 @@ class TestRichEventHandler:
     def test_on_status_unknown_level_defaults(self):
         h = RichEventHandler()
         import io
+
         from rich.console import Console
 
         buf = io.StringIO()

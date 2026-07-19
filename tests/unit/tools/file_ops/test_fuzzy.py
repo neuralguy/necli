@@ -1,6 +1,6 @@
 """tools/file_ops/_fuzzy.py — fuzzy find/replace для patch_file."""
 
-from tools.file_ops._fuzzy import _normalize_line, _fuzzy_find_replace
+from tools.file_ops._fuzzy import _fuzzy_find_replace, _normalize_line
 
 
 class TestNormalizeLine:

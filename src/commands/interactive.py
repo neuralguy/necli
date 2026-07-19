@@ -8,34 +8,34 @@ InteractiveState — в commands/interactive_state.py.
 import asyncio
 import logging
 import os
+
 import click
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.markup import escape
 
-from prompt_toolkit.patch_stdout import patch_stdout
-
 import agent as gsagent
-from agent import get_current_ctx
 import config
-from config.i18n import t as tr
 import models as app_models
-from session import Session
-from ui.prompt import InputPrompt, _EOF, _BG_RESUME
-from ui.clipboard import cleanup_old_images
-from ui.file_context import expand_at_references
-from tools.ssh import close_all_connections
-from commands.slash import _handle_slash
+from agent import get_current_ctx
+from apis.telegram import get_bridge as _get_tg_bridge
 from commands.helpers import (
-    _run_with_interrupt,
-    _resolve_or_exit,
-    _print_welcome,
-    _print_user_message,
     _print_response_separator,
+    _print_user_message,
+    _print_welcome,
+    _resolve_or_exit,
+    _run_with_interrupt,
 )
 from commands.interactive_state import InteractiveState
 from commands.interactive_status import build_status_line
+from commands.slash import _handle_slash
 from commands.slash_handler import handle_slash_result
-from apis.telegram import get_bridge as _get_tg_bridge
+from config.i18n import t as tr
+from session import Session
+from tools.ssh import close_all_connections
+from ui.clipboard import cleanup_old_images
+from ui.file_context import expand_at_references
+from ui.prompt import _BG_RESUME, _EOF, InputPrompt
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -103,7 +103,7 @@ def interactive(model, workdir, resume, api_provider):
         config.set_active_api(api_provider)
         config.set_active_api_model(api_model)
 
-    from commands.onboarding import needs_onboarding, run_onboarding, _ensure_default_provider
+    from commands.onboarding import _ensure_default_provider, needs_onboarding, run_onboarding
     if needs_onboarding():
         run_onboarding()
     elif not config.get_active_api():
@@ -209,7 +209,7 @@ def interactive(model, workdir, resume, api_provider):
                         ok, info = await tg_bridge.start(tg_token, int(tg_chat))
                         if ok:
                             tg_info = info
-                            from agent.tg_menu import register_tg_menu, _build_reply_keyboard
+                            from agent.tg_menu import _build_reply_keyboard, register_tg_menu
                             register_tg_menu(state)
                             tg_bridge.send(
                                 f"🟢 <b>necli-api</b> started\n"
@@ -359,9 +359,9 @@ def interactive(model, workdir, resume, api_provider):
 
                 message_images = state.prompt_input.get_and_clear_images()
 
-                state.session.add_user_message(user, model=state.cur_model)
-
                 # add_user_message может переименовать (переместить) папку сессии
+                user_message = state.session.add_user_message(user, model=state.cur_model)
+
                 # при первом сообщении — картинки лежат внутри session.dir, их
                 # абсолютные пути устаревают. Перенаправляем на актуальную папку.
                 if message_images:
@@ -373,9 +373,18 @@ def interactive(model, workdir, resume, api_provider):
                         candidate = sess_imgs / p.name
                         fixed.append(candidate if candidate.exists() else p)
                     message_images = fixed
+                    user_message.attachments = [
+                        {
+                            "path": str(p),
+                            "name": p.name,
+                            "mime": "image/png",
+                            "is_image": True,
+                        }
+                        for p in message_images
+                    ]
                 try:
-                    from agent.loop import set_current_ctx
                     from agent.context import AgentContext
+                    from agent.loop import set_current_ctx
                     _ctx = get_current_ctx()
                     if _ctx is None:
                         _ctx = AgentContext(working_dir=state.workdir, mode=state.mode_state.get("mode", "agent"))
@@ -412,7 +421,11 @@ def interactive(model, workdir, resume, api_provider):
                 # каждый запрос). В поток шлём ТОЛЬКО короткий one-shot сигнал при
                 # переключении, чтобы модель явно заметила смену в середине диалога.
                 if state.mode_state["changed"]:
-                    from prompts import MODE_SWITCH_TO_AGENT, MODE_SWITCH_TO_AUTONOMOUS, MODE_SWITCH_TO_PLANNING
+                    from prompts import (
+                        MODE_SWITCH_TO_AGENT,
+                        MODE_SWITCH_TO_AUTONOMOUS,
+                        MODE_SWITCH_TO_PLANNING,
+                    )
                     if state.mode_state["mode"] == "planning":
                         mode_notice = MODE_SWITCH_TO_PLANNING
                     elif state.mode_state["mode"] == "autonomous":
@@ -423,7 +436,7 @@ def interactive(model, workdir, resume, api_provider):
                     state.mode_state["changed"] = False
 
                 if state.think_changed:
-                    from prompts import THINK_SWITCH_ON, THINK_SWITCH_OFF
+                    from prompts import THINK_SWITCH_OFF, THINK_SWITCH_ON
                     notice = THINK_SWITCH_ON if state.think_enabled else THINK_SWITCH_OFF
                     agent_message = notice + "\n\n" + agent_message
                     state.think_changed = False
@@ -572,7 +585,7 @@ def _maybe_extract_memory(state: InteractiveState) -> None:
             logger.debug("memory extract failed: %s", e, exc_info=True)
 
     try:
-        asyncio.ensure_future(_run_extract())
+        asyncio.ensure_future(_run_extract())  # noqa: RUF006
     except Exception:
         logger.debug("memory extract launch failed", exc_info=True)
 
@@ -629,8 +642,8 @@ async def _print_recap_if_ready(state: InteractiveState) -> None:
 
 async def _maybe_auto_compress(state: InteractiveState) -> None:
     """Если контекст занят на ≥90% от лимита модели — автоматически сжимает историю."""
-    from models import get_context_limit
     from commands.slash_handler import _handle_compress
+    from models import get_context_limit
 
     try:
         ctx_tokens = state.session.context_tokens
@@ -746,8 +759,7 @@ async def _read_user_with_tg(state: InteractiveState, status: str, tg_bridge):
             return await state.prompt_input.read(status_text=status, bg_resume=bg_resume)
 
     async def _tg():
-        msg = await tg_bridge.incoming_queue.get()
-        return msg
+        return await tg_bridge.incoming_queue.get()
 
     stdin_task = asyncio.create_task(_stdin(), name="stdin-read")
     tg_task = asyncio.create_task(_tg(), name="tg-read")

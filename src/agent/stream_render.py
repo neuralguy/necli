@@ -2,6 +2,7 @@
 
 import json
 import re
+import shutil
 
 from rich.console import Group
 from rich.markdown import Markdown
@@ -9,14 +10,12 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
-import shutil
-
 from agent.display import (
-    TOOL_DISPLAY,
     SPINNER_FRAMES,
+    TOOL_DISPLAY,
 )
-from config.themes import t
 from config.i18n import t as _i18n
+from config.themes import t
 from config.ui import ui
 
 THINKING_STYLE = "dim italic"
@@ -29,7 +28,6 @@ def make_thinking_indicator(spinner_frame: str, model: str) -> Text:
     txt = Text()
     txt.append(f"  {spinner_frame} ", style=f"bold {t('accent')}")
     txt.append(model, style=f"bold {t('accent')}")
-    from config.i18n import t as _i18n
     suffix = ui.get("indicators.thinking_suffix", f"{_i18n('ui.thinking')}…")
     txt.append(f"  {suffix}", style=THINKING_STYLE)
     return txt
@@ -84,7 +82,7 @@ def render_streaming_response(text: str, message_num: int = 0, streaming: bool =
     lines = text.split("\n")
     total = len(lines)
     max_lines = _stream_max_lines()
-    if total > max_lines:
+    if total > max_lines:  # noqa: SIM108
         # Для live-стрима показываем только хвост БЕЗ префикса
         # "... N lines above ..." — он сам занимает строку и при stop()
         # остаётся видимым обрывком над финальной полной панелью.
@@ -181,8 +179,7 @@ def _format_patch_body_for_stream(body: str, attrs_header: str):
         pref_del = ui.get("diff_colors.prefix_delete", "- ")
         pref_add = ui.get("diff_colors.prefix_add", "+ ")
         prefix = {"FIND": pref_del, "REPLACE": pref_add, "INSERT": pref_add}[kind]
-        for ln in content.split("\n"):
-            out_lines.append(prefix + ln)
+        out_lines.extend(prefix + ln for ln in content.split("\n"))
         if kind == "REPLACE" and i + 1 < len(matches):
             out_lines.append("")
 
@@ -211,7 +208,7 @@ def _decode_json_body_for_display(body, tool_name, attrs_header: str = ""):
     if tool_name == "patch_file":
         return _format_patch_body_for_stream(body, attrs_header)
 
-    if tool_name in ("write_file", "create_file", "create_docx"):
+    if tool_name in ("create_file", "create_docx"):
         if attrs_header and "path=" in attrs_header:
             return body, file_path, _lang_from_path(file_path)
         m = re.search(r'"content"\s*:\s*"', body)
@@ -221,13 +218,13 @@ def _decode_json_body_for_display(body, tool_name, attrs_header: str = ""):
             return decoded, file_path, _lang_from_path(file_path)
 
     stripped = body.lstrip()
-    if stripped.startswith("{") or stripped.startswith("["):
+    if stripped.startswith(("{", "[")):
         decoded = body.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
         return decoded, file_path, "text"
     return body, file_path, "text"
 
 
-def _PARTIAL_LANG_BYPASS_THRESHOLD() -> int:
+def _PARTIAL_LANG_BYPASS_THRESHOLD() -> int:  # noqa: N802
     return int(ui.get("limits.partial_lang_bypass_threshold", 50_000))
 _PARTIAL_SYNTAX_CACHE: dict = {}
 _PARTIAL_SYNTAX_CACHE_MAX = 4
@@ -267,8 +264,8 @@ def _render_compact_write_preview(
         2 line two
         ...
     """
-    from agent.syntax import _EXT_LEXER_MAP
     from agent.display import COMPACT_PREVIEW_LINES
+    from agent.syntax import _EXT_LEXER_MAP
     cpl = COMPACT_PREVIEW_LINES() if callable(COMPACT_PREVIEW_LINES) else COMPACT_PREVIEW_LINES
 
     display_name, color = TOOL_DISPLAY.get(tool_name, ("Tool", t("warning")))
@@ -492,13 +489,12 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
         return None
     if tool_name == "subagent":
         return _render_subagent_partial_preview(body, elapsed_seconds, spinner_frame)
-    _, color = TOOL_DISPLAY.get(tool_name, ("Tool", "yellow"))
-    display_name, _ = TOOL_DISPLAY.get(tool_name, ("Tool", "yellow"))
+    display_name, color = TOOL_DISPLAY.get(tool_name, ("Tool", "yellow"))
 
     display_text, file_path, lang = _decode_json_body_for_display(body, tool_name, attrs_header)
 
     # Стрим для write/create/create_docx — тот же формат, что и в финале
-    if tool_name in ("write_file", "create_file", "create_docx"):
+    if tool_name in ("create_file", "create_docx"):
         return _render_compact_write_preview(
             tool_name, file_path, display_text, elapsed_seconds, spinner_frame,
         )
@@ -548,9 +544,8 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
 
 def render_reasoning_panel(text: str, streaming: bool = False):
     """Панель с реальными мыслями ИИ (reasoning_content) — формат think-блока с пометкой raw."""
+    from agent.display import _w, is_compact
     from ui.formatting import latex_to_unicode
-    from agent.display import is_compact, _w
-    from rich.panel import Panel
 
     muted = t("dim_text")
     emoji = ui.get("symbols.thinking_emoji", "💭")
@@ -569,7 +564,6 @@ def render_reasoning_panel(text: str, streaming: bool = False):
         full = full + "\u258c"
 
     if is_compact():
-        from rich.console import Group as RGroup
         header = Text()
         header.append(f"{emoji} {label}", style="bold magenta")
         prefix = ui.get("symbols.summary_prefix", "⎿  ")
@@ -601,7 +595,7 @@ def render_reasoning_panel(text: str, streaming: bool = False):
             line = Text(pad, style=muted)
             line.append(ln, style=f"italic {muted}")
             out.append(line)
-        return RGroup(*out)
+        return Group(*out)
 
     body = Text(full, style=f"italic {muted}")
     title = f"[bold magenta]{emoji} {label}[/bold magenta]"
@@ -640,9 +634,7 @@ def render_live_group(
             # со стримящейся мыслью внутри (а не компактную одну строку),
             # чтобы пользователь видел полный текст рассуждения сразу.
             from agent.think import ThinkLog, ThoughtStep, render_think_static
-            tmp_log = ThinkLog(steps=list(think_log.steps) + [
-                ThoughtStep(text=partial_thought + "\u258c"),
-            ])
+            tmp_log = ThinkLog(steps=[*list(think_log.steps), ThoughtStep(text=partial_thought + "▌")])
             parts.append(render_think_static(tmp_log, streaming=True))
         elif think_log.total > 0:
             from agent.think import render_think_static

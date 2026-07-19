@@ -8,6 +8,7 @@ import pytest
 
 import apis.model_discovery as md
 
+
 class _FakeResponse:
     def __init__(self, status_code=200, payload=None, text=""):
         self.status_code = status_code

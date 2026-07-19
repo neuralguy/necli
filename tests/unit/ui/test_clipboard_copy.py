@@ -6,6 +6,7 @@ import pytest
 
 import ui.clipboard_copy as cc
 
+
 @pytest.fixture
 def no_tools(monkeypatch):
     """shutil.which всегда возвращает None → нет инструментов."""
@@ -19,7 +20,8 @@ class TestEmptyAndNoTools:
     def test_empty_text(self):
         assert cc.copy_to_clipboard("") == "empty text"
 
-    def test_no_clipboard_tool(self, no_tools):
+    @pytest.mark.usefixtures("no_tools")
+    def test_no_clipboard_tool(self):
         err = cc.copy_to_clipboard("hello")
         assert err is not None
         assert "no clipboard tool found" in err
@@ -34,6 +36,7 @@ class TestRunBasedTools:
         def fake_run(cmd, input=None, env=None, capture_output=None, timeout=None):
             captured["cmd"] = cmd
             captured["input"] = input
+            captured["capture_output"] = capture_output
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
         monkeypatch.setattr(cc.subprocess, "run", fake_run)
@@ -41,6 +44,7 @@ class TestRunBasedTools:
         assert result is None
         assert captured["cmd"] == ["wl-copy"]
         assert captured["input"] == b"hi"
+        assert captured["capture_output"] is True
 
     def test_pbcopy_success(self, monkeypatch):
         monkeypatch.setattr(cc.shutil, "which", _which_only("pbcopy"))

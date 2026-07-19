@@ -58,7 +58,7 @@ def normalize_task(raw: Any, *, phase: str = "", depends_on: list[int] | None = 
     deps = parse_depends_on(raw.get("depends_on"))
     if depends_on:
         deps.extend(depends_on)
-    deps = sorted(set(d for d in deps if d > 0))
+    deps = sorted({d for d in deps if d > 0})
     if deps:
         task["depends_on"] = deps
     return task
@@ -81,7 +81,7 @@ def _item_context(item: Any, item_index: int, stage_index: int, phase: str = "")
     if isinstance(item, dict):
         for key, value in item.items():
             if isinstance(key, str):
-                ctx[key] = value
+                ctx[key] = value  # noqa: PERF403
     return ctx
 
 

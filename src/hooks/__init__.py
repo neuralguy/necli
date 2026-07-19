@@ -19,20 +19,20 @@
   run_hooks(event, payload, *, working_dir) -> HookOutcome
 """
 
+from .runner import run_hooks
 from .schema import (
     HOOK_EVENTS,
     HookEvent,
-    HookSpec,
     HookMatcher,
     HookOutcome,
+    HookSpec,
 )
-from .runner import run_hooks
 
 __all__ = [
     "HOOK_EVENTS",
     "HookEvent",
-    "HookSpec",
     "HookMatcher",
     "HookOutcome",
+    "HookSpec",
     "run_hooks",
 ]

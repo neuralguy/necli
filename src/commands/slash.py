@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from rich.console import Console
 from rich.markup import escape
@@ -8,13 +7,13 @@ from rich.table import Table
 
 import config
 import models as app_models
-from logger import logger
-from config.themes import t
-from config.i18n import t as _
 import session.storage as storage
+from config.i18n import t as _
+from config.themes import t
+from logger import logger
 from session import Session
 from tools._paths import get_working_dir
-from ui import format_tokens, format_cost
+from ui import format_cost, format_tokens
 from ui.menu import select_session_menu
 
 console = Console()
@@ -27,18 +26,18 @@ class SlashResult:
     do_new: bool = False
     do_branch: bool = False
     do_reflect: bool = False
-    switch_session: Optional[str] = None
-    change_dir: Optional[str] = None
+    switch_session: str | None = None
+    change_dir: str | None = None
     do_compress: bool = False
     do_decompress: bool = False
     do_commit: bool = False
     commit_hint: str = ""
-    undo_n: Optional[int] = None
-    switch_api: Optional[str] = None
-    switch_api_model: Optional[str] = None
+    undo_n: int | None = None
+    switch_api: str | None = None
+    switch_api_model: str | None = None
     toggle_think: bool = False
     toggle_tool_format: bool = False
-    tg_toggle: Optional[bool] = None
+    tg_toggle: bool | None = None
 
 
 def _add_grouped_model_rows(table: Table, by_model: dict) -> None:
@@ -223,23 +222,45 @@ def _handle_slash(
         if not active_api:
             console.print(f"  [red]{_('slash.api_not_configured')}[/red]")
             return r
-        from apis.registry import get_definition
-        defn = get_definition(active_api)
-        if not defn or not defn.models:
+        from apis.registry import get_definitions
+        defns = get_definitions()
+        # Активный провайдер идёт первым, затем остальные включённые.
+        ordered_ids = [active_api] + [
+            pid for pid in defns if pid != active_api and defns[pid].enabled
+        ]
+        api_models = []
+        model_providers = []   # provider_id, параллельно api_models
+        group_labels = []      # имя провайдера для секции, параллельно api_models
+        for pid in ordered_ids:
+            defn = defns.get(pid)
+            if not defn or not defn.models:
+                continue
+            for m in defn.models:
+                api_models.append(m)
+                model_providers.append(pid)
+                group_labels.append(defn.name)
+        if not api_models:
             console.print(f"  [dim]{_('slash.no_models_provider', name=active_api)}[/dim]")
             return r
         current_api_model = config.get_active_api_model()
-        api_models = defn.models
         from ui.menu import select_api_model_menu
-        choice = select_api_model_menu(api_models, current_id=current_api_model, provider_name=defn.name)
+        choice = select_api_model_menu(
+            api_models,
+            current_id=current_api_model,
+            group_labels=group_labels,
+        )
         if choice is not None:
             chosen_model = api_models[choice]
-            if chosen_model.id != current_api_model:
+            chosen_provider = model_providers[choice]
+            if chosen_provider != active_api or chosen_model.id != current_api_model:
+                if chosen_provider != active_api:
+                    config.set_active_api(chosen_provider)
                 config.set_active_api_model(chosen_model.id)
-                r.switch_api = active_api
+                r.switch_api = chosen_provider
                 r.switch_api_model = chosen_model.id
                 console.print(
-                    f"  [green]\u2713[/green] \u2192 [yellow]{chosen_model.display_name}[/yellow]"
+                    f"  [green]\u2713[/green] {defns[chosen_provider].name} \u2192"
+                    f" [yellow]{chosen_model.display_name}[/yellow]"
                     f" [dim]({chosen_model.id})[/dim]"
                 )
         return r

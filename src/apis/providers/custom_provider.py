@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from apis.base import BaseProvider
+from apis.config import get_api_credentials
 from apis.models import ApiProviderDefinition
-from apis.config import get_api_keys
 from logger import logger
 
 
@@ -18,21 +18,17 @@ class CustomHttpProvider(BaseProvider):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._definition_id: str = ""
         self._requires_auth: bool = True
         self._auth_header: str = "Authorization"
         self._auth_prefix: str = "Bearer"
-        self._default_headers: Dict[str, str] = {}
-        self._extra_body: Dict[str, Any] = {}
+        self._default_headers: dict[str, str] = {}
+        self._extra_body: dict[str, Any] = {}
 
     def _get_api_key(self) -> str:
-        keys = get_api_keys(self._definition_id)
-        if not keys:
-            return ""
-        return keys[0]
+        return super()._get_api_key()
 
-    def _get_headers(self) -> Dict[str, str]:
-        headers: Dict[str, str] = {"Content-Type": "application/json"}
+    def _get_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._default_headers:
             headers.update(self._default_headers)
         if self._requires_auth:
@@ -42,7 +38,7 @@ class CustomHttpProvider(BaseProvider):
                 headers[self._auth_header] = f"{prefix}{key}"
         return headers
 
-    def _build_params(self, **kwargs: Any) -> Dict[str, Any]:
+    def _build_params(self, **kwargs: Any) -> dict[str, Any]:
         params = super()._build_params(**kwargs)
         if self._extra_body:
             for k, v in self._extra_body.items():
@@ -71,11 +67,12 @@ def create_custom_provider(
         timeout=definition.timeout or 300,
         max_retries=definition.max_retries or 3,
         reasoning_effort=kwargs.get("reasoning_effort"),
+        thinking=kwargs.get("thinking"),
     )
     provider._api_url = api_url
     provider._provider_name = definition.name
-    provider._definition_id = definition.id
     provider._proxy = definition.proxy
+    provider._api_credentials = get_api_credentials(definition.id)
     provider._requires_auth = definition.requires_auth
     provider._auth_header = definition.auth_header or "Authorization"
     provider._auth_prefix = definition.auth_prefix or ""
@@ -84,6 +81,7 @@ def create_custom_provider(
     # reasoning-параметры берём из definition.extra (per-provider в JSON-конфиге),
     # либо из per-model override extra.reasoning_models = {"<model_id>": "high"}.
     extra = definition.extra or {}
+    provider._prompt_cache_mode = str(extra.get("prompt_cache", extra.get("prompt_caching", "auto")))
     extra_body = dict(extra.get("extra_body") or {})
     reasoning_models = extra.get("reasoning_models") or {}
     if actual_model in reasoning_models:

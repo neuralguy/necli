@@ -1,6 +1,5 @@
 from prompts._core import _OPEN
 
-
 RESPONSE_STRUCTURE_BLOCK = f"""# Response structure
 
 Pattern A — Action: 1-3 short sentences → optional {_OPEN} plan → 1..50 tool calls (fenced + native combined) → STOP.
@@ -23,6 +22,10 @@ RESPONSE_STRUCTURE_BLOCK_NATIVE = """# Response structure
 
 Pattern A — Action: 1-3 short sentences → optional `plan` call → 1..50 tool calls → STOP.
 Pattern B — Summary: only text, no tool calls. This is the FINAL of the task.
+
+Pattern A means MULTIPLE tool_calls per reply whenever the calls are independent: batch them all into
+one reply instead of dribbling them out one at a time. Each reply is an expensive round-trip — minimize
+the number of rounds, not the number of calls per round.
 
 The completion signal for the system is the ABSENCE of tool calls in your reply. With even one call
 the loop continues; with zero calls the round is closed until the user types again.

@@ -16,7 +16,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +102,7 @@ def is_git_repo(root: str) -> bool:
     return rc == 0
 
 
-def _get_head_sha(root: str) -> Optional[str]:
+def _get_head_sha(root: str) -> str | None:
     rc, out, _ = _run_git(["rev-parse", "HEAD"], cwd=root, check=False)
     if rc != 0:
         return None
@@ -449,7 +448,7 @@ def cleanup_worktree(root: str, handle: WorktreeHandle) -> None:
 
 _STALE_BRANCH_AGE = 7200  # 2 часа в секундах
 
-def cleanup_stale_branches(root: str, current_run_id: Optional[str] = None) -> int:
+def cleanup_stale_branches(root: str, current_run_id: str | None = None) -> int:
     """Удаляет ТОЛЬКО устаревшие ветки subagent/*.
 
     Удаляем ветку, только если её последний коммит старше _STALE_BRANCH_AGE

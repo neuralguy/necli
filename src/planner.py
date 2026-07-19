@@ -18,7 +18,6 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 from rich.text import Text
 
@@ -63,7 +62,7 @@ _STATUS_ALIASES = {
 }
 
 
-def _normalize_status(s: str) -> Optional[StepStatus]:
+def _normalize_status(s: str) -> StepStatus | None:
     key = (s or "").strip().lower().replace("_", " ").replace("-", " ")
     key = " ".join(key.split())  # collapse spaces
     key_us = key.replace(" ", "_")
@@ -117,8 +116,8 @@ class Plan:
         self.updated_at = time.time()
 
     def update_step(
-        self, index: int, status: Optional[str] = None,
-        notes: Optional[str] = None,
+        self, index: int, status: str | None = None,
+        notes: str | None = None,
     ):
         """Обновить статус/заметки шага по индексу."""
         if index not in range(len(self.steps)):
@@ -133,7 +132,7 @@ class Plan:
             self.steps[index].notes = notes
         self.updated_at = time.time()
 
-    def add_step(self, title: str, index: Optional[int] = None):
+    def add_step(self, title: str, index: int | None = None):
         """Добавить новый шаг (в конец или по индексу)."""
         step = PlanStep(title=title)
         if index is not None and index in range(len(self.steps) + 1):
@@ -162,18 +161,13 @@ class Plan:
         )
 
     @property
-    def current_step(self) -> Optional[PlanStep]:
+    def current_step(self) -> PlanStep | None:
         """Первый шаг в статусе in_progress, или первый pending."""
-        for s in self.steps:
-            if s.status == StepStatus.IN_PROGRESS:
-                return s
-        for s in self.steps:
-            if s.status == StepStatus.PENDING:
-                return s
-        return None
+        idx = self.current_step_index
+        return self.steps[idx] if idx is not None else None
 
     @property
-    def current_step_index(self) -> Optional[int]:
+    def current_step_index(self) -> int | None:
         for i, s in enumerate(self.steps):
             if s.status == StepStatus.IN_PROGRESS:
                 return i
@@ -184,10 +178,7 @@ class Plan:
 
     @property
     def is_complete(self) -> bool:
-        return self.total > 0 and all(
-            s.status in (StepStatus.DONE, StepStatus.SKIPPED)
-            for s in self.steps
-        )
+        return self.total > 0 and self.done_count == self.total
 
     @property
     def progress_str(self) -> str:
@@ -197,7 +188,7 @@ class Plan:
 
     def render_for_context(self) -> str:
         """Рендерит план в текст для инжекции в контекст LLM.
-        
+
         Показывает только окно: предыдущий шаг, текущий, следующий.
         """
         if not self.steps:
@@ -286,7 +277,7 @@ def _parse_plan_body(match):
     valid = ("create", "update", "add_step", "remove_step")
     if action not in valid:
         return None
-    
+
     # Validate required fields based on action
     if action == "create":
         if "steps" not in data:
@@ -338,7 +329,7 @@ def _first_present(data: dict, *keys):
     return None
 
 
-def _resolve_step_index(plan: Plan, data: dict) -> Optional[int]:
+def _resolve_step_index(plan: Plan, data: dict) -> int | None:
     """Разрешает индекс шага из update-команды.
 
     Принимает поля: step, index, step_index, step_number, n, title.
@@ -373,7 +364,7 @@ def _resolve_step_index(plan: Plan, data: dict) -> Optional[int]:
     return None
 
 
-def resolve_plan_command_focus(plan: Optional[Plan], cmd: PlanCommand) -> Optional[int]:
+def resolve_plan_command_focus(plan: Plan | None, cmd: PlanCommand) -> int | None:
     if cmd.action == "create":
         return None
     if plan is None:
@@ -397,7 +388,7 @@ def resolve_plan_command_focus(plan: Optional[Plan], cmd: PlanCommand) -> Option
     return None
 
 
-def _resolve_remove_index(plan: Plan, data: dict) -> Optional[int]:
+def _resolve_remove_index(plan: Plan, data: dict) -> int | None:
     """0-based индекс шага для удаления (поддерживает step/index, 1- и 0-based)."""
     raw = _first_present(data, "step", "index", "step_index", "step_number", "n")
     if raw is None:
@@ -421,7 +412,7 @@ def plan_to_snapshot(plan: Plan) -> dict:
 
 
 def apply_plan_commands(
-    plan: Optional[Plan],
+    plan: Plan | None,
     commands: list[PlanCommand],
 ) -> Plan:
     """
@@ -487,7 +478,7 @@ def render_plan_panel(
     plan: Plan,
     compact: bool = False,
     *,
-    focus_index: Optional[int] = None,
+    focus_index: int | None = None,
     full: bool = True,
 ):
     """
@@ -525,13 +516,13 @@ def render_plan_panel(
 
         # Текст шага
         if step.status == StepStatus.IN_PROGRESS:
-            lines.append(f"{step.title}", style="bold cyan")
+            lines.append(step.title, style="bold cyan")
         elif step.status == StepStatus.DONE:
-            lines.append(f"{step.title}", style="green")
+            lines.append(step.title, style="green")
         elif step.status == StepStatus.SKIPPED:
-            lines.append(f"{step.title}", style="dim yellow strikethrough")
+            lines.append(step.title, style="dim yellow strikethrough")
         else:
-            lines.append(f"{step.title}", style="dim")
+            lines.append(step.title, style="dim")
 
         # Заметки
         if step.notes:
@@ -610,12 +601,12 @@ def save_plan_file(plan: Plan, plan_dir: str) -> None:
         logger.warning("Failed to save %s: %s", path, e)
 
 
-def load_plan_file(plan_dir: str) -> Optional[Plan]:
+def load_plan_file(plan_dir: str) -> Plan | None:
     path = _plan_path(plan_dir)
     if not os.path.isfile(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
     except OSError as e:
         logger.warning("Failed to read %s: %s", path, e)
@@ -623,7 +614,7 @@ def load_plan_file(plan_dir: str) -> Optional[Plan]:
     return _parse_plan_markdown(content)
 
 
-def _parse_plan_markdown(text: str) -> Optional[Plan]:
+def _parse_plan_markdown(text: str) -> Plan | None:
     lines = text.strip().splitlines()
     if not lines:
         return None

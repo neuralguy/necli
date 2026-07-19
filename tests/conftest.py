@@ -18,7 +18,7 @@ def disable_auto_checks_by_default(monkeypatch):
 @pytest.fixture
 def tmp_workdir(tmp_path):
     """Подменяет рабочую директорию tools/_paths на tmp_path."""
-    from tools._paths import set_working_dir, get_working_dir
+    from tools._paths import get_working_dir, set_working_dir
     orig = get_working_dir()
     set_working_dir(str(tmp_path))
     try:

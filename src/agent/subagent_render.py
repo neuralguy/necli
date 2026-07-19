@@ -16,7 +16,6 @@ import logging
 import shutil
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -24,7 +23,6 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from agent.display import SPINNER_FRAMES as _SPINNER_FRAMES
 from config.themes import t
 from config.ui import ui
 
@@ -36,11 +34,6 @@ def _w() -> int:
     cap = int(ui.get("subagent.max_width", 0))
     term = shutil.get_terminal_size((80, 24)).columns
     return term if cap <= 0 else min(cap, term)
-
-
-def _spinner_frame() -> str:
-    idx = int(time.monotonic() * 8) % len(_SPINNER_FRAMES)
-    return _SPINNER_FRAMES[idx]
 
 
 def _fmt_tokens(n: int) -> str:
@@ -76,7 +69,7 @@ class SubagentBuffer:
 
     def __init__(
         self, index: int, mode: str, prompt: str, model_label: str = "",
-        role: str = "", preset: str = "", depends_on: Optional[list] = None,
+        role: str = "", preset: str = "", depends_on: list | None = None,
         phase: str = "", label: str = "",
     ):
         self.index = index
@@ -92,10 +85,9 @@ class SubagentBuffer:
         self.tool_events: list[ToolEvent] = []
         self.iteration = 0
         self.status = "starting"
-        self.error: Optional[str] = None
-        self.activity_start_time: Optional[float] = None
-        self.activity_end_time: Optional[float] = None
-        self.final_response = ""
+        self.error: str | None = None
+        self.activity_start_time: float | None = None
+        self.activity_end_time: float | None = None
         self.files_changed = 0
         # Накопленное потребление токенов (по последнему non-empty usage каждого
         # вызова модели — провайдеры шлют usage финальным чанком стрима).
@@ -126,7 +118,7 @@ class SubagentBuffer:
         self.streaming_text = text
         self.status = "streaming"
 
-    def on_tool_start(self, tool_name: str, command: str, args: Optional[dict] = None):
+    def on_tool_start(self, tool_name: str, command: str, args: dict | None = None):
         self._mark_activity()
         self.status = "tools"
         hint = ""
@@ -148,7 +140,7 @@ class SubagentBuffer:
             )
         )
 
-    def on_tool_done(self, output_preview: str = "", elapsed: float = 0.0, error: bool = False):
+    def on_tool_done(self, elapsed: float = 0.0, error: bool = False):
         self._mark_activity()
         if self.tool_events:
             ev = self.tool_events[-1]
@@ -158,7 +150,7 @@ class SubagentBuffer:
     def on_iteration(self, n: int):
         self.iteration = n
 
-    def on_usage(self, usage_metadata: Optional[dict]) -> None:
+    def on_usage(self, usage_metadata: dict | None) -> None:
         """Аккумулирует потребление токенов за один вызов модели.
 
         usage_metadata имеет форму _convert_usage (см. apis/base.py):
@@ -184,7 +176,6 @@ class SubagentBuffer:
     def on_done(self, response: str):
         self._mark_activity()
         self.status = "done"
-        self.final_response = response
 
     def on_error(self, error: str):
         self._mark_activity()
@@ -469,7 +460,7 @@ class SubagentTracker:
 
     def __init__(self, buffers: list[SubagentBuffer]):
         self._buffers = buffers
-        self._live: Optional[Live] = None
+        self._live: Live | None = None
 
     def start(self):
         self._live = Live(
@@ -490,7 +481,7 @@ class SubagentTracker:
             self._live = None
 
     async def wait_all_done(self):
-        while not all(b.status in ("done", "error") for b in self._buffers):
+        while not all(b.status in ("done", "error") for b in self._buffers):  # noqa: ASYNC110
             await asyncio.sleep(0.2)
         await asyncio.sleep(0.3)
 
@@ -635,33 +626,3 @@ class SubagentTracker:
         )
 
         return Group(header, frame)
-
-    def _render_flat(self) -> Group:
-        width = _w()
-        n = len(self._buffers)
-        threshold = int(ui.get("subagent.block_threshold", 8))
-        compact = threshold > 0 and n > threshold
-
-        lines: list[Text] = []
-        header = Text("  ")
-        done = sum(1 for b in self._buffers if b.status in ("done", "error"))
-        header.append(f"Subagents {done}/{n}", style=f"bold {t('magenta')}")
-        lines.append(header)
-
-        if compact:
-            for buf in self._buffers:
-                row = Text("  ")
-                row.append_text(buf.render_compact(width - 2))
-                lines.append(row)
-            return Group(*lines)
-
-        sep_char = str(ui.get("subagent.block_separator", "\u2500"))
-        sep = Text(sep_char * width, style="dim")
-        for buf in self._buffers:
-            lines.append(sep)
-            for ln in buf.render_block(width):
-                row = Text("  ")
-                row.append_text(ln)
-                lines.append(row)
-        lines.append(sep)
-        return Group(*lines)

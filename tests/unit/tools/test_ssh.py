@@ -1,23 +1,22 @@
 """tools/ssh.py — arg/command building, blocking, execute_ssh (no real SSH)."""
 
-from unittest.mock import patch, MagicMock
-
 import subprocess
-
+from unittest.mock import MagicMock, patch
 
 import tools.ssh as ssh_mod
+from tools.models import ToolCall
 from tools.ssh import (
     _build_ssh_args,
     _is_blocked_interactive,
     _is_hard_blocked,
     _needs_confirmation,
-    _socket_path,
-    _run_ssh_command,
     _run_scp,
-    execute_ssh,
+    _run_ssh_command,
+    _socket_path,
     check_connection,
+    execute_ssh,
 )
-from tools.models import ToolCall
+
 
 def _call(args: dict, command: str = "ssh") -> ToolCall:
     return ToolCall(command=command, tool_name="ssh", args=args)

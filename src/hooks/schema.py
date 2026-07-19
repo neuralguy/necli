@@ -31,7 +31,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 HookEvent = str
 
@@ -54,14 +54,13 @@ class HookSpec:
     type: HookType = "command"
     command: str = ""            # для type=command
     url: str = ""                # для type=http
-    if_: Optional[str] = None    # permission-style фильтр ('if' в JSON)
+    if_: str | None = None    # permission-style фильтр ('if' в JSON)
     timeout: float = 30.0
     is_async: bool = False       # 'async' в JSON — не блокировать выполнение
     headers: dict[str, str] = field(default_factory=dict)  # для http
-    status_message: str = ""
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "HookSpec":
+    def from_dict(cls, d: dict[str, Any]) -> HookSpec:
         t = str(d.get("type", "command"))
         if t not in ("command", "http"):
             raise ValueError(f"unsupported hook type: {t!r}")
@@ -80,7 +79,6 @@ class HookSpec:
             timeout=timeout,
             is_async=bool(d.get("async", False)),
             headers={str(k): str(v) for k, v in (d.get("headers") or {}).items()},
-            status_message=str(d.get("statusMessage", d.get("status_message", ""))),
         )
 
     def validate(self) -> None:
@@ -98,7 +96,7 @@ class HookMatcher:
     hooks: list[HookSpec] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "HookMatcher":
+    def from_dict(cls, d: dict[str, Any]) -> HookMatcher:
         raw_hooks = d.get("hooks") or []
         hooks = [HookSpec.from_dict(h) for h in raw_hooks]
         return cls(matcher=str(d.get("matcher", "*") or "*"), hooks=hooks)

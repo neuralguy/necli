@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Optional
+from typing import Any
 
 from config.paths import APIS_FILE
 from config.settings import get, set_value
@@ -96,7 +96,7 @@ def _save_store(store: list[dict]) -> None:
     _save_apis(data)
 
 
-def _get_keys() -> dict[str, list[str]]:
+def _get_keys() -> dict[str, Any]:
     return _load_apis().get("keys", {})
 
 
@@ -110,7 +110,7 @@ def list_api_configs() -> list[dict]:
     return _get_store()
 
 
-def get_api_config(provider_id: str) -> Optional[dict]:
+def get_api_config(provider_id: str) -> dict | None:
     for p in _get_store():
         if p.get("id") == provider_id:
             return p
@@ -180,24 +180,175 @@ def remove_api_config(provider_id: str) -> bool:
     return True
 
 
-def set_api_key(provider_id: str, key: str) -> None:
-    """Устанавливает API-ключ для провайдера. Поддерживает несколько ключей через запятую."""
+def _parse_api_key_entry(entry) -> dict[str, Any] | None:
+    if isinstance(entry, str):
+        raw = entry.strip()
+        if not raw:
+            return None
+        api_key, _sep, proxy = raw.partition("|")
+        api_key = api_key.strip()
+        if not api_key:
+            return None
+        return {"key": api_key, "proxy": proxy.strip(), "main": False, "name": ""}
+    if isinstance(entry, dict):
+        api_key = str(entry.get("key") or entry.get("api_key") or "").strip()
+        if not api_key:
+            return None
+        return {
+            "key": api_key,
+            "proxy": str(entry.get("proxy") or "").strip(),
+            "main": bool(entry.get("main")),
+            "name": str(entry.get("name") or "").strip(),
+        }
+    return None
+
+
+def _parse_api_key_entries(value: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for part in value.replace("\n", ",").split(","):
+        entry = _parse_api_key_entry(part)
+        if entry:
+            entries.append(entry)
+    return entries
+
+
+def _normalize_api_credentials(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    main_seen = False
+    for item in entries:
+        api_key = str(item.get("key", "")).strip()
+        if not api_key:
+            continue
+        is_main = bool(item.get("main")) and not main_seen
+        normalized.append({
+            "key": api_key,
+            "proxy": str(item.get("proxy", "")).strip(),
+            "main": is_main,
+            "name": str(item.get("name", "")).strip(),
+        })
+        main_seen = main_seen or is_main
+    if normalized and not main_seen:
+        normalized[0]["main"] = True
+    return normalized
+
+
+def get_api_credentials(provider_id: str) -> list[dict[str, Any]]:
+    """Возвращает все ключи провайдера с опциональными per-key proxy.
+
+    Формат в .data/apis.json обратно совместим:
+    - "keys": {"pid": ["key1", "key2"]}
+    - "keys": {"pid": [{"key": "key1", "proxy": "http://..."}, ...]}
+    При ручном/CLI вводе можно писать: key1, key2|http://proxy:port.
+    """
+    raw_entries = _get_keys().get(provider_id, [])
+    if isinstance(raw_entries, str):
+        raw_entries = [raw_entries]
+    if not isinstance(raw_entries, list):
+        raw_entries = []
+    credentials = _normalize_api_credentials([entry for item in raw_entries if (entry := _parse_api_key_entry(item))])
+    if provider_id == "anthropic":
+        auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "").strip()
+        if auth_token:
+            return [{"key": auth_token, "proxy": "", "main": True, "name": "ANTHROPIC_AUTH_TOKEN"}]
+    return credentials
+
+
+def set_api_credentials(provider_id: str, credentials: list[dict[str, Any]]) -> None:
     keys = _get_keys()
-    key_list = [k.strip() for k in key.split(",") if k.strip()]
-    keys[provider_id] = key_list
+    entries = _normalize_api_credentials(credentials)
+    if entries:
+        keys[provider_id] = [_compact_credential(entry) for entry in entries]
+    else:
+        keys.pop(provider_id, None)
     _save_keys(keys)
 
 
-def get_api_key(provider_id: str) -> str:
-    """Возвращает первый доступный ключ. Для ротации используй get_api_keys."""
+def _compact_credential(entry: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {"key": entry["key"]}
+    if entry.get("proxy"):
+        compact["proxy"] = entry["proxy"]
+    if entry.get("main"):
+        compact["main"] = True
+    if entry.get("name"):
+        compact["name"] = entry["name"]
+    return compact
+
+
+def add_api_credential(provider_id: str, api_key: str, proxy: str = "", name: str = "") -> None:
+    entries = get_api_credentials(provider_id)
+    entries.append({"key": api_key.strip(), "proxy": proxy.strip(), "name": name.strip()})
+    set_api_credentials(provider_id, entries)
+
+
+def update_api_credential_proxy(provider_id: str, index: int, proxy: str) -> None:
+    entries = get_api_credentials(provider_id)
+    if index < 0 or index >= len(entries):
+        raise IndexError("API key index out of range")
+    entries[index]["proxy"] = proxy.strip()
+    set_api_credentials(provider_id, entries)
+
+
+def set_main_api_credential(provider_id: str, index: int) -> None:
+    entries = get_api_credentials(provider_id)
+    if index < 0 or index >= len(entries):
+        raise IndexError("API key index out of range")
+    for i, entry in enumerate(entries):
+        entry["main"] = i == index
+    set_api_credentials(provider_id, entries)
+
+
+def set_api_credential_name(provider_id: str, index: int, name: str) -> None:
+    entries = get_api_credentials(provider_id)
+    if index < 0 or index >= len(entries):
+        raise IndexError("API key index out of range")
+    entries[index]["name"] = name.strip()
+    set_api_credentials(provider_id, entries)
+
+
+def remove_api_credential(provider_id: str, index: int) -> None:
+    entries = get_api_credentials(provider_id)
+    if index < 0 or index >= len(entries):
+        raise IndexError("API key index out of range")
+    del entries[index]
+    set_api_credentials(provider_id, entries)
+
+
+def set_api_key(provider_id: str, key: str) -> None:
+    """Устанавливает API-ключи. Формат: key1, key2|http://proxy:port."""
     keys = _get_keys()
-    key_list = keys.get(provider_id, [])
-    return key_list[0] if key_list else ""
+    entries = _parse_api_key_entries(key)
+    if any(entry.get("proxy") for entry in entries):
+        keys[provider_id] = entries
+    else:
+        keys[provider_id] = [entry["key"] for entry in entries]
+    _save_keys(keys)
+
+
+def set_provider_prompt_cache(provider_id: str, enabled: bool) -> bool:
+    """Включает/выключает отправку prompt cache параметров для провайдера."""
+    store = _get_store()
+    for p in store:
+        if p.get("id") != provider_id:
+            continue
+        extra = p.get("extra")
+        if not isinstance(extra, dict):
+            extra = {}
+        extra["prompt_cache"] = "on" if enabled else "off"
+        p["extra"] = extra
+        _save_store(store)
+        return True
+    return False
+
+
+def get_api_key(provider_id: str) -> str:
+    """Возвращает первый доступный ключ. Для ротации используй get_api_credentials."""
+    credentials = get_api_credentials(provider_id)
+    return credentials[0]["key"] if credentials else ""
 
 
 def get_api_keys(provider_id: str) -> list[str]:
-    """Возвращает все ключи провайдера."""
-    return _get_keys().get(provider_id, [])
+    """Возвращает все ключи провайдера без proxy."""
+    return [entry["key"] for entry in get_api_credentials(provider_id)]
 
 
 def add_model_to_provider(

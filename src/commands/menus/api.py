@@ -9,10 +9,10 @@ from rich.table import Table
 from rich.text import Text
 
 import config
-from config.themes import t
 from config.i18n import t as _
+from config.themes import t
 from logger import logger
-from ui.menu import select_menu, _panel_menu_direct
+from ui.menu import _panel_menu_direct, select_menu
 
 console = Console()
 
@@ -148,7 +148,12 @@ def api_interactive():
         term_w = shutil.get_terminal_size((100, 24)).columns
         width = min(term_w, 110)
 
-        def render_fn(sel: int) -> str:
+        def render_fn(
+            sel: int,
+            providers=providers,
+            active_api=active_api,
+            width=width,
+        ) -> str:
             return _render_api_table(providers, active_api, sel, width)
 
         choice = _panel_menu_direct(
@@ -228,8 +233,8 @@ def _api_model_edit(provider_id: str, model):
 
 def _api_provider_edit(provider_id: str):
     """Редактирование параметров провайдера."""
-    from apis.registry import get_definition, reload_providers
     from apis.config import add_api_config
+    from apis.registry import get_definition, reload_providers
 
     defn = get_definition(provider_id)
     if not defn:
@@ -257,6 +262,14 @@ def _api_provider_edit(provider_id: str):
                 "output_price": m.output_price,
             } for m in defn.models],
             default_model=defn.default_model or "",
+            default_headers=dict(getattr(defn, "default_headers", None) or {}),
+            requires_auth=getattr(defn, "requires_auth", True),
+            auth_header=getattr(defn, "auth_header", "Authorization"),
+            auth_prefix=getattr(defn, "auth_prefix", "Bearer"),
+            max_retries=getattr(defn, "max_retries", 3),
+            timeout=getattr(defn, "timeout", 120),
+            proxy=getattr(defn, "proxy", ""),
+            extra=dict(getattr(defn, "extra", None) or {}),
         )
         reload_providers()
         console.print(f"  [green]\u2713[/green] {_('api.provider_updated')}")
@@ -264,10 +277,153 @@ def _api_provider_edit(provider_id: str):
         console.print()
 
 
+def _mask_api_key(api_key: str) -> str:
+    if len(api_key) <= 10:
+        return "•" * len(api_key)
+    return f"{api_key[:6]}…{api_key[-4:]}"
+
+
+def _refresh_active_api_session(pid: str, active_api: str) -> None:
+    if pid != active_api:
+        return
+    from apis.agent_adapter import create_api_session, get_api_session
+
+    existing = get_api_session()
+    if existing:
+        create_api_session(pid, existing.model_id)
+
+
+def _prompt_cache_enabled(defn) -> bool:
+    extra = getattr(defn, "extra", None) or {}
+    mode = str(extra.get("prompt_cache", extra.get("prompt_caching", "auto"))).lower()
+    if mode in {"off", "false", "none", "disabled"}:
+        return False
+    if mode in {"anthropic", "anthropic_cache_control", "cache_control", "on", "true"}:
+        return True
+    model_ids = [getattr(m, "id", "") for m in getattr(defn, "models", [])]
+    return any("claude" in mid.lower() or "anthropic/" in mid.lower() for mid in model_ids)
+
+
+def _api_keys_menu(provider_id: str, active_api: str) -> None:
+    from apis.config import (
+        add_api_credential,
+        get_api_credentials,
+        remove_api_credential,
+        set_api_credential_name,
+        set_main_api_credential,
+        update_api_credential_proxy,
+    )
+    from apis.registry import reload_providers
+
+    while True:
+        credentials = get_api_credentials(provider_id)
+        items = [
+            {
+                "label": f"{'★ ' if item.get('main') else ''}{item['name'] + ' — ' if item.get('name') else ''}{_mask_api_key(item['key'])}",
+                "hint": item["proxy"] or "без proxy",
+            }
+            for item in credentials
+        ]
+        items.append({"label": "Добавить ключ", "hint": "ключ и optional proxy"})
+        items.append({"label": _("common.back")})
+
+        choice = select_menu(items, title=f"Управление ключами: {provider_id}")
+        if choice is None or choice == len(credentials) + 1:
+            return
+
+        if choice == len(credentials):
+            try:
+                console.print()
+                api_key = console.input("  [bold]API key:[/bold] ").strip()
+                if not api_key:
+                    continue
+                name = console.input("  [bold]Имя[/bold] [dim](optional):[/dim] ").strip()
+                proxy = console.input("  [bold]Proxy[/bold] [dim](optional):[/dim] ").strip()
+                add_api_credential(provider_id, api_key, proxy, name)
+                reload_providers()
+                _refresh_active_api_session(provider_id, active_api)
+                console.print("  [green]✓[/green] Ключ добавлен")
+            except (KeyboardInterrupt, EOFError):
+                console.print()
+            continue
+
+        current = credentials[choice]
+        actions = [
+            {"label": "Переименовать", "hint": current["name"] or "без имени"},
+            {"label": "Изменить proxy", "hint": current["proxy"] or "сейчас без proxy"},
+            {"label": "Сделать главным", "hint": "запросы будут начинаться с него"},
+            {"label": "Показать ключ полностью", "hint": "вывести ключ без маскировки"},
+            {"label": "Удалить ключ", "hint": "убрать только этот ключ"},
+            {"label": _("common.back")},
+        ]
+        action = select_menu(actions, title=f"Ключ: {_mask_api_key(current['key'])}")
+        if action is None or action == 5:
+            continue
+
+        if action == 0:
+            try:
+                console.print()
+                console.print("  [dim]Enter — оставить как есть, '-' — убрать имя[/dim]")
+                name = console.input(
+                    f"  [bold]Имя[/bold] [dim]({current['name'] or 'без имени'}):[/dim] "
+                ).strip()
+                if not name:
+                    continue
+                set_api_credential_name(provider_id, choice, "" if name == "-" else name)
+                reload_providers()
+                console.print("  [green]✓[/green] Имя обновлено")
+            except (KeyboardInterrupt, EOFError):
+                console.print()
+            continue
+
+        if action == 1:
+            try:
+                console.print()
+                console.print("  [dim]Enter — оставить как есть, '-' — убрать proxy[/dim]")
+                proxy = console.input(
+                    f"  [bold]Proxy[/bold] [dim]({current['proxy'] or 'без proxy'}):[/dim] "
+                ).strip()
+                if not proxy:
+                    continue
+                update_api_credential_proxy(provider_id, choice, "" if proxy == "-" else proxy)
+                reload_providers()
+                _refresh_active_api_session(provider_id, active_api)
+                console.print("  [green]✓[/green] Proxy обновлён")
+            except (KeyboardInterrupt, EOFError):
+                console.print()
+            continue
+
+        if action == 2:
+            set_main_api_credential(provider_id, choice)
+            reload_providers()
+            _refresh_active_api_session(provider_id, active_api)
+            console.print("  [green]✓[/green] Главный ключ обновлён")
+            continue
+
+        if action == 3:
+            console.print()
+            console.print(f"  [bold]API key:[/bold] {current['key']}")
+            console.print()
+            console.input("  [dim]Нажмите Enter для продолжения...[/dim]")
+            # Стереть 4 строки (пустая + ключ + пустая + prompt) и перерисовать меню
+            sys.stdout.write("\033[4A\033[J")
+            sys.stdout.flush()
+            continue
+
+        if action == 4:
+            confirm = [{"label": _("common.yes_delete")}, {"label": _("common.cancel")}]
+            confirmed = select_menu(confirm, title=f"Удалить ключ {_mask_api_key(current['key'])}?")
+            if confirmed == 0:
+                remove_api_credential(provider_id, choice)
+                reload_providers()
+                _refresh_active_api_session(provider_id, active_api)
+                console.print("  [green]✓[/green] Ключ удалён")
+
+
 def _api_provider_detail(provider: dict, active_api: str, active_model: str):
     """Меню детали провайдера. Возвращает SlashResult или None."""
+    from apis.config import get_api_credentials, remove_api_config
     from apis.registry import get_definition, reload_providers
-    from apis.config import remove_api_config, set_api_key, get_api_key
     from commands.slash import SlashResult
 
     r = SlashResult()
@@ -279,9 +435,12 @@ def _api_provider_detail(provider: dict, active_api: str, active_model: str):
             return None
 
         is_active = pid == active_api
-        has_key = bool(get_api_key(pid))
+        credentials = get_api_credentials(pid)
+        has_key = bool(credentials)
         status = f"[green]{_('common.active')}[/green]" if is_active else f"[dim]{_('common.inactive')}[/dim]"
-        key_status = f"[green]{_('common.set')}[/green]" if has_key else f"[red]{_('common.not_set')}[/red]"
+        key_status = f"[green]{len(credentials)}[/green]" if has_key else f"[red]{_('common.not_set')}[/red]"
+        cache_enabled = _prompt_cache_enabled(defn)
+        cache_status = _("api.prompt_cache_on") if cache_enabled else _("api.prompt_cache_off")
 
         sys.stdout.write("\x1b7")
         sys.stdout.flush()
@@ -289,7 +448,7 @@ def _api_provider_detail(provider: dict, active_api: str, active_model: str):
         console.print()
         console.print(f"  [bold yellow]{defn.name}[/bold yellow]  {status}")
         console.print(f"  [dim]ID: {pid} · Type: {defn.type} · URL: {defn.base_url}[/dim]")
-        console.print(f"  [dim]API key: {key_status}[/dim]")
+        console.print(f"  [dim]API key: {key_status} · {_('api.prompt_cache')}: {cache_status}[/dim]")
         if defn.models:
             model_names = [m.display_name for m in defn.models]
             console.print(f"  [dim]{_('api.col_models')}: {', '.join(model_names)}[/dim]")
@@ -302,9 +461,13 @@ def _api_provider_detail(provider: dict, active_api: str, active_model: str):
         hint = f"{_('api.col_model').lower()}: {default_model}" if default_model else _("api.status_no_models")
         use_label = _("api.switch_model") if is_active else _("api.use")
         actions.append({"label": use_label, "hint": hint})
-        actions.append({"label": _("api.set_key")})
+        actions.append({"label": "Управление ключами", "hint": f"{len(credentials)} key(s)"})
         actions.append({"label": _("api.edit_provider"), "hint": _("api.edit_provider_hint")})
         actions.append({"label": _("api.manage_models")})
+        actions.append({
+            "label": _("api.prompt_cache"),
+            "hint": _("api.prompt_cache_on") if cache_enabled else _("api.prompt_cache_off"),
+        })
         actions.append({"label": _("api.refresh_models"), "hint": _("api.refresh_hint")})
         actions.append({"label": _("api.delete"), "hint": _("api.delete_permanent")})
         actions.append({"label": _("common.back")})
@@ -315,7 +478,7 @@ def _api_provider_detail(provider: dict, active_api: str, active_model: str):
         sys.stdout.write("\x1b[J")
         sys.stdout.flush()
 
-        if choice is None or choice == 6:
+        if choice is None or choice == 7:
             return None
 
         if choice == 0:
@@ -337,20 +500,8 @@ def _api_provider_detail(provider: dict, active_api: str, active_model: str):
             return r
 
         if choice == 1:
-            try:
-                console.print()
-                key = console.input(f"  [bold]{_('api.field_api_key')}:[/bold] ").strip()
-                if key:
-                    set_api_key(pid, key)
-                    reload_providers()
-                    if pid == active_api:
-                        from apis.agent_adapter import get_api_session, create_api_session
-                        existing = get_api_session()
-                        if existing:
-                            create_api_session(pid, existing.model_id)
-                    console.print(f"  [green]\u2713[/green] {_('api.key_set')}")
-            except (KeyboardInterrupt, EOFError):
-                console.print()
+            _api_keys_menu(pid, active_api)
+            reload_providers()
             continue
 
         if choice == 2:
@@ -364,11 +515,21 @@ def _api_provider_detail(provider: dict, active_api: str, active_model: str):
             continue
 
         if choice == 4:
+            from apis.config import set_provider_prompt_cache
+
+            if set_provider_prompt_cache(pid, not cache_enabled):
+                reload_providers()
+                _refresh_active_api_session(pid, active_api)
+                state = _("api.prompt_cache_on") if not cache_enabled else _("api.prompt_cache_off")
+                console.print(f"  [green]\u2713[/green] {_('api.prompt_cache')}: {state}")
+            continue
+
+        if choice == 5:
             _api_sync_models(pid)
             reload_providers()
             continue
 
-        if choice == 5:
+        if choice == 6:
             confirm = [{"label": _("common.yes_delete")}, {"label": _("common.cancel")}]
             c = select_menu(confirm, title=_("api.delete_provider_q", name=pid))
             if c == 0:
@@ -483,8 +644,8 @@ def _api_sync_models(provider_id: str):
 
 def _api_models_menu(provider_id: str):
     """Меню управления моделями провайдера."""
-    from apis.registry import get_definition, reload_providers
     from apis.config import remove_model_from_provider
+    from apis.registry import get_definition, reload_providers
 
     while True:
         reload_providers()

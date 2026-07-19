@@ -1,26 +1,24 @@
 import asyncio
 import logging
 import os
+import signal
 import sys
 import time
-import signal
 
-from rich.console import Console
+from rich.align import Align
+from rich.console import Console, Group
 from rich.markup import escape
+from rich.panel import Panel
 from rich.rule import Rule
+from rich.table import Table
+from rich.text import Text
 
 import models as app_models
-from session import Session
 import session.storage as storage
-from ui import format_tokens, format_cost
-from config.themes import t
 from config.i18n import t as _
-
-from rich.panel import Panel
-from rich.text import Text
-from rich.console import Group
-from rich.align import Align
-from rich.table import Table
+from config.themes import t
+from session import Session
+from ui import format_cost, format_tokens
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -28,7 +26,8 @@ console = Console()
 
 def _read_version() -> str:
     try:
-        from importlib.metadata import version as _pkg_version, PackageNotFoundError
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _pkg_version
         try:
             return _pkg_version("necli-api")
         except PackageNotFoundError:
@@ -109,7 +108,7 @@ def _make_interrupt_handler(task_ref, stderr_ref):
         stderr_ref.flush()
         try:
             import sys as _sys
-            _sys.stderr = open(os.devnull, "w")
+            _sys.stderr = open(os.devnull, "w")  # noqa: SIM115
         except Exception:
             logger.debug("stderr redirect to devnull failed", exc_info=True)
         t_ = task_ref.get("task")

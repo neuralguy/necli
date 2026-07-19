@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 import tools
-from planner import Plan, StepStatus
-
 from agent.events import AgentEventHandler
 from agent.tg_format import md_to_tg_html
+from planner import Plan, StepStatus
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +72,7 @@ def _line_stats(result: tools.ToolResult) -> str:
         if removed:
             parts.append(f"-{removed.group(1)}")
         return f" · {' '.join(parts)}" if parts else ""
-    if name in ("write_file", "create_file"):
+    if name == "create_file":
         m = _RE_WRITE_LINES.search(out)
         return f" · {m.group(1)} lines" if m else ""
     return ""
@@ -109,10 +107,7 @@ def _format_invocation(call: tools.ToolCall) -> str:
 
     lines: list[str] = [name]
     for k, v in args.items():
-        if isinstance(v, (list, tuple)):
-            sval = ", ".join(str(x) for x in v)
-        else:
-            sval = str(v)
+        sval = ", ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
         sval = sval.strip()
         if "\n" in sval:
             # Многострочное тело (content/patch) — показываем целиком, но обрежем позже.
@@ -127,7 +122,7 @@ class TelegramEventHandler:
 
     def __init__(self, base: AgentEventHandler):
         self._base = base
-        self._pending_call: Optional[tools.ToolCall] = None
+        self._pending_call: tools.ToolCall | None = None
 
     def _send(self, text: str) -> None:
         try:

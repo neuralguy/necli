@@ -3,15 +3,14 @@
 import logging
 import os
 import shlex
-import subprocess
 import shutil
+import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
-from tools.models import ToolCall, ToolResult
 from config.paths import BASE_DIR
 from config.ssh import get_host, list_hosts
+from tools.models import ToolCall, ToolResult
 from ui.poll import run_poll_step
 
 logger = logging.getLogger(__name__)
@@ -96,14 +95,14 @@ def _build_ssh_args(host_cfg: dict, alias: str) -> list[str]:
     return args
 
 
-def _is_blocked_interactive(command: str) -> Optional[str]:
+def _is_blocked_interactive(command: str) -> str | None:
     first_word = command.strip().split()[0] if command.strip() else ""
     if first_word in _BLOCKED_INTERACTIVE:
         return f"Интерактивная команда '{first_word}' не поддерживается через SSH-инструмент."
     return None
 
 
-def _is_hard_blocked(command: str) -> Optional[str]:
+def _is_hard_blocked(command: str) -> str | None:
     cmd_lower = command.strip().lower()
     for blocked in _DANGEROUS_COMMANDS:
         if blocked.lower() in cmd_lower:
@@ -133,7 +132,7 @@ def _needs_confirmation(command: str) -> bool:
             if tok != "rm":
                 continue
             for arg in tokens[i + 1:]:
-                if arg.startswith("-") and not arg.startswith("--"):
+                if arg.startswith("-") and not arg.startswith("--"):  # noqa: SIM102
                     if "r" in arg[1:].lower():
                         return True
         return False
@@ -177,7 +176,7 @@ def _run_ssh_command(host_cfg: dict, alias: str, command: str) -> ToolResult:
             command=f"ssh:{alias} {command}",
         )
 
-    if host_cfg.get("confirm_dangerous", True) and _needs_confirmation(command):
+    if host_cfg.get("confirm_dangerous", True) and _needs_confirmation(command):  # noqa: SIM102
         if not _confirm_command(command, alias):
             return ToolResult(
                 name="ssh", status="error",

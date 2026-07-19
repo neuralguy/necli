@@ -2,8 +2,9 @@
 
 import pytest
 
-from ui._filters import should_ignore, _IGNORE_SUFFIXES
-from ui._emoji_width import _is_emoji_codepoint, _EMOJI_RANGES
+from ui._emoji_width import _EMOJI_RANGES, _is_emoji_codepoint
+from ui._filters import _IGNORE_SUFFIXES, should_ignore
+
 
 class TestShouldIgnoreHidden:
     def test_hidden_file(self):

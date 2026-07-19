@@ -5,15 +5,16 @@ from wcwidth import wcswidth
 
 import config
 from config.ssh import get_host
-from tools.ssh import get_active_connections
 from models import get_context_limit
-from ui import format_tokens, format_cost
+from tools.ssh import get_active_connections
+from ui import format_cost, format_tokens
 from ui.formatting import (
+    BAR_EMPTY_END,
+    BAR_EMPTY_START,
+    BAR_FILLED_END,
+    BAR_FILLED_START,
     progress_bar,
-    BAR_FILLED_START, BAR_FILLED_END,
-    BAR_EMPTY_START, BAR_EMPTY_END,
 )
-
 
 _MARKER_RE = re.compile(
     re.escape(BAR_FILLED_START) + "|" + re.escape(BAR_FILLED_END)

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .settings import get as _get, set_value as _set
-
+from .settings import get as _get
+from .settings import set_value as _set
 
 SUPPORTED_LANGS: tuple[str, ...] = ("en", "ru", "de", "fr", "zh")
 
@@ -206,6 +206,10 @@ EN: dict[str, str] = {
     "api.tool_format_hint": "toggle fenced ↔ native",
     "api.tool_format_native": "native (function calling)",
     "api.tool_format_text": "text (fenced only)",
+    "api.prompt_cache": "Prompt cache params",
+    "api.prompt_cache_on": "enabled",
+    "api.prompt_cache_off": "disabled",
+    "api.prompt_cache_hint": "send Anthropic cache_control fields",
     "api.delete": "Delete",
     "api.delete_permanent": "permanent",
     "api.add_title": "Add API provider",
@@ -253,7 +257,7 @@ EN: dict[str, str] = {
     "params.header": "Generation parameters",
     "params.temperature": "temperature",
     "params.max_tokens": "max_tokens",
-    "params.temp_hint": "0.0 — deterministic, 1.0+ — creative",
+    "params.temp_hint": "0.0 — deterministic, 1.0+ — creative; off = don't send",
     "params.max_tokens_hint": "0 = provider default; e.g. 16384",
     "params.new_temp": "New temperature",
     "params.new_max_tokens": "New max_tokens",
@@ -789,6 +793,10 @@ RU: dict[str, str] = {
     "api.tool_format_hint": "переключить fenced ↔ native",
     "api.tool_format_native": "native (function calling)",
     "api.tool_format_text": "text (только fenced)",
+    "api.prompt_cache": "Параметры prompt cache",
+    "api.prompt_cache_on": "включены",
+    "api.prompt_cache_off": "выключены",
+    "api.prompt_cache_hint": "передавать Anthropic cache_control",
     "api.delete": "Удалить",
     "api.delete_permanent": "безвозвратно",
     "api.add_title": "Добавить API-провайдера",
@@ -835,7 +843,7 @@ RU: dict[str, str] = {
     "params.header": "Параметры генерации",
     "params.temperature": "temperature",
     "params.max_tokens": "max_tokens",
-    "params.temp_hint": "0.0 — детерминированно, 1.0+ — креативно",
+    "params.temp_hint": "0.0 — детерминированно, 1.0+ — креативно; off = не передавать",
     "params.max_tokens_hint": "0 = по умолчанию у провайдера; напр. 16384",
     "params.new_temp": "Новое значение temperature",
     "params.new_max_tokens": "Новое значение max_tokens",

@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 import tools
 
@@ -30,7 +29,7 @@ class RenderItem:
         return {"kind": self.kind, "payload": self.payload, "ts": self.ts}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RenderItem":
+    def from_dict(cls, d: dict) -> RenderItem:
         return cls(
             kind=d.get("kind", "unknown"),
             payload=d.get("payload", {}) or {},
@@ -99,14 +98,14 @@ def _deserialize_tool_result(d: dict) -> tools.ToolResult:
     img = d.get("image_path")
     if img:
         try:
-            from pathlib import Path as _P
+            from pathlib import Path as _P  # noqa: N814
             r.image_path = _P(img)
         except Exception:
             logger.debug("render_store: image_path deserialize failed", exc_info=True)
     imgs = d.get("image_paths")
     if imgs:
         try:
-            from pathlib import Path as _P
+            from pathlib import Path as _P  # noqa: N814
             r.image_paths = [_P(p) for p in imgs]
         except Exception:
             logger.debug("render_store: image_paths deserialize failed", exc_info=True)
@@ -138,7 +137,7 @@ class RenderStore:
             "message_num": int(message_num or 0),
         })
 
-    def add_tool(self, call: tools.ToolCall, result: Optional[tools.ToolResult],
+    def add_tool(self, call: tools.ToolCall, result: tools.ToolResult | None,
                  subtitle: str = "") -> RenderItem:
         return self.add("tool", {
             "call": _serialize_tool_call(call) if call else None,
@@ -172,7 +171,7 @@ class RenderStore:
         return {"version": _VERSION, "items": [it.to_dict() for it in self.items]}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RenderStore":
+    def from_dict(cls, d: dict) -> RenderStore:
         store = cls()
         if not isinstance(d, dict):
             return store

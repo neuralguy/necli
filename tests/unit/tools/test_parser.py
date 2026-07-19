@@ -1,14 +1,14 @@
 """tools/parser.py — обёртка над call_parser с лимитами."""
 
 from tools.parser import (
+    MAX_TOOL_CALLS_PER_MESSAGE,
+    has_tool_calls,
     parse_tool_calls,
     strip_tool_calls,
-    has_tool_calls,
-    MAX_TOOL_CALLS_PER_MESSAGE,
 )
 
 
-def _block(tool: str = "ls") -> str:
+def _block(tool: str = "shell") -> str:
     return ":::call " + tool + "\n{}\ncall:::\n"
 
 

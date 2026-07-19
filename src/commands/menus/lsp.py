@@ -3,11 +3,14 @@ import sys
 from rich.console import Console
 from rich.markup import escape
 
-from config.lsp import (
-    list_servers, set_enabled, remove_server,
-    get_auto_diagnostics, set_auto_diagnostics,
-)
 from config.i18n import t as _
+from config.lsp import (
+    get_auto_diagnostics,
+    list_servers,
+    remove_server,
+    set_auto_diagnostics,
+    set_enabled,
+)
 from ui.menu import select_menu
 
 console = Console()

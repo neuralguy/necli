@@ -2,9 +2,13 @@
 
 from config import constants
 from config.constants import (
-    IGNORE_DIRS, READ_ONLY_TOOLS, is_ignored_dir,
-    RESPONSE_TIMEOUT, TARGET_MODEL,
+    IGNORE_DIRS,
+    READ_ONLY_TOOLS,
+    RESPONSE_TIMEOUT,
+    TARGET_MODEL,
+    is_ignored_dir,
 )
+
 
 class TestIgnoreDirs:
     def test_is_frozenset(self):
@@ -38,7 +42,7 @@ class TestReadOnlyTools:
         assert isinstance(READ_ONLY_TOOLS, frozenset)
 
     def test_contains_read_tools(self):
-        for name in ("read_files", "grep_files", "tree", "ls", "find_files"):
+        for name in ("read_files",):
             assert name in READ_ONLY_TOOLS
 
     def test_contains_lsp_tools(self):
@@ -46,7 +50,7 @@ class TestReadOnlyTools:
             assert name in READ_ONLY_TOOLS
 
     def test_excludes_write_tools(self):
-        for name in ("write_file", "patch_file", "shell", "delete_file"):
+        for name in ("create_file", "patch_file", "shell"):
             assert name not in READ_ONLY_TOOLS
 
 class TestEnvSettings:

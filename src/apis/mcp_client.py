@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from logger import logger
 from tools.models import ToolCall, ToolResult
@@ -71,17 +72,17 @@ class MCPServer:
 class MCPManager:
     """Singleton: фоновый asyncio loop + список серверов."""
 
-    _instance: Optional["MCPManager"] = None
+    _instance: MCPManager | None = None
     _instance_lock: threading.Lock = threading.Lock()
 
     def __init__(self):
         self.servers: dict[str, MCPServer] = {}
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
 
     @classmethod
-    def instance(cls) -> "MCPManager":
+    def instance(cls) -> MCPManager:
         if cls._instance is None:
             with cls._instance_lock:
                 if cls._instance is None:
@@ -198,12 +199,12 @@ class MCPManager:
         # Дожидаемся результата входа в контекст (исключение пробросится сюда).
         await ready
 
-    async def _server_task(self, server: MCPServer, ready: "asyncio.Future") -> None:
+    async def _server_task(self, server: MCPServer, ready: asyncio.Future) -> None:
         """Единственный владелец ClientSession: вход, обработка команд, aclose."""
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
-        except ImportError as e:
+        except ImportError:
             if not ready.done():
                 ready.set_exception(
                     RuntimeError("mcp package not installed. Run: uv add mcp")

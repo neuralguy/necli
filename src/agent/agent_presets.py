@@ -11,7 +11,7 @@ Frontmatter-поля:
 Тело файла = роль-инструкция, подмешивается субагенту как ROLE-блок.
 
 Главный агент может СОЗДАВАТЬ новые пресеты, просто записав файл
-.data/agents/<name>/AGENT.md через write_file — discover их подхватит.
+.data/agents/<name>/AGENT.md через create_file — discover их подхватит.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from config.paths import BASE_DIR
 
@@ -38,8 +37,8 @@ class AgentPreset:
     name: str
     description: str
     path: Path
-    model: Optional[str] = None
-    _body: Optional[str] = None
+    model: str | None = None
+    _body: str | None = None
 
     @property
     def body(self) -> str:
@@ -75,7 +74,7 @@ def _load_body(preset_path: Path) -> str:
     return body.strip()
 
 
-def _load_preset_info(preset_dir: Path) -> Optional[AgentPreset]:
+def _load_preset_info(preset_dir: Path) -> AgentPreset | None:
     md = preset_dir / PRESET_FILENAME
     if not md.exists():
         return None
@@ -112,7 +111,7 @@ def list_presets() -> list[AgentPreset]:
     return discover_presets()
 
 
-def load_preset(name: str) -> Optional[AgentPreset]:
+def load_preset(name: str) -> AgentPreset | None:
     if not name:
         return None
     key = name.strip()
@@ -129,7 +128,7 @@ def create_preset(
     name: str,
     description: str,
     body: str,
-    model: Optional[str] = None,
+    model: str | None = None,
 ) -> AgentPreset:
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     preset_dir = AGENTS_DIR / name

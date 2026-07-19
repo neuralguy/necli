@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -36,7 +35,7 @@ class ApiProviderDefinition:
     extra: dict = field(default_factory=dict)
     enabled: bool = True
 
-    def get_model_info(self, model_id: str) -> Optional[ApiModelInfo]:
+    def get_model_info(self, model_id: str) -> ApiModelInfo | None:
         for m in self.models:
             if m.id == model_id or m.display_name == model_id:
                 return m

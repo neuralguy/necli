@@ -1,14 +1,13 @@
 """agent/sanitizer.py — удаление фейковых tool_result, HTML, артефактов."""
 
 from agent.sanitizer import (
+    _protect_call_blocks,
+    _restore_call_blocks,
     sanitize_response,
     strip_fake_runtime_tool_results,
     strip_fake_tool_output,
-    _protect_call_blocks,
-    _restore_call_blocks,
 )
 from agent.stream_parser import _clean_display_text
-
 
 CALL_BLOCK = ":::call read_files\n{\"path\": \"a.py\"}\ncall:::"
 
@@ -228,7 +227,7 @@ class TestOpus48Hallucination:
         # opus 4.8 предсказывает свой результат как `user$ cmd` (роль-префикс
         # ВПЛОТНУЮ к $). Раньше слово `user` ломало якорь и фейк утекал.
         text = (
-            ':::call grep_files\n{"pattern": "x"}\ncall:::\n\n'
+            ':::call shell\n{"command": "echo hi"}\ncall:::\n\n'
             'user$ grep "def interactive" *.py\n[no matches]\n\n'
             "[Project: 243 files, 45,570 lines]\n"
         )
@@ -236,7 +235,7 @@ class TestOpus48Hallucination:
         assert "user$" not in result
         assert "[no matches]" not in result
         assert "[Project:" not in result
-        assert ":::call grep_files" in result
+        assert ":::call shell" in result
 
     def test_query_envelope_fake_turn_then_real_call(self):
         # Модель role-play'ит весь proxy-конверт (Current date + <query>) как
@@ -320,14 +319,14 @@ class TestOpus48Hallucination:
         # Key reminders/Continue now") и ```call-блоком → затем РЕАЛЬНЫЙ вызов.
         text = (
             "Копирую и собираю.\n\n"
-            ':::call copy_file\n{"path": "index.html", "dest": "index.template.html"}\ncall:::\n\n'
+            ':::call create_file\n{"path": "index.template.html", "content": ""}\ncall:::\n\n'
             ':::call shell\n{"command": "node build.mjs"}\ncall:::\n\n'
             "user Current date: Wednesday, June 3, 2026\n\n<query>\n"
-            "$ copy_file index.html → index.template.html\n✓ Copied\n---\n"
+            "$ create_file index.html → index.template.html\n✓ Created\n---\n"
             "$ node build.mjs\nBuilt index.html: 78838 bytes\n\n"
             "Plan [1/5]\n  0. [✓] Фундамент\n\n"
             "index.html собран.\n\n"
-            '```call grep_files\n{"query": "id=x"}\n'
+            '```call shell\n{"command": "id=x"}\n'
             "tool calls have produced real output above. I should continue.\n\n"
             "Key reminders:\n- Build on the actual tool results.\n"
             "Continue now.Проверю целостность.\n\n"
@@ -335,11 +334,11 @@ class TestOpus48Hallucination:
         )
         result = sanitize_response(text)
         for leak in ("Built index.html: 78838", "Plan [1/5]", "Key reminders",
-                     "Continue now", "tool calls have produced", "```call grep",
-                     "$ copy_file", "$ node build", "Current date", "<query>"):
+                     "Continue now", "tool calls have produced", "```call shell",
+                     "$ create_file", "$ node build", "Current date", "<query>"):
             assert leak not in result, leak
         # Реальные вызовы (включая возобновлённый после фейка) сохранены.
-        assert ":::call copy_file" in result
+        assert ":::call create_file" in result
         assert "echo SYNTAX_OK" in result
 
     def test_localized_role_label_dollar_prompt(self):

@@ -80,7 +80,7 @@ if _IS_WIN:
             last = key
         return last
 
-    class raw_mode:
+    class raw_mode:  # noqa: N801
         def __enter__(self):
             return self
 
@@ -147,7 +147,7 @@ else:
             last = key
         return last
 
-    class raw_mode:
+    class raw_mode:  # noqa: N801
         def __enter__(self):
             self._fd = sys.stdin.fileno()
             self._old = termios.tcgetattr(self._fd)

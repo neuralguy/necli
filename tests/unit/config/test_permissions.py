@@ -3,8 +3,12 @@
 import pytest
 
 from config.permissions import (
-    get_decision, set_decision, reset_tool, reset_session, reset_all,
+    get_decision,
     get_scope,
+    reset_all,
+    reset_session,
+    reset_tool,
+    set_decision,
 )
 
 

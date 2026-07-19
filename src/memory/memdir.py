@@ -26,7 +26,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from config.paths import global_memory_dir, memory_dir_for
 from logger import logger
@@ -114,7 +113,7 @@ def scan_memories(
     return _scan_dir(memory_dir_for(working_dir))
 
 
-def read_memory(path: Path) -> Optional[MemoryFile]:
+def read_memory(path: Path) -> MemoryFile | None:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:

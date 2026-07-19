@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _build_main_menu():
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🧩 Mode", callback_data="menu:mode"),
@@ -48,7 +48,7 @@ _REPLY_BUTTON_TO_CMD = {
 
 
 def _build_reply_keyboard():
-    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🎛 Menu"), KeyboardButton(text="■ Stop")],
@@ -60,7 +60,7 @@ def _build_reply_keyboard():
 
 
 def _build_mode_menu(current_mode: str):
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     modes = [("agent", "🚀 agent"), ("planning", "🧠 planning"), ("autonomous", "🔮 auto")]
     rows = []
     for mid, label in modes:
@@ -73,7 +73,8 @@ def _build_mode_menu(current_mode: str):
 
 
 def _build_model_menu(current_model_id: str):
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
     from apis.registry import get_definition
     api_id = config.get_active_api()
     defn = get_definition(api_id) if api_id else None
@@ -118,6 +119,7 @@ def _format_status(state) -> str:
 
 def _format_plan(state) -> str:
     import html
+
     from agent import get_current_ctx
     ctx = get_current_ctx()
     plan = ctx.plan if ctx else None
@@ -155,7 +157,6 @@ async def _do_new_chat(state) -> None:
     if ctx is not None:
         ctx.interrupted = True
         ctx.hard_interrupted = True
-    state._tg_new_chat_requested = True
     if bridge.is_running and bridge.incoming_queue is not None:
         # Спец-маркер: main loop увидит его в _read_user_with_tg и обработает.
         try:
@@ -287,8 +288,8 @@ def register_tg_menu(state) -> None:
 
         if data.startswith("model:"):
             model_id = data.split(":", 1)[1]
-            from apis.registry import get_definition
             from apis.agent_adapter import create_api_session
+            from apis.registry import get_definition
             api_id = config.get_active_api()
             defn = get_definition(api_id) if api_id else None
             if not defn:

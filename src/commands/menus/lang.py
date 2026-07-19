@@ -1,8 +1,8 @@
 from rich.console import Console
 
 from config.i18n import (
-    SUPPORTED_LANGS,
     LANG_DISPLAY,
+    SUPPORTED_LANGS,
     get_lang,
     set_lang,
     t,
@@ -16,7 +16,7 @@ def lang_interactive() -> None:
     current = get_lang()
     items = []
     for code in SUPPORTED_LANGS:
-        items.append({
+        items.append({  # noqa: PERF401
             "label": LANG_DISPLAY.get(code, code),
             "hint": code,
             "active": code == current,

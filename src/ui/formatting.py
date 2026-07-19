@@ -167,10 +167,7 @@ BAR_EMPTY_END = "\x00EE\x00"
 
 def progress_bar(current: int, total: int, width: int = 10) -> str:
     """Сегментированный прогресс-бар с маркерами для цветного отображения."""
-    if total <= 0:
-        ratio = 0.0
-    else:
-        ratio = min(current / total, 1.0)
+    ratio = 0.0 if total <= 0 else min(current / total, 1.0)
     filled = int(width * ratio)
     empty = width - filled
     filled_str = "▮" * filled

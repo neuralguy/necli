@@ -3,12 +3,29 @@
 import difflib
 
 from logger import logger
-from tools.models import ToolCall, ToolResult
-from tools._paths import resolve_path, clean_path
+from tools._paths import clean_path, resolve_path
 from tools.file_ops._fuzzy import _fuzzy_find_replace
 from tools.file_ops.read import invalidate_read_cache
+from tools.models import ToolCall, ToolResult
 
 _resolve = resolve_path
+
+
+def _reveal_ws(line: str) -> str:
+    """Делает невидимые символы видимыми: таб→»·, trailing-пробелы→·, CR→<CR>.
+
+    Чистый find/replace падает на расхождении в пробелах/табах, а модель видит
+    «вроде совпадает» и бьётся. Показываем точные невидимые символы, чтобы она
+    исправила find с первого раза, а не гадала.
+    """
+    line = line.replace("\r", "↵")
+    # trailing whitespace (пробелы/табы в конце) помечаем точками/стрелками
+    stripped = line.rstrip(" \t")
+    trailing = line[len(stripped):]
+    body = stripped.replace("\t", "»   ")
+    trailing = trailing.replace("\t", "»   ").replace(" ", "·")
+    return body + trailing
+
 
 def patch_file(call: ToolCall) -> ToolResult:
     """Точечное редактирование: patches | find/replace | line/insert | delete_lines."""
@@ -85,8 +102,19 @@ def patch_file(call: ToolCall) -> ToolResult:
                             idx = file_lines.index(matcher[0])
                             ctx_start = max(0, idx - 1)
                             ctx_end = min(len(file_lines), idx + len(find_lines) + 1)
-                            ctx = "\n".join(f"  {i+1}: {ln}" for i, ln in enumerate(file_lines[ctx_start:ctx_end], start=ctx_start))
-                            hint = f"\n\nClosest match in file (around line {idx+1}):\n{ctx}\n\nNote: if you ran multiple patch_file calls in one response, an earlier patch may have modified this fragment. Re-read the file."
+                            ctx = "\n".join(f"  {i+1}: {_reveal_ws(ln)}" for i, ln in enumerate(file_lines[ctx_start:ctx_end], start=ctx_start))
+                            # Показываем твою find-строку и ближайшую в файле с
+                            # видимыми пробелами/табами — частая причина промаха.
+                            ws_legend = "(whitespace shown: »=tab, ·=trailing space, ↵=CR)"
+                            cmp_block = (
+                                f"\n\nYour find (line 1):\n  {_reveal_ws(find_lines[0])}"
+                                f"\nClosest in file (line {idx+1}):\n  {_reveal_ws(matcher[0])}"
+                            )
+                            hint = (
+                                f"\n\nClosest match in file (around line {idx+1}) {ws_legend}:\n{ctx}"
+                                f"{cmp_block}"
+                                "\n\nNote: if you ran multiple patch_file calls in one response, an earlier patch may have modified this fragment. Re-read the file."
+                            )
                 except Exception:
                     logger.debug("patch_file: close-match hint failed for {}", path_str, exc_info=True)
                 return ToolResult(

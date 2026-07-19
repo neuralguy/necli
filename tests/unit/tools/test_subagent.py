@@ -3,13 +3,13 @@
 import sys
 import types
 from dataclasses import dataclass, field
-from typing import Optional
 
 import pytest
 
+from tools.models import ToolCall
 from tools.subagent import execute_subagent, set_subagent_context
 from tools.subagent_specs import parse_depends_on
-from tools.models import ToolCall
+
 
 def _call(args: dict) -> ToolCall:
     return ToolCall(command="subagent", tool_name="subagent", args=args)
@@ -25,6 +25,7 @@ class TestSubagentContextDiscipline:
 
     def test_mode_block_teaches_locate_then_narrow(self):
         import inspect
+
         import agent.subagent_api as sa
 
         src = inspect.getsource(sa._ApiSubagentRunner._build_system_prompt)
@@ -40,6 +41,7 @@ class TestSubagentContextDiscipline:
         # sibling that didn't exist (it was alone in its wave). The block must ban
         # poll/sleep-for-peer and reference depends_on as the real mechanism.
         import inspect
+
         import agent.subagent_api as sa
 
         src = inspect.getsource(sa._ApiSubagentRunner._build_system_prompt)
@@ -54,6 +56,7 @@ class TestSubagentContextDiscipline:
     def test_runner_accepts_wave_size(self):
         # The runner must take wave_size so it can tell the agent it's alone.
         import inspect
+
         import agent.subagent_api as sa
 
         sig = inspect.signature(sa._ApiSubagentRunner.__init__)
@@ -65,6 +68,7 @@ class TestSubagentContextDiscipline:
         # 350k guard NEVER fired. Now it must read a runner-owned counter that is
         # fed by _track_usage independent of buffer.
         import inspect
+
         import agent.subagent_api as sa
 
         run_src = inspect.getsource(sa._ApiSubagentRunner.run)
@@ -100,6 +104,7 @@ class TestSubagentContextDiscipline:
         # полным успехом (видно в super_shop: фаза done при незавершённой работе).
         # Теперь оба возвращают error-строку (текст работы сохранён в final).
         import inspect
+
         import agent.subagent_api as sa
 
         run_src = inspect.getsource(sa._ApiSubagentRunner.run)
@@ -115,6 +120,7 @@ class TestSubagentContextDiscipline:
         # forever. The run loop must wrap _call_model in asyncio.wait_for and
         # recover from a timeout instead of propagating/hanging.
         import inspect
+
         import agent.subagent_api as sa
 
         assert hasattr(sa, "MODEL_CALL_TIMEOUT_SEC")
@@ -129,6 +135,7 @@ class TestSubagentContextDiscipline:
         # used to send raw self.session.messages and grow linearly. All 3 model-call
         # branches must send the pruned copy, and a _pruned_messages helper must exist.
         import inspect
+
         import agent.subagent_api as sa
 
         assert hasattr(sa._ApiSubagentRunner, "_pruned_messages")
@@ -184,16 +191,16 @@ class TestParseDependsOn:
 class _FakeTask:
     prompt: str
     mode: str = "agent"
-    model: Optional[str] = None
-    role: Optional[str] = None
-    preset: Optional[str] = None
+    model: str | None = None
+    role: str | None = None
+    preset: str | None = None
     depends_on: list = field(default_factory=list)
     phase: str = "subagents"
     label: str = ""
 
 @dataclass
 class _FakeResult:
-    error: Optional[str] = None
+    error: str | None = None
 
 class _FakeOrchestrator:
     last_init = None

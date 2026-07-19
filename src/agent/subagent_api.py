@@ -11,34 +11,36 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Optional
 
 import tools
-from tools import parse_tool_calls, strip_tool_calls
-from tools._paths import use_working_dir, get_working_dir
-from tools.registry import execute_call
-from system_prompt import build_tool_results, build_system_prompt
 from agent.sanitizer import sanitize_response
-from agent.subagent_render import SubagentBuffer
 from agent.subagent_git import (
-    WorktreeHandle, commit_worktree, summarize_changes,
-    summarize_worktree_changes, cleanup_worktree,
+    WorktreeHandle,
+    cleanup_worktree,
+    commit_worktree,
+    summarize_changes,
+    summarize_worktree_changes,
 )
-
+from agent.subagent_render import SubagentBuffer
+from apis._retry import stream_with_throttle_retry, with_throttle_retry
 from apis.agent_adapter import (
     ApiSession,
-    _tool_calls_to_text_blocks,
-    _ensure_tool_call_ids,
     _content_to_text,
+    _ensure_tool_call_ids,
+    _tool_calls_to_text_blocks,
+)
+from apis.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
 )
 from apis.registry import get_provider, resolve_api_model
-from apis._retry import with_throttle_retry, stream_with_throttle_retry
 from apis.tool_schemas import get_tool_schemas
-
-from apis.messages import (
-    HumanMessage, SystemMessage, AIMessage, ToolMessage,
-)
-
+from system_prompt import build_system_prompt, build_tool_results
+from tools import parse_tool_calls, strip_tool_calls
+from tools._paths import get_working_dir, use_working_dir
+from tools.registry import execute_call
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +93,7 @@ _ROLE_PROFILES: dict[str, str] = {
 }
 
 
-def _normalize_role(role: Optional[str]) -> Optional[str]:
+def _normalize_role(role: str | None) -> str | None:
     if not role:
         return None
     r = role.strip().lower()
@@ -148,7 +150,7 @@ _BLOCKED_FOR_SUBAGENTS = frozenset({"poll", "subagent"})
 
 
 def resolve_subagent_model(
-    requested: Optional[str],
+    requested: str | None,
     default_provider_id: str,
     default_model_id: str,
 ) -> tuple[str, str]:
@@ -209,10 +211,10 @@ class _ApiSubagentRunner:
         provider_id: str,
         model_id: str,
         proof: str,
-        buffer: Optional[SubagentBuffer],
+        buffer: SubagentBuffer | None,
         status_cb,
         handle: WorktreeHandle,
-        role: Optional[str] = None,
+        role: str | None = None,
         dep_context: str = "",
         preset=None,
         project_root: str = "",
@@ -576,9 +578,7 @@ class _ApiSubagentRunner:
                 elapsed = time.monotonic() - t0
                 results.append(r)
                 if self.buffer:
-                    preview = r.output[:200] if r.output else ""
                     self.buffer.on_tool_done(
-                        output_preview=preview,
                         elapsed=elapsed,
                         error=(r.status == "error"),
                     )
@@ -639,7 +639,7 @@ class _ApiSubagentRunner:
             content=build_tool_results(result_dicts),
         ))
 
-    async def run(self) -> tuple[str, int, Optional[str]]:
+    async def run(self) -> tuple[str, int, str | None]:
         """Запускает мини-агентный цикл. Возвращает (final_text, iterations, error).
 
         НЕ оборачиваем весь цикл в use_working_dir: между итерациями есть
@@ -716,10 +716,7 @@ class _ApiSubagentRunner:
                     native_as_calls = parse_tool_calls(blocks_text)
 
                 # Если native_tool_calls есть — используем именно их (исходник истины)
-                if native_tool_calls:
-                    all_calls = native_as_calls
-                else:
-                    all_calls = text_calls
+                all_calls = native_as_calls if native_tool_calls else text_calls
 
                 if not all_calls:
                     final = strip_tool_calls(raw_text).strip()
@@ -857,14 +854,14 @@ def _build_dep_context(task, results_by_index: dict, max_chars: int = 12000) -> 
     return "\n\n".join(parts)
 
 
-def _progress_log_path(run_dir: Optional[str]) -> Optional[str]:
+def _progress_log_path(run_dir: str | None) -> str | None:
     import os
     if not run_dir:
         return None
     return os.path.join(run_dir, "progress.md")
 
 
-def _init_progress_log(run_dir: Optional[str], total: int) -> None:
+def _init_progress_log(run_dir: str | None, total: int) -> None:
     """Создаёт progress.md — инкрементальный лог завершившихся субагентов.
 
     Главный агент может читать его, не дожидаясь конца всех волн: каждая
@@ -889,15 +886,15 @@ def _init_progress_log(run_dir: Optional[str], total: int) -> None:
 _PROGRESS_LOCK = asyncio.Lock()
 
 
-async def _append_progress(run_dir: Optional[str], result, total: int) -> None:
+async def _append_progress(run_dir: str | None, result, total: int) -> None:
     """Дописывает запись о завершившемся субагенте в progress.md."""
     path = _progress_log_path(run_dir)
     if not path:
         return
     n = result.task_index + 1
+    phase = f" [{result.phase}]" if getattr(result, "phase", "") else ""
+    label = f" {result.label}" if getattr(result, "label", "") else ""
     if result.error:
-        phase = f" [{result.phase}]" if getattr(result, "phase", "") else ""
-        label = f" {result.label}" if getattr(result, "label", "") else ""
         block = [f"## Subagent {n}/{total}{phase}{label} [{result.mode}] — ERROR", result.error]
         if getattr(result, "branch", ""):
             block.append(f"branch: {result.branch}")
@@ -908,7 +905,7 @@ async def _append_progress(run_dir: Optional[str], result, total: int) -> None:
                 if getattr(result, "files_changed", None):
                     block.append(f"files ({len(result.files_changed)}):")
                     for f in result.files_changed[:30]:
-                        block.append(f"  {f}")
+                        block.append(f"  {f}")  # noqa: PERF401
                 if getattr(result, "diff_stat", ""):
                     block.append("")
                     block.append(result.diff_stat)
@@ -916,8 +913,6 @@ async def _append_progress(run_dir: Optional[str], result, total: int) -> None:
                 block.append("no changes")
         block.append("")
     else:
-        phase = f" [{result.phase}]" if getattr(result, "phase", "") else ""
-        label = f" {result.label}" if getattr(result, "label", "") else ""
         head = (
             f"## Subagent {n}/{total}{phase}{label} [{result.mode}] — DONE "
             f"({result.iterations} iters, {result.elapsed:.1f}s)"
@@ -935,7 +930,7 @@ async def _append_progress(run_dir: Optional[str], result, total: int) -> None:
         block.append("")
     async with _PROGRESS_LOCK:
         try:
-            with open(path, "a", encoding="utf-8") as fh:
+            with open(path, "a", encoding="utf-8") as fh:  # noqa: ASYNC230
                 fh.write("\n".join(block) + "\n")
         except Exception:
             logger.debug("subagent: append progress log failed", exc_info=True)
@@ -992,7 +987,7 @@ async def run_api_subagents(
     status_cb,
     handles: list,
     project_root: str,
-    run_dir: Optional[str] = None,
+    run_dir: str | None = None,
     isolate: bool = True,
 ) -> list:
     """Запускает субагентов в API-режиме с учётом DAG-зависимостей (depends_on).
@@ -1019,7 +1014,7 @@ async def run_api_subagents(
             )
             for i, task in enumerate(tasks)
         ]
-        for result, handle in zip(results, handles):
+        for result, handle in zip(results, handles, strict=False):
             _finalize_subagent(result, tasks[result.task_index], handle, project_root)
             await _append_progress(run_dir, result, len(tasks))
         return results

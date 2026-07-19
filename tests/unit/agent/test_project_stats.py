@@ -1,11 +1,12 @@
 """agent/project_stats.py — подсчёт файлов/строк и трекинг изменений за шаг."""
 
 from agent.project_stats import (
+    StepTracker,
+    build_stats_line,
     count_project_stats,
     format_project_stats,
-    build_stats_line,
-    StepTracker,
 )
+
 
 class TestCountProjectStats:
     def test_nonexistent_dir(self, tmp_path):
@@ -81,22 +82,10 @@ class TestFormatProjectStats:
         assert format_project_stats(1, 1234567) == "Project: 1 files, 1,234,567 lines"
 
 class TestStepTrackerRecord:
-    def test_write_file_records_path(self):
+    def test_create_file_records_path(self):
         t = StepTracker()
-        t.record("write_file", "", {"path": "a.py"})
+        t.record("create_file", "", {"path": "a.py"})
         assert "a.py" in t.files_changed
-
-    def test_rename_records_new_path(self):
-        t = StepTracker()
-        t.record("rename_file", "", {"path": "a.py", "new_path": "b.py"})
-        assert "a.py" in t.files_changed
-        assert "b.py" in t.files_changed
-
-    def test_move_records_dest(self):
-        t = StepTracker()
-        t.record("move_file", "", {"path": "a.py", "dest": "c.py"})
-        assert "a.py" in t.files_changed
-        assert "c.py" in t.files_changed
 
     def test_non_file_tool_ignored(self):
         t = StepTracker()
@@ -145,14 +134,10 @@ class TestStepTrackerRecord:
         t.record("create_file", "✓ Created: a.py (1 line)", {"path": "a.py"})
         assert t.lines_added == 1
 
-    def test_write_file_created_parses_lines(self):
+    def test_create_file_overwrite_no_line_delta(self):
         t = StepTracker()
-        t.record("write_file", "✓ a.py: created, 5 lines", {"path": "a.py"})
-        assert t.lines_added == 5
-
-    def test_write_file_overwrite_no_line_delta(self):
-        t = StepTracker()
-        t.record("write_file", "✓ a.py: overwritten, 5 lines", {"path": "a.py"})
+        t.record("create_file", "✓ Overwritten: a.py (5 lines)", {"path": "a.py"})
+        assert "a.py" in t.files_changed
         assert t.lines_added == 0
 
 class TestStepTrackerState:
@@ -161,7 +146,7 @@ class TestStepTrackerState:
 
     def test_has_changes_true_with_file(self):
         t = StepTracker()
-        t.record("write_file", "", {"path": "a.py"})
+        t.record("create_file", "", {"path": "a.py"})
         assert t.has_changes is True
 
     def test_has_changes_true_with_added_lines(self):
@@ -171,7 +156,7 @@ class TestStepTrackerState:
 
     def test_reset_clears_everything(self):
         t = StepTracker()
-        t.record("write_file", "", {"path": "a.py"})
+        t.record("create_file", "", {"path": "a.py"})
         t.lines_added = 5
         t.lines_removed = 2
         t.reset()
@@ -186,25 +171,25 @@ class TestFormatStepStats:
 
     def test_single_file_singular(self):
         t = StepTracker()
-        t.record("write_file", "", {"path": "a.py"})
+        t.record("create_file", "", {"path": "a.py"})
         assert t.format_step_stats() == "1 file changed"
 
     def test_multiple_files_plural(self):
         t = StepTracker()
-        t.record("write_file", "", {"path": "a.py"})
-        t.record("write_file", "", {"path": "b.py"})
+        t.record("create_file", "", {"path": "a.py"})
+        t.record("create_file", "", {"path": "b.py"})
         assert t.format_step_stats() == "2 files changed"
 
     def test_with_added_and_removed(self):
         t = StepTracker()
-        t.record("write_file", "", {"path": "a.py"})
+        t.record("create_file", "", {"path": "a.py"})
         t.lines_added = 380
         t.lines_removed = 15
         assert t.format_step_stats() == "1 file changed, +380 -15"
 
     def test_only_added(self):
         t = StepTracker()
-        t.record("write_file", "", {"path": "a.py"})
+        t.record("create_file", "", {"path": "a.py"})
         t.lines_added = 10
         assert t.format_step_stats() == "1 file changed, +10"
 
@@ -217,7 +202,7 @@ class TestBuildStatsLine:
     def test_with_step_changes(self, tmp_path):
         (tmp_path / "a.py").write_text("x\n")
         t = StepTracker()
-        t.record("write_file", "", {"path": "a.py"})
+        t.record("create_file", "", {"path": "a.py"})
         t.lines_added = 5
         line = build_stats_line(str(tmp_path), t)
         assert line == "Project: 1 files, 1 lines | This step: 1 file changed, +5"

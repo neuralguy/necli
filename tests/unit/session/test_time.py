@@ -1,7 +1,7 @@
 """session/_time.py — форматирование MSK timestamps."""
 
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 from session._time import MSK, format_msk, format_msk_short, format_relative
 
@@ -48,7 +48,7 @@ class TestFormatRelative:
 
     def test_days_ago(self):
         result = format_relative(time.time() - 3 * 86400)
-        assert "3 days ago" == result
+        assert result == "3 days ago"
 
     def test_negative_diff_clamped(self):
         # Future timestamp → "just now"

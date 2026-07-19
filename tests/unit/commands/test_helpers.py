@@ -4,6 +4,7 @@ import time
 
 from commands.helpers import _format_relative_time, _read_version
 
+
 class TestFormatRelativeTime:
     def test_zero_returns_empty(self):
         assert _format_relative_time(0) == ""

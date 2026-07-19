@@ -25,11 +25,10 @@ import threading
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from logger import logger
 from tools.models import ToolCall, ToolResult
-
 
 # ── язык по расширению ─────────────────────────────────────────
 
@@ -73,13 +72,12 @@ class LSPServer:
     config: dict
     status: str = "disconnected"   # disconnected | connected | error
     error: str = ""
-    root_path: Optional[str] = None
+    root_path: str | None = None
     _proc: Any = None              # asyncio.subprocess.Process
     _reader_task: Any = None
     _next_id: int = 1
     _pending: dict = field(default_factory=dict)   # id → asyncio.Future
     _opened: dict = field(default_factory=dict)    # path → version
-    _capabilities: dict = field(default_factory=dict)
     _diagnostics: dict = field(default_factory=dict)   # uri → list[dict]
     _diag_events: dict = field(default_factory=dict)   # uri → list[asyncio.Event] (по одному на ожидающий вызов)
 
@@ -96,18 +94,18 @@ def _detect_root(file_path: Path, markers: list[str]) -> Path:
 # ── LSPManager ─────────────────────────────────────────────────
 
 class LSPManager:
-    _instance: Optional["LSPManager"] = None
+    _instance: LSPManager | None = None
 
     def __init__(self):
         self.servers: dict[str, LSPServer] = {}
         self._configs: list[dict] = []
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._servers_lock = threading.Lock()
 
     @classmethod
-    def instance(cls) -> "LSPManager":
+    def instance(cls) -> LSPManager:
         if cls._instance is None:
             cls._instance = LSPManager()
         return cls._instance
@@ -162,14 +160,14 @@ class LSPManager:
             self._configs.append(cfg)
         logger.info("lsp: {} server(s) configured (lazy start)", len(self._configs))
 
-    def _find_config_for(self, file_path: Path) -> Optional[dict]:
+    def _find_config_for(self, file_path: Path) -> dict | None:
         ext = file_path.suffix.lower()
         for cfg in self._configs:
             if ext in (cfg.get("extensions") or []):
                 return cfg
         return None
 
-    def _ensure_server(self, file_path: Path) -> Optional[LSPServer]:
+    def _ensure_server(self, file_path: Path) -> LSPServer | None:
         cfg = self._find_config_for(file_path)
         if not cfg:
             return None
@@ -205,9 +203,9 @@ class LSPManager:
         Раньше всё валилось в одно «нет сервера, проверь конфиг» — но причины
         разные: нет конфига для расширения / не найден root-маркер / сервер упал
         при старте. В случае с root-маркером конфиг в порядке, и совет «проверь
-        конфиг» сбивает с толку. Всегда подсказываем grep_files как замену."""
+        конфиг» сбивает с толку. Всегда подсказываем read_files как замену."""
         suffix = file_path.suffix or "(no extension)"
-        fallback = " Use grep_files to locate the symbol instead."
+        fallback = " Use read_files to locate the symbol instead."
         cfg = self._find_config_for(file_path)
         if not cfg:
             return (f"No LSP server configured for {suffix} files "
@@ -244,7 +242,7 @@ class LSPManager:
         # initialize
         if server.root_path is None:
             raise RuntimeError(f"lsp[{server.id}]: root_path is None")
-        root_uri = Path(server.root_path).resolve().as_uri()
+        root_uri = Path(server.root_path).resolve().as_uri()  # noqa: ASYNC240
         params = {
             "processId": os.getpid(),
             "rootUri": root_uri,
@@ -262,8 +260,7 @@ class LSPManager:
             "clientInfo": {"name": "necli-api", "version": "1.0"},
             "initializationOptions": server.config.get("initialization_options") or {},
         }
-        resp = await self._request(server, "initialize", params, timeout=20.0)
-        server._capabilities = (resp or {}).get("capabilities", {})
+        await self._request(server, "initialize", params, timeout=20.0)
         await self._notify(server, "initialized", {})
         # Конфигурация (pyright: diagnosticMode, useLibraryCodeForTypes и т.п.).
         settings = server.config.get("settings")
@@ -333,7 +330,7 @@ class LSPManager:
         чтобы сервер не зависал на старте (workspace/configuration и т.п.)."""
         rid = msg.get("id")
         try:
-            asyncio.create_task(
+            asyncio.create_task(  # noqa: RUF006
                 self._send(server, {"jsonrpc": "2.0", "id": rid, "result": None})
             )
         except Exception as e:
@@ -355,19 +352,19 @@ class LSPManager:
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             server._pending.pop(rid, None)
-            raise RuntimeError(f"LSP request '{method}' timed out after {timeout}s")
+            raise RuntimeError(f"LSP request '{method}' timed out after {timeout}s")  # noqa: B904
 
     async def _notify(self, server: LSPServer, method: str, params: dict) -> None:
         await self._send(server, {"jsonrpc": "2.0", "method": method, "params": params})
 
     async def _ensure_open(self, server: LSPServer, file_path: Path) -> None:
-        path_str = str(file_path.resolve())
+        path_str = str(file_path.resolve())  # noqa: ASYNC240
         if path_str in server._opened:
             return
         try:
-            text = file_path.read_text(encoding="utf-8", errors="replace")
+            text = file_path.read_text(encoding="utf-8", errors="replace")  # noqa: ASYNC240
         except Exception as e:
-            raise RuntimeError(f"cannot read {file_path}: {e}")
+            raise RuntimeError(f"cannot read {file_path}: {e}")  # noqa: B904
         version = 1
         server._opened[path_str] = version
         await self._notify(server, "textDocument/didOpen", {
@@ -439,11 +436,11 @@ class LSPManager:
             try:
                 # Force re-open: closeDoc + didOpen с новой версией
                 try:
-                    if str(path.resolve()) in server._opened:
+                    if str(path.resolve()) in server._opened:  # noqa: ASYNC240
                         await self._notify(server, "textDocument/didClose", {
                             "textDocument": {"uri": uri},
                         })
-                        server._opened.pop(str(path.resolve()), None)
+                        server._opened.pop(str(path.resolve()), None)  # noqa: ASYNC240
                     await self._ensure_open(server, path)
                 except Exception as e:
                     logger.debug("lsp diagnostics re-open failed: {}", e)
@@ -469,7 +466,7 @@ class LSPManager:
         for sid in list(self.servers.keys()):
             try:
                 self._submit(self._shutdown_async(self.servers[sid]), timeout=5.0)
-            except Exception as e:
+            except Exception as e:  # noqa: PERF203
                 logger.debug("lsp shutdown '{}' error: {}", sid, e)
         self.servers.clear()
         if self._loop and self._loop.is_running():
@@ -581,7 +578,7 @@ def _format_locations(res: Any, kind: str) -> str:
 def _read_proc_rss(pid: int) -> int | None:
     """Linux: читает RSS процесса в килобайтах из /proc/<pid>/status."""
     try:
-        with open(f"/proc/{pid}/status", "r", encoding="utf-8") as fh:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
             for line in fh:
                 if line.startswith("VmRSS:"):
                     parts = line.split()
@@ -679,7 +676,7 @@ def get_diagnostics_for_path(path: str) -> str | None:
     Не поднимает исключений — в случае любой ошибки тихо возвращает None.
     """
     try:
-        from pathlib import Path as _P
+        from pathlib import Path as _P  # noqa: N814
         p = _P(path)
         if not p.is_absolute():
             from tools._paths import resolve_path

@@ -10,6 +10,7 @@ from commands.registry import (
 )
 from config.i18n import t
 
+
 class TestCommandsStructure:
     def test_non_empty(self):
         assert len(COMMANDS) > 0
@@ -39,7 +40,7 @@ class TestCommandsStructure:
 
     def test_command_is_frozen(self):
         c = COMMANDS[0]
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             c.name = "/mutated"  # type: ignore[misc]
 
 class TestHelpTextCompleteness:

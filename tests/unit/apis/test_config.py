@@ -1,15 +1,16 @@
 """apis/config.py — APIs JSON store, ключи, tool_format."""
 
 from apis.config import (
-    list_api_configs,
-    get_api_config,
     add_api_config,
-    remove_api_config,
-    set_api_key,
+    add_model_to_provider,
+    get_api_config,
     get_api_key,
     get_api_keys,
-    add_model_to_provider,
+    list_api_configs,
+    remove_api_config,
     remove_model_from_provider,
+    set_api_key,
+    set_provider_prompt_cache,
 )
 
 
@@ -49,6 +50,22 @@ class TestAddRemove:
 
     def test_remove_unknown(self, isolated_data):
         assert remove_api_config("nope") is False
+
+    def test_set_prompt_cache_mode(self, isolated_data):
+        add_api_config(provider_id="x", name="X", base_url="u")
+
+        assert set_provider_prompt_cache("x", False) is True
+        config = get_api_config("x")
+        assert config is not None
+        assert config["extra"]["prompt_cache"] == "off"
+
+        assert set_provider_prompt_cache("x", True) is True
+        config = get_api_config("x")
+        assert config is not None
+        assert config["extra"]["prompt_cache"] == "on"
+
+    def test_set_prompt_cache_unknown_provider(self, isolated_data):
+        assert set_provider_prompt_cache("missing", False) is False
 
     def test_get_api_config(self, isolated_data):
         add_api_config(provider_id="x", name="X", base_url="u")

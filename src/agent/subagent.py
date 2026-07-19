@@ -1,8 +1,8 @@
 """Оркестратор субагентов (API-only) с git-worktree изоляцией."""
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Optional, Callable
 
 from agent.subagent_render import SubagentBuffer
 
@@ -14,12 +14,12 @@ class SubagentTask:
     """Одна задача для субагента."""
     prompt: str
     mode: str = "agent"
-    model: Optional[str] = None
-    role: Optional[str] = None  # coder | researcher | reviewer | planner | coordinator
-    preset: Optional[str] = None  # имя заготовки из .data/agents/<name>/AGENT.md
+    model: str | None = None
+    role: str | None = None  # coder | researcher | reviewer | planner | coordinator
+    preset: str | None = None  # имя заготовки из .data/agents/<name>/AGENT.md
     depends_on: list[int] = field(default_factory=list)  # 1-based индексы задач
-    phase: Optional[str] = None
-    label: Optional[str] = None
+    phase: str | None = None
+    label: str | None = None
 
 
 @dataclass
@@ -29,14 +29,14 @@ class SubagentResult:
     response: str
     iterations: int = 0
     elapsed: float = 0.0
-    error: Optional[str] = None
+    error: str | None = None
     model_label: str = ""
     phase: str = ""
     label: str = ""
     # git-метаданные (заполняются только для mode=agent с worktree)
-    branch: Optional[str] = None
-    worktree_path: Optional[str] = None
-    commit_sha: Optional[str] = None
+    branch: str | None = None
+    worktree_path: str | None = None
+    commit_sha: str | None = None
     commits_count: int = 0
     files_changed: list[str] = field(default_factory=list)
     diff_stat: str = ""
@@ -50,8 +50,8 @@ class SubagentOrchestrator:
         self,
         model: str,
         working_dir: str,
-        on_status: Optional[Callable[[int, str], None]] = None,
-        buffers: Optional[list[SubagentBuffer]] = None,
+        on_status: Callable[[int, str], None] | None = None,
+        buffers: list[SubagentBuffer] | None = None,
         isolate: bool = False,
     ):
         self._model = model
@@ -61,7 +61,7 @@ class SubagentOrchestrator:
         # isolate=False (default): субагенты пишут в общую рабочую директорию.
         # isolate=True: git-worktree изоляция per task.
         self._isolate = isolate
-        self.run_dir: Optional[str] = None  # .data/subagents/<run-id>, заполняется в run()
+        self.run_dir: str | None = None  # .data/subagents/<run-id>, заполняется в run()
 
     async def run(self, tasks: list[SubagentTask]) -> list[SubagentResult]:
         if not tasks:
@@ -69,12 +69,15 @@ class SubagentOrchestrator:
         if len(tasks) > 100:
             tasks = tasks[:100]
 
-        from apis.agent_adapter import get_api_session
         from agent.subagent_api import run_api_subagents
         from agent.subagent_git import (
-            ensure_git_repo, create_worktree, gen_run_id,
-            cleanup_stale_branches, GitError,
+            GitError,
+            cleanup_stale_branches,
+            create_worktree,
+            ensure_git_repo,
+            gen_run_id,
         )
+        from apis.agent_adapter import get_api_session
 
         api_sess = get_api_session()
         if api_sess is None:
@@ -122,8 +125,8 @@ class SubagentOrchestrator:
         try:
             os.makedirs(scratch_dir, exist_ok=True)
             scratch_path = os.path.join(scratch_dir, "shared.md")
-            if not os.path.exists(scratch_path):
-                with open(scratch_path, "w", encoding="utf-8") as fh:
+            if not os.path.exists(scratch_path):  # noqa: ASYNC240
+                with open(scratch_path, "w", encoding="utf-8") as fh:  # noqa: ASYNC230
                     fh.write(
                         "# Shared scratchpad\n\n"
                         "Subagents of this run append contracts/interfaces/decisions here.\n\n"
@@ -175,7 +178,7 @@ class SubagentOrchestrator:
     async def _gather_proof(self) -> str:
         import os
         from datetime import datetime
-        pwd_val = os.path.abspath(self._working_dir)
+        pwd_val = os.path.abspath(self._working_dir)  # noqa: ASYNC240
         date_val = datetime.now().strftime("%a %b %d %H:%M:%S %Y")
         return (
             f"Working directory: {pwd_val}\n"
@@ -184,7 +187,7 @@ class SubagentOrchestrator:
 
 
 def format_subagent_results(
-    results: list[SubagentResult], run_dir: Optional[str] = None,
+    results: list[SubagentResult], run_dir: str | None = None,
 ) -> str:
     """Форматирует результаты для главного агента. Включает git-метаданные."""
     parts = []
@@ -210,7 +213,7 @@ def format_subagent_results(
                     if r.files_changed:
                         body.append(f"files ({len(r.files_changed)}):")
                         for f in r.files_changed[:30]:
-                            body.append(f"  {f}")
+                            body.append(f"  {f}")  # noqa: PERF401
                     if r.diff_stat:
                         body.append("")
                         body.append(r.diff_stat)
@@ -229,7 +232,7 @@ def format_subagent_results(
                 if r.files_changed:
                     git_lines.append(f"files ({len(r.files_changed)}):")
                     for f in r.files_changed[:30]:
-                        git_lines.append(f"  {f}")
+                        git_lines.append(f"  {f}")  # noqa: PERF401
                     if len(r.files_changed) > 30:
                         git_lines.append(f"  ... +{len(r.files_changed) - 30} more")
                 if r.diff_stat:

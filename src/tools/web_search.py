@@ -26,11 +26,11 @@ def _fetch_pages(urls: list[str], raw: bool = False) -> dict[str, str | None]:
     if len(urls) == 1:
         return {urls[0]: fetcher(urls[0])}
     with ThreadPoolExecutor(max_workers=min(_FETCH_MAX_WORKERS, len(urls))) as ex:
-        return dict(zip(urls, ex.map(fetcher, urls)))
+        return dict(zip(urls, ex.map(fetcher, urls), strict=False))
 
 # url -> (timestamp, text). OrderedDict для O(1) eviction старейших.
 # Кэш мутируется из воркеров ThreadPoolExecutor, поэтому защищён локом.
-_fetch_cache: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
+_fetch_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
 _cache_lock = threading.Lock()
 
 
@@ -182,7 +182,7 @@ def execute_web_search(call: ToolCall) -> ToolResult:
     if isinstance(urls, str):
         urls = [u.strip() for u in urls.split(",") if u.strip()]
     if url:
-        urls = [url] + list(urls)
+        urls = [url, *list(urls)]
     urls = [u for u in urls if u]
     raw = bool(args.get("raw") or args.get("html"))
     if urls:

@@ -3,39 +3,40 @@
 import logging
 import time
 from itertools import cycle
-from typing import Optional
 
 from rich.console import Console
 from rich.live import Live
 
-import tools  # noqa: F401  (referenced by stream_tool_exec)
-from tools.parser import MAX_TOOL_CALLS_PER_MESSAGE
-from planner import (
-    parse_plan_commands,
-    apply_plan_commands,
-    save_plan_file,
-    delete_plan_file,
-    resolve_plan_command_focus,
-    _PLAN_BLOCK_RE,
-)
-from agent.think import ThinkLog, parse_think_blocks, parse_partial_thought, _THINK_BLOCK_RE
-from models import get_pricing
-from session.tokens import count_tokens
-from ui.formatting import format_tokens, format_cost
+import tools
+from agent.block_stream import BlockStreamer
 from agent.context import AgentContext
 from agent.sanitizer import sanitize_response
-from config.ui import ui
 from agent.stream_parser import (
-    _find_next_tool_start, _find_next_complete_tool,
-    _find_next_partial_tool, _clean_display_text,
+    _clean_display_text,
+    _find_next_complete_tool,
+    _find_next_partial_tool,
+    _find_next_tool_start,
 )
 from agent.stream_render import (
-    render_live_group,
-    make_interrupt_indicator,
     THINKING_FRAMES,
     WRITING_FRAMES,
+    make_interrupt_indicator,
+    render_live_group,
 )
-from agent.block_stream import BlockStreamer
+from agent.think import _THINK_BLOCK_RE, ThinkLog, parse_partial_thought, parse_think_blocks
+from config.ui import ui
+from models import get_pricing
+from planner import (
+    _PLAN_BLOCK_RE,
+    apply_plan_commands,
+    delete_plan_file,
+    parse_plan_commands,
+    resolve_plan_command_focus,
+    save_plan_file,
+)
+from session.tokens import count_tokens
+from tools.parser import MAX_TOOL_CALLS_PER_MESSAGE
+from ui.formatting import format_cost, format_tokens
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -63,13 +64,12 @@ def print_worked_footer(ctx, fallback_elapsed: float = 0.0) -> None:
         logger.debug("store worked footer failed", exc_info=True)
 
 
-class StreamEarlyAbort(Exception):
+class StreamEarlyAbort(Exception):  # noqa: N818
     """Сигнал из tool-precheck для немедленной остановки стрима модели.
 
     Используется когда инструмент заведомо невыполним (например create_file
     для существующего файла) — нет смысла ждать остальной ответ модели.
     """
-    pass
 def _tool_subtitle(model: str, write_time: float, raw_input: str, output_text: str = "") -> str:
     """Subtitle для tool-блока: суммарные tokens (вход + выход) и cost (input+output).
 
@@ -112,8 +112,7 @@ class LiveStream:
         self.reasoning_buffer = ""
         self._reasoning_printed = False
         self.start_time = time.monotonic()
-        self.start_wall_time: float = time.time()
-        self._first_chunk_time: Optional[float] = None
+        self._first_chunk_time: float | None = None
         self._plan_processed_count = 0
         self._plan_shown_count = 0
         self.think_log = ThinkLog()
@@ -121,7 +120,7 @@ class LiveStream:
         self.inline_results: list[tools.ToolResult] = []
         self.inline_call_keys: list[tuple[str, str]] = []
         self._executed_tool_count = 0
-        self._live: Optional[Live] = None
+        self._live: Live | None = None
         self._current_text_start = 0
         self._printed_text_end = 0
         self._tcycle = cycle(THINKING_FRAMES)
@@ -141,10 +140,6 @@ class LiveStream:
         )
         # Конец уже сохранённого в RenderStore compact-текста (для Ctrl+O).
         self._stored_text_end: int = 0
-        # Был ли в этом turn'е напечатан хоть один блок в scrollback. Нужен
-        # для единственной ведущей пустой строки (отделение от prompt) —
-        # печатаем её перед ПЕРВЫМ элементом, а не безусловно в start().
-        self._turn_emitted: bool = False
 
     def _lead_blank(self) -> None:
         """Одна пустая строка-разделитель перед элементом.
@@ -156,13 +151,6 @@ class LiveStream:
         if getattr(self.ctx, "silent_console", False):
             return
         console.print()
-        self._turn_emitted = True
-
-    def request_early_abort(self, result: "tools.ToolResult", call_key: tuple) -> None:
-        """Помечает результат и поднимает флаг — стрим прервётся в следующем on_text_update."""
-        self.inline_results.append(result)
-        self.inline_call_keys.append(call_key)
-        self._early_abort = True
 
     def _ts(self):
         self._tick_spinners()
@@ -199,10 +187,7 @@ class LiveStream:
         start = max(self._current_text_start, self._printed_text_end)
         frag = self.buffer[start:]
         tool_start = self._scan_tool_start(frag, 0)
-        if tool_start is not None:
-            cleaned = self._clean(frag[:tool_start])
-        else:
-            cleaned = self._clean(frag)
+        cleaned = self._clean(frag[:tool_start]) if tool_start is not None else self._clean(frag)
         # Некоторые модели (Sonnet через OnlySQ при native function-calling)
         # дублируют содержимое :::call think внутри обычного текста.
         # Если cleaned-фрагмент дословно совпадает (или начинается) с любой
@@ -385,7 +370,7 @@ class LiveStream:
         scan_from = max(self._current_text_start, self._printed_text_end)
         spans = []
         for m in _PLAN_BLOCK_RE.finditer(self.buffer, scan_from):
-            spans.append((m.start(), m.end()))
+            spans.append((m.start(), m.end()))  # noqa: PERF401
         if not spans:
             return
         spans.sort()
@@ -411,7 +396,6 @@ class LiveStream:
 
     def start(self):
         self.start_time = time.monotonic()
-        self.start_wall_time = time.time()
         self._first_chunk_time = None
         self.buffer = ""
         self.reasoning_buffer = ""
@@ -431,12 +415,10 @@ class LiveStream:
         self._wcycle = cycle(WRITING_FRAMES)
         self._interrupt_tick = 0
         self._last_block_end_time = time.monotonic()
-        self._tg_placeholder_id = None
         self._tg_typing_started = False
         self._finalizing = False
         self._block_streamer.reset()
         self._stored_text_end = 0
-        self._turn_emitted = False
         self._start_tg_thinking()
         self._start_live()
 
@@ -519,7 +501,7 @@ class LiveStream:
                             exit_code=0,
                             command="think",
                         ))
-                    except Exception as _e:
+                    except Exception as _e:  # noqa: PERF203
                         logger.warning("think event emit failed: %s", _e)
 
         pc = parse_plan_commands(self.buffer)
@@ -618,10 +600,6 @@ class LiveStream:
             self._executed_tool_count += 1
             self._current_text_start = complete.end
             self._printed_text_end = complete.end
-            # Tool сам печатает ведущую пустую (_show_tool_compact), но через
-            # console.print мимо _lead_blank — отметим turn как «непустой»,
-            # иначе следующий Live-спиннер/превью не получит ведущей пустой.
-            self._turn_emitted = True
             # Новая «страница» текста после tool-блока — сбрасываем.
             self._block_streamer.reset()
             self._last_block_end_time = time.monotonic()
@@ -757,7 +735,6 @@ class LiveStream:
             bridge = get_bridge()
             if not bridge.is_running:
                 return
-            self._tg_placeholder_id = None
             bridge.start_typing()
             bridge.agent_busy = True
             self._tg_typing_started = True
@@ -787,9 +764,9 @@ class LiveStream:
             if bridge is None:
                 return
 
-            from tools import strip_tool_calls
-            from planner import strip_plan_commands
             from agent.telegram_handler import TelegramEventHandler
+            from planner import strip_plan_commands
+            from tools import strip_tool_calls
 
             reasoning = (self.reasoning_buffer or "").strip()
             final_text = strip_tool_calls(strip_plan_commands(self.buffer or "")).strip()
@@ -806,9 +783,8 @@ class LiveStream:
             if final_text:
                 if handler is not None:
                     handler.mirror_assistant(final_text, cancelled=cancelled)
-            elif cancelled:
-                if handler is not None:
-                    handler.mirror_assistant("", cancelled=True)
+            elif cancelled and handler is not None:
+                handler.mirror_assistant("", cancelled=True)
             # Нет финального текста (только tool calls) — ничего не шлём:
             # о работе агента уже сообщает typing-индикатор и tool-сообщения.
         except Exception:

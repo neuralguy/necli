@@ -31,6 +31,17 @@ def _fmt_max_tokens(v: int) -> str:
     return f"{v}" if v > 0 else _("params.default_provider")
 
 
+def _temp_disabled(v) -> bool:
+    """True, если temperature не нужно передавать в запросе (off / нечисло)."""
+    return isinstance(v, bool) or not isinstance(v, (int, float))
+
+
+def _fmt_temp(v) -> str:
+    if _temp_disabled(v):
+        return _("params.default_provider")
+    return f"{float(v):.2f}"
+
+
 def _fmt_reasoning_effort(v: str) -> str:
     if v == "low":
         return _("params.effort_low")
@@ -43,19 +54,19 @@ def _fmt_reasoning_effort(v: str) -> str:
 
 def params_interactive() -> None:
     while True:
-        temp = float(config.get("temperature", 0.7) or 0.7)
+        temp = config.get("temperature", 0.7)
         max_tok = int(config.get("max_tokens", 0) or 0)
         effort = str(config.get("reasoning_effort", "") or "")
 
         console.print()
         console.print(f"  [bold]{_('params.header')}[/bold]")
-        console.print(f"  [dim]{_('params.temperature')}:[/dim]      [yellow]{temp:.2f}[/yellow]")
+        console.print(f"  [dim]{_('params.temperature')}:[/dim]      [yellow]{_fmt_temp(temp)}[/yellow]")
         console.print(f"  [dim]{_('params.max_tokens')}:[/dim]       [yellow]{_fmt_max_tokens(max_tok)}[/yellow]")
         console.print(f"  [dim]{_('params.reasoning_effort')}:[/dim] [yellow]{_fmt_reasoning_effort(effort)}[/yellow]")
         console.print()
 
         items = [
-            {"label": f"{_('params.temperature')}       ({temp:.2f})", "hint": _("params.temp_hint")},
+            {"label": f"{_('params.temperature')}       ({_fmt_temp(temp)})", "hint": _("params.temp_hint")},
             {"label": f"{_('params.max_tokens')}        ({_fmt_max_tokens(max_tok)})", "hint": _("params.max_tokens_hint")},
             {"label": f"{_('params.reasoning_effort')}  ({_fmt_reasoning_effort(effort)})", "hint": _("params.reasoning_effort_hint")},
             {"label": "← Back"},
@@ -67,8 +78,15 @@ def params_interactive() -> None:
         if choice == 0:
             try:
                 console.print()
-                raw = console.input(f"  [bold]{_('params.new_temp')}[/bold] [dim]({temp:.2f}):[/dim] ").strip()
+                raw = console.input(
+                    f"  [bold]{_('params.new_temp')}[/bold] [dim]({_fmt_temp(temp)}, off = {_('params.default_provider')}):[/dim] "
+                ).strip()
                 if not raw:
+                    continue
+                if raw.lower() in ("off", "-", "none", "x"):
+                    config.set_value("temperature", None)
+                    _invalidate_api_llm()
+                    console.print(f"  [green]✓[/green] temperature = [yellow]{_('params.default_provider')}[/yellow]")
                     continue
                 val = float(raw)
                 if val < 0 or val > 2:

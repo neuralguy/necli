@@ -1,12 +1,12 @@
-"""write_file и create_file — запись и создание файлов."""
+"""create_file — создание и перезапись файлов."""
 
 import base64
 import re
 
 from logger import logger
-from tools.models import ToolCall, ToolResult
-from tools._paths import resolve_path, clean_path
+from tools._paths import clean_path, resolve_path
 from tools.file_ops.read import invalidate_read_cache
+from tools.models import ToolCall, ToolResult
 
 _resolve = resolve_path
 
@@ -31,13 +31,18 @@ def _check_unbalanced_fences(content: str) -> str:
     return ""
 
 
-def write_file(call: ToolCall) -> ToolResult:
-    """Полностью перезаписывает файл. Content as-is, без обработки escape."""
+def create_file(call: ToolCall) -> ToolResult:
+    """Создаёт или ПОЛНОСТЬЮ перезаписывает файл. Content as-is, без escape.
+
+    Единственный инструмент записи файла целиком (бывший write_file удалён):
+    создаёт новый файл или перезаписывает существующий. Для точечных правок —
+    patch_file.
+    """
     args = call.args
     path_str = clean_path(args.get("path", ""))
     if not path_str:
         return ToolResult(
-            name="write_file",
+            name="create_file",
             status="error",
             output="File path (path) not specified",
             exit_code=1,
@@ -55,26 +60,18 @@ def write_file(call: ToolCall) -> ToolResult:
             content = base64.b64decode(raw_b64).decode(encoding)
         except Exception as e:
             return ToolResult(
-                name="write_file",
+                name="create_file",
                 status="error",
                 output=f"base64 decoding error: {e}",
                 exit_code=1,
                 command=call.command,
             )
-    elif "content" in args:
-        content = args["content"]
+    else:
+        content = args.get("content", "")
         if content is None:
             content = ""
         if not isinstance(content, str):
             content = str(content)
-    else:
-        return ToolResult(
-            name="write_file",
-            status="error",
-            output="Content (content or b64) not specified",
-            exit_code=1,
-            command=call.command,
-        )
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,79 +88,12 @@ def write_file(call: ToolCall) -> ToolResult:
         )
 
         logger.info(
-            "write_file: {} ({}, {}→{}b, {} lines)",
+            "create_file: {} ({}, {}→{}b, {} lines)",
             path_str, "overwrite" if existed else "create", old_size, new_size, lines,
         )
 
-        action = "overwritten" if existed else "created"
-        msg = f"✓ {path_str}: {action}, {lines} lines"
-        msg += _check_unbalanced_fences(content)
-        if path.suffix == ".py":
-            from tools.auto_checks import queue_python_auto_check
-            if queue_python_auto_check(path, path_str):
-                msg += "\n↻ auto-check queued: lsp_diagnostics + ruff"
-
-        return ToolResult(
-            name="write_file",
-            status="ok",
-            output=msg,
-            exit_code=0,
-            command=call.command,
-        )
-    except Exception as e:
-        logger.opt(exception=True).error("write_file failed for {}: {}", path_str, e)
-        return ToolResult(
-            name="write_file",
-            status="error",
-            output=f"Write error: {e}",
-            exit_code=1,
-            command=call.command,
-        )
-
-
-def create_file(call: ToolCall) -> ToolResult:
-    """Создаёт новый файл; ошибка если уже существует."""
-    args = call.args
-    path_str = clean_path(args.get("path", ""))
-    if not path_str:
-        return ToolResult(
-            name="create_file",
-            status="error",
-            output="Path (path) not specified",
-            exit_code=1,
-            command=call.command,
-        )
-
-    path = _resolve(path_str)
-
-    if path.exists():
-        return ToolResult(
-            name="create_file",
-            status="error",
-            output=(
-                f"File already exists: {path_str}. "
-                f"Use write_file to overwrite or patch_file to modify."
-            ),
-            exit_code=1,
-            command=call.command,
-        )
-
-    content = args.get("content", "")
-    if content is None:
-        content = ""
-    if not isinstance(content, str):
-        content = str(content)
-
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        invalidate_read_cache(path)
-        size = path.stat().st_size
-        lines = content.count("\n") + (
-            1 if content and not content.endswith("\n") else 0
-        )
-        logger.info("create_file: {} ({}b, {} lines)", path_str, size, lines)
-        msg = f"✓ Created: {path_str} ({lines} lines)"
+        action = "Overwritten" if existed else "Created"
+        msg = f"✓ {action}: {path_str} ({lines} lines)"
         msg += _check_unbalanced_fences(content)
         if path.suffix == ".py":
             from tools.auto_checks import queue_python_auto_check
@@ -182,7 +112,7 @@ def create_file(call: ToolCall) -> ToolResult:
         return ToolResult(
             name="create_file",
             status="error",
-            output=f"Creation error: {e}",
+            output=f"Write error: {e}",
             exit_code=1,
             command=call.command,
         )

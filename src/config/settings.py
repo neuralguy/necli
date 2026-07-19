@@ -32,6 +32,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "temperature": 0.7,
     "max_tokens": 0,
     "reasoning_effort": "",
+    "thinking": False,
     # 0 = trust Rich/wcwidth (emoji = 2 cells). 1 = принудительно считать emoji
     # как 1 cell — если в твоём терминале/шрифте emoji рендерятся узкими и
     # правая граница панелей съезжает влево. См. ui/_emoji_width.py.

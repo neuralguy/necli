@@ -3,11 +3,11 @@
 import pytest
 
 from apis._retry import (
-    is_throttled,
-    _retry_after_seconds,
     _backoff_delay,
-    with_throttle_retry,
+    _retry_after_seconds,
+    is_throttled,
     stream_with_throttle_retry,
+    with_throttle_retry,
 )
 
 
@@ -183,7 +183,7 @@ class TestStreamWithThrottleRetry:
     async def test_tool_chunk_callback(self):
         from apis.messages import AIMessageChunk
 
-        tc = [{"index": 0, "id": "t1", "name": "ls", "args": "{}"}]
+        tc = [{"index": 0, "id": "t1", "name": "shell", "args": "{}"}]
 
         async def factory():
             yield AIMessageChunk(content="", tool_call_chunks=tc)
@@ -243,8 +243,9 @@ class TestStreamWithThrottleRetry:
     @pytest.mark.asyncio
     async def test_non_throttle_error_propagates(self):
         async def factory():
+            for chunk in ():
+                yield chunk
             raise ValueError("boom")
-            yield  # pragma: no cover
 
         with pytest.raises(ValueError):
             await stream_with_throttle_retry(factory, lambda _t: None)

@@ -11,30 +11,26 @@
 
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit import print_formatted_text as ptk_print
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory, ThreadedHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout.processors import Processor, Transformation
 from prompt_toolkit.styles import Style
-from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit import print_formatted_text as ptk_print
-
-import re
-
 from wcwidth import wcswidth
-
-from ui.completer import make_combined_completer
-from ui.formatting import BAR_FILLED_START, BAR_FILLED_END, BAR_EMPTY_START, BAR_EMPTY_END
 
 import config
 from config.themes import t
+from ui.completer import make_combined_completer
+from ui.formatting import BAR_EMPTY_END, BAR_EMPTY_START, BAR_FILLED_END, BAR_FILLED_START
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +96,7 @@ def _get_clipboard_text() -> str:
             )
             if r.returncode == 0:
                 return r.stdout
-        except FileNotFoundError:
+        except FileNotFoundError:  # noqa: PERF203
             continue
         except Exception:
             continue
@@ -120,7 +116,7 @@ class _ImageHighlighter(Processor):
 
     def apply_transformation(self, ti):
         fragments = []
-        for style, text, *rest in ti.fragments:
+        for style, text, *_rest in ti.fragments:
             parts = self._PATTERN.split(text)
             for i, part in enumerate(parts):
                 if not part:
@@ -146,7 +142,7 @@ class InputPrompt:
         # (Ctrl+O) как fallback, когда _last_status_text пуст/устарел после
         # compress/decompress — иначе separator выродится в голую линию.
         self.status_provider = None
-        self._last_status_text: Optional[str] = None
+        self._last_status_text: str | None = None
         self._combined_completer, self._file_completer = make_combined_completer(working_dir)
         self._session = PromptSession(
             history=ThreadedHistory(FileHistory(str(_HISTORY_FILE))),
@@ -167,7 +163,7 @@ class InputPrompt:
         """Update the working directory for file autocomplete."""
         self._file_completer.set_working_dir(path)
 
-    def _session_images_dir(self) -> Optional[Path]:
+    def _session_images_dir(self) -> Path | None:
         """Папка для картинок текущей сессии: <session.dir>/clipboard_images."""
         sess = self.session
         sess_dir = getattr(sess, "dir", None) if sess is not None else None
@@ -175,7 +171,7 @@ class InputPrompt:
             return None
         return Path(sess_dir) / "clipboard_images"
 
-    def _try_grab_image(self) -> Optional[Path]:
+    def _try_grab_image(self) -> Path | None:
         """Пытается извлечь изображение из системного буфера."""
         try:
             from ui.clipboard import grab_image_from_clipboard
@@ -262,9 +258,9 @@ class InputPrompt:
         def _toggle_expand_render(event):
             def _do_toggle():
                 try:
-                    from agent.loop import get_current_ctx
-                    from agent.render_replay import replay, clear_terminal
                     from agent.display import is_expanded_preview
+                    from agent.loop import get_current_ctx
+                    from agent.render_replay import clear_terminal, replay
                     ctx = get_current_ctx()
                     if ctx is None:
                         return
@@ -338,19 +334,12 @@ class InputPrompt:
         if session is not None:
             self.session = session
         try:
-            from ui.terminal_title import set_session_terminal_title, set_activity_status
+            from ui.terminal_title import set_activity_status, set_session_terminal_title
             set_activity_status(status)
             if self.session is not None:
                 set_session_terminal_title(self.session, status)
         except Exception:
             logger.debug("prompt activity status update failed", exc_info=True)
-
-    def _activity_emoji(self) -> str:
-        try:
-            from ui.terminal_title import activity_emoji
-            return activity_emoji(self.activity_status)
-        except Exception:
-            return "💤"
 
     def _mode_fragments(self):
         if self.mode == "planning":
@@ -371,7 +360,7 @@ class InputPrompt:
             ("class:prompt-arrow", " > "),
         ]
 
-    def _make_separator_fragments(self, status_text: Optional[str] = None):
+    def _make_separator_fragments(self, status_text: str | None = None):
         w = _get_term_width()
 
         def _vw(s: str) -> int:
@@ -391,7 +380,7 @@ class InputPrompt:
 
             before, rest = rest.split(BAR_FILLED_START, 1)
             filled, rest = rest.split(BAR_FILLED_END, 1)
-            empty_part, rest = rest.split(BAR_EMPTY_START, 1)
+            _empty_part, rest = rest.split(BAR_EMPTY_START, 1)
             empty, after = rest.split(BAR_EMPTY_END, 1)
 
             prefix = "\u2500\u2500\u2500 "
@@ -421,15 +410,15 @@ class InputPrompt:
         sep = "\u2500" * w
         return [("class:separator", sep)]
 
-    def _make_prompt_fragments(self, status_text: Optional[str] = None):
+    def _make_prompt_fragments(self, status_text: str | None = None):
         return self._mode_fragments()
 
-    def _print_separator(self, status_text: Optional[str] = None):
+    def _print_separator(self, status_text: str | None = None):
         ptk_print(FormattedText(self._make_separator_fragments(status_text)), style=_build_style())
 
     async def read(
         self,
-        status_text: Optional[str] = None,
+        status_text: str | None = None,
         bg_resume: bool = False,
     ):
         """Читает ввод пользователя.
@@ -461,7 +450,7 @@ class InputPrompt:
         except KeyboardInterrupt:
             return None
 
-    async def _read_with_bg_resume(self, status_text: Optional[str]):
+    async def _read_with_bg_resume(self, status_text: str | None):
         """prompt_async, прерываемый завершением фоновой задачи (если буфер пуст).
 
         Возвращает строку ввода либо _BG_RESUME. EOFError/KeyboardInterrupt
@@ -611,6 +600,7 @@ class InputPrompt:
         видел строку как внешний вывод и не стирал её при rerender.
         """
         import sys
+
         from prompt_toolkit.output.defaults import create_output
         status = getattr(self, "_last_status_text", None)
         if not status and callable(getattr(self, "status_provider", None)):

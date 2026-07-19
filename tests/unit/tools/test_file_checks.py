@@ -1,8 +1,8 @@
 """tools/file_checks.py — syntax-проверки Python/JS файлов."""
 
 from tools.file_checks import (
-    _check_py_syntax,
     _check_js_syntax,
+    _check_py_syntax,
     _run_ruff_on_python_file,
 )
 

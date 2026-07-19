@@ -5,9 +5,9 @@ from pathlib import Path
 
 from prompt_toolkit.completion import Completer, Completion, merge_completers
 
+from config.i18n import t as _
 from ui._filters import should_ignore as _should_ignore
 from ui.formatting import format_size as _format_size
-from config.i18n import t as _
 
 _MAX_RESULTS = 50
 
@@ -88,7 +88,7 @@ def _slash_commands():
     Возвращает [(name, desc_key, args_hint, toggle_config_key)], отсортировано
     по категории и canonical name. Берётся из commands/registry.
     """
-    from commands.registry import COMMANDS, CATEGORIES
+    from commands.registry import CATEGORIES, COMMANDS
     cat_order = {cat: i for i, (cat, _) in enumerate(CATEGORIES)}
     items = []
     for c in COMMANDS:
@@ -100,7 +100,7 @@ def _slash_commands():
 
 
 class SlashCommandCompleter(Completer):
-    def get_completions(self, document, complete_event):
+    def get_completions(self, document, _complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
             return
@@ -139,7 +139,7 @@ class FileAtCompleter(Completer):
     def set_working_dir(self, path):
         self.working_dir = path
 
-    def get_completions(self, document, complete_event):
+    def get_completions(self, document, _complete_event):
         text = document.text
         cursor = document.cursor_position
         ref = _find_at_reference(text, cursor)
@@ -172,7 +172,7 @@ class FileAtCompleter(Completer):
             name_part = rel_path.rstrip("/")
             if "/" in name_part:
                 name_part = name_part.rsplit("/", 1)[-1]
-            if filter_lower and not name_part.lower().startswith(filter_lower):
+            if filter_lower and not name_part.lower().startswith(filter_lower):  # noqa: SIM102
                 if filter_lower not in name_part.lower():
                     continue
             start_position = -len(ref)

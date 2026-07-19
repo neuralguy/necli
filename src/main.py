@@ -25,9 +25,9 @@ if sys.platform != "win32":
         _target = min(_hard, 8192)
         if _soft < _target:
             resource.setrlimit(resource.RLIMIT_NOFILE, (_target, _hard))
-            _logger.info("RLIMIT_NOFILE raised: {} -> {}".format(_soft, _target))
+            _logger.info(f"RLIMIT_NOFILE raised: {_soft} -> {_target}")
     except Exception as _e:
-        _logger.warning("failed to raise RLIMIT_NOFILE: {}".format(_e))
+        _logger.warning(f"failed to raise RLIMIT_NOFILE: {_e}")
 
 import click
 
@@ -35,8 +35,9 @@ from ui.terminal_title import reset_terminal_title
 
 atexit.register(reset_terminal_title)
 
-from commands.interactive import interactive
 from commands.headless import run_command
+from commands.interactive import interactive
+
 
 @click.group()
 def cli():

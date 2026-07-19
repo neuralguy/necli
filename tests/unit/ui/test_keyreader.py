@@ -9,6 +9,7 @@ import pytest
 
 import ui._keyreader as kr
 
+
 class TestNormalize:
     def test_enter_variants(self):
         assert kr._normalize("\r") == "enter"

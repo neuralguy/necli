@@ -12,10 +12,9 @@ from typing import Any
 
 import httpx
 
-from apis.config import get_api_key, add_model_to_provider, remove_model_from_provider
+from apis.config import add_model_to_provider, get_api_key, remove_model_from_provider
 from apis.registry import get_definition, reload_providers
 from logger import logger
-
 
 # Анти-перезапись цен: модели в этом списке имеют ручные цены в JSON-определениях,
 # при синке цены НЕ обновляются (источник истины — JSON).

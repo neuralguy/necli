@@ -45,7 +45,7 @@ class _FakeSession:
 def _make_prompt(buffer_text=""):
     p = InputPrompt.__new__(InputPrompt)  # без полного __init__ (он тянет PromptSession)
     p._session = _FakeSession(buffer_text)
-    p._make_prompt_fragments = lambda: []
+    p._make_prompt_fragments = list
     return p
 
 
@@ -71,7 +71,7 @@ async def test_empty_buffer_resumes_on_bg_finish():
         await asyncio.sleep(0.05)
         bg.get_finish_event().set()
 
-    asyncio.ensure_future(fire())
+    asyncio.ensure_future(fire())  # noqa: RUF006
     result = await asyncio.wait_for(p._read_with_bg_resume(None), timeout=3)
     assert result is _BG_RESUME
     # app.exit вызван чтобы снять prompt
@@ -90,7 +90,7 @@ async def test_typing_user_not_interrupted():
         await asyncio.sleep(0.1)
         p._session.resolve("итоговый ввод")  # юзер дожал Enter
 
-    asyncio.ensure_future(fire_then_submit())
+    asyncio.ensure_future(fire_then_submit())  # noqa: RUF006
     result = await asyncio.wait_for(p._read_with_bg_resume(None), timeout=3)
     # ожидание НЕ прервано bg-резюмом — вернулся реальный ввод
     assert result == "итоговый ввод"
@@ -105,7 +105,7 @@ async def test_real_input_takes_priority():
         await asyncio.sleep(0.05)
         p._session.resolve("привет")
 
-    asyncio.ensure_future(submit())
+    asyncio.ensure_future(submit())  # noqa: RUF006
     result = await asyncio.wait_for(p._read_with_bg_resume(None), timeout=3)
     assert result == "привет"
 
@@ -119,7 +119,7 @@ async def test_no_bridge_plain_wait():
         await asyncio.sleep(0.05)
         p._session.resolve("ввод")
 
-    asyncio.ensure_future(submit())
+    asyncio.ensure_future(submit())  # noqa: RUF006
     result = await asyncio.wait_for(p._read_with_bg_resume(None), timeout=3)
     assert result == "ввод"
 
@@ -135,6 +135,6 @@ async def test_spurious_signal_no_pending_keeps_waiting():
         await asyncio.sleep(0.1)
         p._session.resolve("ввод после ложного сигнала")
 
-    asyncio.ensure_future(fire_then_submit())
+    asyncio.ensure_future(fire_then_submit())  # noqa: RUF006
     result = await asyncio.wait_for(p._read_with_bg_resume(None), timeout=3)
     assert result == "ввод после ложного сигнала"

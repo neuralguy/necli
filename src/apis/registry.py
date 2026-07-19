@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from typing import Optional
 
 from apis.base import BaseProvider
-from apis.models import ApiProviderDefinition, ApiModelInfo
-from apis.config import list_api_configs, get_api_key
+from apis.config import get_api_key, list_api_configs
+from apis.models import ApiModelInfo, ApiProviderDefinition
 from config.paths import resource_path
 from logger import logger
 
@@ -110,7 +109,7 @@ def reload_providers() -> None:
     _loaded = False
     load_all()
 
-def get_definition(provider_id: str) -> Optional[ApiProviderDefinition]:
+def get_definition(provider_id: str) -> ApiProviderDefinition | None:
     load_all()
     return _definitions.get(provider_id)
 
@@ -157,7 +156,7 @@ def _create_instance(defn: ApiProviderDefinition, model_id: str, **kwargs) -> Ba
 
 
 def get_provider(provider_id: str, model_id: str, **kwargs) -> BaseProvider:
-    """Возвращает LLM-провайдер. Кеш используется только при вызове без kwargs."""
+    """Возвращает LLM-провайдер. Кеширует инстанс для одинаковых (provider, model, kwargs)."""
     load_all()
 
     defn = _definitions.get(provider_id)
@@ -167,15 +166,16 @@ def get_provider(provider_id: str, model_id: str, **kwargs) -> BaseProvider:
     if not defn.enabled:
         raise ValueError(f"API provider '{provider_id}' is disabled")
 
-    if kwargs:
-        return _create_instance(defn, model_id, **kwargs)
-
-    cache_key = (provider_id, model_id)
+    # Ключ кеша — (provider_id, model_id, замороженные kwargs). Важно кешировать
+    # даже с kwargs, иначе каждый запрос создаёт новый инстанс с новым session_id,
+    # и шлюзы теряют привязку prompt-cache к сессии → Cache write 0.
+    kwargs_key = tuple(sorted(kwargs.items())) if kwargs else ()
+    cache_key = (provider_id, model_id, kwargs_key)
     cached = _instances.get(cache_key)
     if cached is not None:
         return cached
 
-    instance = _create_instance(defn, model_id)
+    instance = _create_instance(defn, model_id, **kwargs)
     _instances[cache_key] = instance
     return instance
 
@@ -208,7 +208,7 @@ def list_api_models() -> list[dict]:
             continue
         has_key = bool(get_api_key(defn.id))
         for m in defn.models:
-            result.append({
+            result.append({  # noqa: PERF401
                 "provider_id": defn.id,
                 "provider_name": defn.name,
                 "model_id": m.id,
@@ -221,7 +221,7 @@ def list_api_models() -> list[dict]:
     return result
 
 
-def resolve_api_model(query: str) -> Optional[tuple[str, str]]:
+def resolve_api_model(query: str) -> tuple[str, str] | None:
     """Находит (provider_id, model_id) по имени модели.
 
     Поиск: точное совпадение по model_id или display_name,
@@ -245,7 +245,7 @@ def resolve_api_model(query: str) -> Optional[tuple[str, str]]:
             continue
         for m in defn.models:
             if query_lower in m.id.lower() or query_lower in m.display_name.lower():
-                matches.append((defn.id, m.id))
+                matches.append((defn.id, m.id))  # noqa: PERF401
 
     if len(matches) == 1:
         return matches[0]

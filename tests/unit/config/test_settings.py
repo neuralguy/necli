@@ -1,6 +1,6 @@
 """config/settings.py — персистентный config.json."""
 
-from config.settings import get, set_value, get_all, reset, _DEFAULT_CONFIG
+from config.settings import _DEFAULT_CONFIG, get, get_all, reset, set_value
 
 
 class TestGetDefault:

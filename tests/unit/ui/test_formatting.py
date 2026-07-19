@@ -1,15 +1,15 @@
 """ui/formatting.py — format_elapsed, format_tokens, format_cost, latex_to_unicode."""
 
 from ui.formatting import (
+    BAR_EMPTY_END,
+    BAR_EMPTY_START,
+    BAR_FILLED_END,
+    BAR_FILLED_START,
+    format_cost,
     format_elapsed,
     format_tokens,
-    format_cost,
-    progress_bar,
     latex_to_unicode,
-    BAR_FILLED_START,
-    BAR_FILLED_END,
-    BAR_EMPTY_START,
-    BAR_EMPTY_END,
+    progress_bar,
 )
 
 

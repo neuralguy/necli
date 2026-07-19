@@ -6,8 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from logger import logger
 from config import is_ignored_dir
+from logger import logger
 
 # Дополнительные паттерны имён, которые игнорируем
 _IGNORE_SUFFIXES = {".pyc", ".pyo", ".swp", ".swo", ".log"}

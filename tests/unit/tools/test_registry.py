@@ -1,24 +1,22 @@
 """tools/registry.py — реестр инструментов и диспетчер."""
 
+from tools.models import ToolCall
 from tools.registry import (
+    PLANNING_TOOLS,
     TOOL_REGISTRY,
+    build_blocked_result,
     execute_call,
     is_tool_allowed,
-    build_blocked_result,
     list_tools,
-    PLANNING_TOOLS,
 )
-from tools.models import ToolCall
 
 
 class TestRegistry:
     def test_core_tools_present(self):
         expected = {
-            "shell", "read_files", "read_file", "write_file", "patch_file",
-            "create_file", "delete_file", "rename_file", "copy_file", "move_file",
-            "ls", "tree", "mkdir", "rmdir", "find_files", "grep_files",
-            "poll", "skill", "ssh", "subagent", "web_search",
-            "create_docx", "docx_screenshot", "apply_diff", "expand_tool_result",
+            "shell", "read_files", "read_file", "patch_file",
+            "create_file", "poll", "skill", "ssh", "subagent", "web_search",
+            "create_docx", "docx_screenshot", "expand_tool_result",
         }
         missing = expected - set(TOOL_REGISTRY.keys())
         assert not missing, f"missing tools in registry: {missing}"
@@ -76,28 +74,28 @@ class TestExecuteCall:
 
 class TestReadOnlyAndAllowed:
     def test_is_tool_allowed_agent_mode_all(self):
-        assert is_tool_allowed("write_file", "agent") is True
+        assert is_tool_allowed("create_file", "agent") is True
         assert is_tool_allowed("shell", "agent") is True
 
     def test_is_tool_allowed_planning_mode_readonly_only(self):
         for t in PLANNING_TOOLS:
             assert is_tool_allowed(t, "planning") is True
-        assert is_tool_allowed("write_file", "planning") is False
+        assert is_tool_allowed("create_file", "planning") is False
         assert is_tool_allowed("shell", "planning") is False
 
     def test_is_tool_allowed_autonomous_mode_allows_shell_not_writes(self):
         assert is_tool_allowed("shell", "autonomous") is True
         assert is_tool_allowed("shell", "auto") is True
         assert is_tool_allowed("subagent", "autonomous") is True
-        assert is_tool_allowed("write_file", "autonomous") is False
+        assert is_tool_allowed("create_file", "autonomous") is False
         assert is_tool_allowed("patch_file", "autonomous") is False
 
 
 class TestBlockedResult:
     def test_format(self):
-        call = ToolCall(command="bad", tool_name="write_file")
+        call = ToolCall(command="bad", tool_name="create_file")
         result = build_blocked_result(call)
         assert result.status == "error"
         assert result.exit_code == 1
-        assert "write_file" in result.output
+        assert "create_file" in result.output
         assert "planning mode" in result.output

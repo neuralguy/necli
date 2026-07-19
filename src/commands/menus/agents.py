@@ -4,7 +4,11 @@ import subprocess
 from rich.console import Console
 
 from agent.agent_presets import (
-    list_presets, get_agents_dir, load_preset, remove_preset, create_preset,
+    create_preset,
+    get_agents_dir,
+    list_presets,
+    load_preset,
+    remove_preset,
 )
 from config.i18n import t as _
 from ui.menu import select_menu

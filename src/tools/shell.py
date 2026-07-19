@@ -5,11 +5,14 @@ import re
 import shlex
 import subprocess
 import sys
-from typing import Optional
 
 from logger import logger
+from tools._paths import (
+    get_working_dir,
+    set_working_dir,  # noqa: F401 (re-exported)
+)
+from tools._paths import resolve_path as _resolve_path  # noqa: F401 (re-exported)
 from tools.models import ToolCall, ToolResult
-from tools._paths import resolve_path as _resolve_path, get_working_dir, set_working_dir  # noqa: F401 (re-exported)
 
 _EXECUTION_TIMEOUT = 60
 
@@ -51,7 +54,7 @@ def _utf8_env() -> dict:
     return env
 
 
-def _is_blocked(command: str) -> Optional[str]:
+def _is_blocked(command: str) -> str | None:
     cmd_stripped = command.strip().lower()
     for blocked in _BLOCKED_COMMANDS:
         if blocked in cmd_stripped:
@@ -77,13 +80,13 @@ def _strip_quoted(command: str) -> str:
         return command
     return _QUOTED_SEGMENT_RE.sub("", command)
 
-def _is_file_write_via_shell(command: str) -> Optional[str]:
+def _is_file_write_via_shell(command: str) -> str | None:
     """
     Детектирует попытки записи файлов через shell вместо нативных инструментов.
     Возвращает сообщение-подсказку или None.
 
     Политика: блокируем heredoc (cat/tee <<EOF) и редиректы 'cat >' / 'tee file',
-    направляя агента к write_file/create_file. echo/printf-редиректы НЕ блокируем —
+    направляя агента к create_file. echo/printf-редиректы НЕ блокируем —
     это осознанное решение (мелкие inline-операции), зафиксированное тестами.
     Содержимое кавычек игнорируется, чтобы литералы вроде `echo "cat > x"`
     не давали ложных срабатываний.
@@ -94,7 +97,7 @@ def _is_file_write_via_shell(command: str) -> Optional[str]:
     if _HEREDOC_RE.search(cmd):
         return (
             "REJECTED: Do not use heredoc (<<EOF) to write files. "
-            "Use the write_file or create_file tool instead.\n"
+            "Use the create_file tool instead.\n"
             "Example:\n"
             ':::call create_file path="file.py"\n'
             "your content here\n"
@@ -105,14 +108,14 @@ def _is_file_write_via_shell(command: str) -> Optional[str]:
     if _CAT_REDIRECT_RE.search(cmd):
         return (
             "REJECTED: Do not use 'cat >' to write files. "
-            "Use the write_file or create_file tool instead."
+            "Use the create_file tool instead."
         )
 
     # tee file (tee writes its stdin to a file even without heredoc)
     if _TEE_REDIRECT_RE.search(cmd):
         return (
             "REJECTED: Do not use 'tee' to write files. "
-            "Use the write_file or create_file tool instead."
+            "Use the create_file tool instead."
         )
 
     return None
@@ -178,12 +181,12 @@ def execute_shell(call: ToolCall) -> ToolResult:
     # Это даёт агенту свободу работать в произвольных директориях
     # (`cd /any/path && cmd`), не нарушая изоляцию субагентов.
     logger.info("shell exec: {!r} (cwd={})", command[:300], get_working_dir())
-    run_kwargs = dict(
-        capture_output=True, text=True,
-        timeout=_EXECUTION_TIMEOUT,
-        cwd=get_working_dir(),
-        env=_utf8_env(),
-    )
+    run_kwargs = {
+        "capture_output": True, "text": True,
+        "timeout": _EXECUTION_TIMEOUT,
+        "cwd": get_working_dir(),
+        "env": _utf8_env(),
+    }
     if sys.platform != "win32":
         run_kwargs["executable"] = "/bin/bash"
     try:

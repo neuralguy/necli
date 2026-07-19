@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
 
 import config
 
@@ -23,8 +22,8 @@ _IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Запоминаем ОРИГИНАЛЬНЫЙ DISPLAY при импорте модуля,
 # ДО возможной подмены DISPLAY
-_ORIGINAL_DISPLAY: Optional[str] = os.environ.get("DISPLAY")
-_ORIGINAL_WAYLAND_DISPLAY: Optional[str] = os.environ.get("WAYLAND_DISPLAY")
+_ORIGINAL_DISPLAY: str | None = os.environ.get("DISPLAY")
+_ORIGINAL_WAYLAND_DISPLAY: str | None = os.environ.get("WAYLAND_DISPLAY")
 
 
 def _has_cmd(cmd: str) -> bool:
@@ -48,7 +47,7 @@ def _get_real_clipboard_env() -> dict:
     return env
 
 
-def grab_image_from_clipboard(dest_dir: Optional[Path] = None) -> Optional[Path]:
+def grab_image_from_clipboard(dest_dir: Path | None = None) -> Path | None:
     """
     Пытается извлечь изображение из системного буфера обмена.
 
@@ -99,7 +98,7 @@ def grab_image_from_clipboard(dest_dir: Optional[Path] = None) -> Optional[Path]
     return None
 
 
-def _grab_xclip(dest: Path) -> Optional[Path]:
+def _grab_xclip(dest: Path) -> Path | None:
     """Извлекает изображение через xclip (X11)."""
     try:
         env = _get_real_clipboard_env()
@@ -145,7 +144,7 @@ def _grab_xclip(dest: Path) -> Optional[Path]:
         return None
 
 
-def _grab_wl_paste(dest: Path) -> Optional[Path]:
+def _grab_wl_paste(dest: Path) -> Path | None:
     """Извлекает изображение через wl-paste (Wayland)."""
     try:
         env = _get_real_clipboard_env()
@@ -187,7 +186,7 @@ def _grab_wl_paste(dest: Path) -> Optional[Path]:
         return None
 
 
-def _grab_pngpaste(dest: Path) -> Optional[Path]:
+def _grab_pngpaste(dest: Path) -> Path | None:
     """Извлекает изображение через pngpaste (macOS)."""
     try:
         result = subprocess.run(
@@ -207,7 +206,7 @@ def _grab_pngpaste(dest: Path) -> Optional[Path]:
         return None
 
 
-def _grab_pillow(dest: Path) -> Optional[Path]:
+def _grab_pillow(dest: Path) -> Path | None:
     """Извлекает изображение через Pillow (cross-platform fallback)."""
     try:
         from PIL import ImageGrab

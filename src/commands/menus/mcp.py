@@ -3,8 +3,8 @@ import sys
 from rich.console import Console
 from rich.markup import escape
 
-from config.mcp import list_servers, add_server, remove_server, set_enabled, get_server
 from config.i18n import t as _
+from config.mcp import add_server, get_server, list_servers, remove_server, set_enabled
 from ui.menu import select_menu
 
 console = Console()

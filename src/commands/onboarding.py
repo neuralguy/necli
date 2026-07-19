@@ -11,21 +11,25 @@ from rich.table import Table
 from rich.text import Text
 
 import config
+from agent.theme_preview import render_theme_preview
 from config.i18n import (
-    SUPPORTED_LANGS,
     LANG_DISPLAY,
+    SUPPORTED_LANGS,
     set_lang,
+)
+from config.i18n import (
     t as _,
 )
 from config.themes import (
     BUILTIN_THEMES,
+    get_active_theme_name,
     list_themes,
     set_theme,
-    get_active_theme_name,
+)
+from config.themes import (
     t as tc,
 )
-from ui.menu import select_menu, _panel_menu_direct
-from agent.theme_preview import render_theme_preview
+from ui.menu import _panel_menu_direct, select_menu
 
 console = Console()
 
@@ -246,7 +250,7 @@ def _ask_api_key(pid: str, name: str) -> None:
 
 
 def _ensure_default_provider() -> None:
-    from apis.config import list_api_configs, add_api_config
+    from apis.config import add_api_config, list_api_configs
     from apis.registry import get_definition, reload_providers
 
     if list_api_configs():

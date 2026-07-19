@@ -4,11 +4,17 @@ import sys
 
 from rich.console import Console
 
-from skills import (
-    list_skills, get_skills_dir, is_skill_active, remove_skill,
-    load_skill, activate_skill, deactivate_skill, create_skill,
-)
 from config.i18n import t as _
+from skills import (
+    activate_skill,
+    create_skill,
+    deactivate_skill,
+    get_skills_dir,
+    is_skill_active,
+    list_skills,
+    load_skill,
+    remove_skill,
+)
 from ui.menu import select_menu
 
 console = Console()

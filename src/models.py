@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from logger import logger
 
+
 @dataclass(frozen=True, slots=True)
 class ModelPricing:
     input: float

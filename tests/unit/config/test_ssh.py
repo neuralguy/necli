@@ -18,7 +18,7 @@ class TestParseHostString:
 
     def test_invalid_port_kept_in_host(self, isolated_data):
         # некорректный port → остаётся в host part
-        user, host, port = ssh_cfg.parse_host_string("user@host:notnumber")
+        user, _host, port = ssh_cfg.parse_host_string("user@host:notnumber")
         assert user == "user"
         assert port == 22
 

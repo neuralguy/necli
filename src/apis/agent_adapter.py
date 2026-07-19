@@ -20,16 +20,15 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from apis.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from apis._retry import stream_with_throttle_retry, with_throttle_retry
 from apis.base import BaseProvider
-
+from apis.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from apis.opus48_debug import has_transcript_hint, log_event
 from apis.registry import get_provider
-from apis._retry import with_throttle_retry, stream_with_throttle_retry
 from logger import logger
 from tools._html_unescape import maybe_unescape as _unescape_html_entities
-from apis.opus48_debug import has_transcript_hint, log_event
 
 
 def _provider_kwargs() -> dict:
@@ -40,14 +39,23 @@ def _provider_kwargs() -> dict:
     import config as _cfg
     kw: dict = {}
     temp = _cfg.get("temperature", 0.7)
-    if isinstance(temp, (int, float)):
+    if isinstance(temp, bool):
+        # bool is a subclass of int — treat as "disabled"
+        kw["temperature"] = None
+    elif isinstance(temp, int | float):
         kw["temperature"] = float(temp)
+    else:
+        # None / "off" / любое нечисловое значение → не передавать temperature
+        kw["temperature"] = None
     mt = _cfg.get("max_tokens", 0)
-    if isinstance(mt, (int, float)) and int(mt) > 0:
+    if isinstance(mt, int | float) and int(mt) > 0:
         kw["max_tokens"] = int(mt)
     effort = _cfg.get("reasoning_effort", "")
     if isinstance(effort, str) and effort:
         kw["reasoning_effort"] = effort
+    thinking = _cfg.get("thinking", False)
+    if thinking:
+        kw["thinking"] = True
     return kw
 
 
@@ -148,7 +156,7 @@ class ApiSession:
         self.provider_id = provider_id
         self.model_id = model_id
         self.messages: list = []
-        self._llm: Optional[BaseProvider] = None
+        self._llm: BaseProvider | None = None
         self._llm_kwargs: dict = {}
 
     @property
@@ -205,34 +213,46 @@ class ApiSession:
         ))
 
 
-_api_session: Optional[ApiSession] = None
+_api_session: ApiSession | None = None
 
 
-def get_api_session() -> Optional[ApiSession]:
+def get_api_session() -> ApiSession | None:
     return _api_session
 
 
-def current_active_skills() -> set:
+def current_active_skills(tool_results: list | None = None) -> set:
     """Скиллы, активные СЕЙЧАС по истории текущей ApiSession (для гейтинга).
 
     Активность = скилл загружен в пределах окна последних раундов
     (skills.registry.ACTIVE_WINDOW_ROUNDS). Используется при сборке системного
     промпта и native-схем, чтобы гейтящиеся инструменты были видны только пока
     их скилл «живёт» в контексте. Пустое множество — ничего не активно.
+
+    tool_results — результаты ТЕКУЩЕГО раунда, ещё не записанные в историю:
+    их ToolMessage дописывается в session.messages только внутри
+    api_send_message, ПОСЛЕ сборки схем. Без их учёта скилл, загруженный этим
+    раундом, не разблокирует свои инструменты именно на том запросе, где они
+    нужны.
     """
     sess = _api_session
-    if sess is None:
-        return set()
-    try:
-        from skills.registry import active_skills_from_messages
+    active: set = set()
+    if sess is not None:
+        try:
+            from skills.registry import active_skills_from_messages
 
-        return active_skills_from_messages(sess.messages)
-    except Exception:
-        logger.debug("current_active_skills failed", exc_info=True)
-        return set()
+            active = active_skills_from_messages(sess.messages)
+        except Exception:
+            logger.debug("current_active_skills failed", exc_info=True)
+    for r in tool_results or ():
+        if (r.get("name") or "") != "skill" or r.get("exit_code"):
+            continue
+        cmd = (r.get("command") or "").split()
+        if len(cmd) == 2 and cmd[0] == "skill":
+            active.add(cmd[1])
+    return active
 
 
-def set_api_session(session: Optional[ApiSession]) -> None:
+def set_api_session(session: ApiSession | None) -> None:
     global _api_session
     _api_session = session
 
@@ -253,8 +273,8 @@ def _tool_calls_to_text_blocks(tool_calls):
     for tc in tool_calls:
         name = tc.get("name") or "shell"
         args = tc.get("args") or {}
-        # write_file / create_file — контент в теле, path в шапке
-        if name in ("write_file", "create_file") and isinstance(args, dict) and "content" in args:
+        # create_file — контент в теле, path в шапке
+        if name == "create_file" and isinstance(args, dict) and "content" in args:
             path = args.get("path", "")
             content = args.get("content", "")
             encoding = args.get("encoding")
@@ -393,10 +413,16 @@ def _extract_usage(obj) -> dict:
         out: dict = {}
         inp = _first_int(um, "input_tokens")
         outp = _first_int(um, "output_tokens")
+        cache_read = _first_int(um, "cache_read_input_tokens")
+        cache_creation = _first_int(um, "cache_creation_input_tokens")
         if inp:
             out["input"] = inp
         if outp:
             out["output"] = outp
+        if cache_read:
+            out["cache_read"] = cache_read
+        if cache_creation:
+            out["cache_creation"] = cache_creation
         tot = _first_int(um, "total_tokens")
         if tot:
             out["total"] = tot
@@ -483,14 +509,9 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         input_preview=str(text or "")[:2000],
     )
 
-    from apis._context_pruner import prune_messages
-    # prune_messages не мутирует входной список — копия не нужна.
-    messages, prune_stats = prune_messages(session.messages)
-    if prune_stats["pruned_blocks"]:
-        logger.info(
-            "context pruner: evicted %d read-block(s), saved ~%d chars",
-            prune_stats["pruned_blocks"], prune_stats["saved_chars"],
-        )
+    # ponytail: keep the full immutable transcript for exact prefix caching;
+    # add explicit whole-session compression when provider context limits require it.
+    messages = list(session.messages)
     effective_prompt = system_prompt
     # Инструкции про tool-format (native vs text) теперь ЧАСТЬ системного
     # промта (system_prompt.build_system_prompt → TOOL_FORMAT_TEXT_BLOCK по
@@ -528,7 +549,7 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
     # провайдер всё равно требует ToolMessage на КАЖДЫЙ незакрытый tool_call_id
     # — иначе 400. Поэтому закрываем pending даже при tool_results is None,
     # если среди них есть control-вызовы (им build_native_tool_messages выдаст ack).
-    _CONTROL_NAMES = {"plan", "think"}
+    _CONTROL_NAMES = {"plan", "think"}  # noqa: N806
     has_pending_control = any(
         (tc.get("name") or "") in _CONTROL_NAMES for tc in pending_tool_calls
     )
@@ -715,57 +736,11 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
                     + str(len(raw_text)) + " chars (final_chunk.content was empty)"
                 )
 
-            # ── Фолбэк для прокси-багов (OnlySQ и пр.): при стриминге native
-            # tool_calls часто приходят с пустыми args. Если модель решила
-            # использовать native — повторяем БЕЗ стрима, чтобы получить
-            # корректные аргументы одним JSON-объектом.
-            need_fallback = False
-            for tc in tool_calls:
-                a = tc.get("args")
-                if a is None or not isinstance(a, dict):
-                    need_fallback = True
-                    break
-                # Пустой `{}` у инструмента с обязательными параметрами =
-                # потерянные при стриминге аргументы (прокси-баг). Напр.
-                # memory_write требует name/body — пустой dict valid НЕ бывает.
-                # Безаргументные тулы (memory_list) сюда не попадают.
-                if not a:
-                    from apis.tool_schemas import tool_requires_args
-                    if tool_requires_args(tc.get("name") or ""):
-                        need_fallback = True
-                        break
-            if need_fallback:
-                logger.warning(
-                    "API native tool_calls have empty args after stream — "
-                    "retrying without streaming to recover JSON args"
-                )
-                result = await with_throttle_retry(lambda: llm.ainvoke(messages))
-                logger.info(
-                    "API fallback ainvoke result: "
-                    + str(len(getattr(result, "tool_calls", []) or []))
-                    + " tool_calls, content_len="
-                    + str(len(_content_to_text(getattr(result, "content", ""))))
-                )
-                fb_text = _content_to_text(getattr(result, "content", result))
-                if has_transcript_hint(fb_text):
-                    log_event(
-                        "fallback_ainvoke_transcript_seen",
-                        provider=session.provider_id,
-                        model=session.model_id,
-                        len=len(fb_text),
-                        preview=fb_text,
-                    )
-                fb_calls = list(getattr(result, "tool_calls", []) or [])
-                if fb_calls:
-                    tool_calls = fb_calls
-                    if fb_text and not raw_text:
-                        raw_text = fb_text
-                fb_reasoning = _extract_reasoning(result)
-                if fb_reasoning and not reasoning_content:
-                    reasoning_content = fb_reasoning
-                fb_usage = _extract_usage(result)
-                if fb_usage:
-                    usage_info = fb_usage
+            # Раньше здесь был фолбэк: при пустых args в tool_calls после
+            # стрима повторяли запрос через ainvoke БЕЗ стрима. Это удваивало
+            # запросы к API (двойной расход токенов/денег) при каждом сбое
+            # прокси. Убрано — битые args это баг прокси, а не то, что мы
+            # должны лечить вторым полным запросом.
 
             if tool_calls:
                 tool_calls = _ensure_tool_call_ids(tool_calls)
@@ -1177,6 +1152,15 @@ def restore_api_session_history(necli_session):
             ))
         pending_restore_calls = []
 
+    def _attach_inline_system(prefix: str) -> None:
+        # Дописываем inline-system как префикс/суффикс к последнему
+        # HumanMessage с str-content (или создаём отдельный user, если такого нет).
+        for prev in reversed(api_sess.messages):
+            if isinstance(prev, HumanMessage) and isinstance(prev.content, str):
+                prev.content = prev.content + "\n\n" + prefix
+                return
+        api_sess.messages.append(HumanMessage(content=prefix))
+
     for msg in source_messages:
         role = msg.role
         content = msg.content
@@ -1202,15 +1186,7 @@ def restore_api_session_history(necli_session):
             if pending_inline_system:
                 prefix = "\n\n".join(pending_inline_system)
                 pending_inline_system.clear()
-                # Ищем последний HumanMessage с str-content
-                attached = False
-                for prev in reversed(api_sess.messages):
-                    if isinstance(prev, HumanMessage) and isinstance(prev.content, str):
-                        prev.content = prev.content + "\n\n" + prefix
-                        attached = True
-                        break
-                if not attached:
-                    api_sess.messages.append(HumanMessage(content=prefix))
+                _attach_inline_system(prefix)
             if native:
                 from tools.parser import parse_tool_calls, strip_tool_calls
                 parsed = parse_tool_calls(content)
@@ -1235,13 +1211,24 @@ def restore_api_session_history(necli_session):
             if pending_inline_system:
                 full = "\n\n".join(pending_inline_system) + "\n\n" + content
                 pending_inline_system.clear()
-            api_sess.messages.append(HumanMessage(content=full))
+            image_paths = [
+                item.get("path")
+                for item in (getattr(msg, "attachments", None) or [])
+                if isinstance(item, dict) and item.get("is_image") and item.get("path")
+            ]
+            if image_paths:
+                multimodal = _build_multimodal_content(full, image_paths)
+                api_sess.messages.append(
+                    HumanMessage(content=multimodal if len(multimodal) > 1 else full)
+                )
+            else:
+                api_sess.messages.append(HumanMessage(content=full))
         elif role == "tool_result":
             seen_user = True
             pending_inline_system.clear()
             if native and pending_restore_calls:
                 segments = _split_tool_result_segments(content, len(pending_restore_calls))
-                for tc, seg in zip(pending_restore_calls, segments):
+                for tc, seg in zip(pending_restore_calls, segments, strict=False):
                     api_sess.messages.append(ToolMessage(
                         content=seg,
                         tool_call_id=tc.get("id", ""),
@@ -1257,15 +1244,7 @@ def restore_api_session_history(necli_session):
     # Если в самом конце остались inline-system без следующего user/assistant —
     # дописываем их к последнему user (или создаём отдельный user).
     if pending_inline_system:
-        suffix = "\n\n".join(pending_inline_system)
-        attached = False
-        for prev in reversed(api_sess.messages):
-            if isinstance(prev, HumanMessage) and isinstance(prev.content, str):
-                prev.content = prev.content + "\n\n" + suffix
-                attached = True
-                break
-        if not attached:
-            api_sess.messages.append(HumanMessage(content=suffix))
+        _attach_inline_system("\n\n".join(pending_inline_system))
 
     if native and pending_restore_calls:
         _flush_pending_calls()

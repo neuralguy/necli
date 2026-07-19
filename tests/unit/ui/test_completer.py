@@ -3,12 +3,12 @@
 from prompt_toolkit.document import Document
 
 from ui.completer import (
+    FileAtCompleter,
+    SlashCommandCompleter,
     _find_at_reference,
     _format_size,
     _format_tokens,
     _slash_commands,
-    SlashCommandCompleter,
-    FileAtCompleter,
 )
 
 _SLASH_COMMANDS = _slash_commands()

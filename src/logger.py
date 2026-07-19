@@ -208,17 +208,17 @@ def setup_logger():
     _loguru_logger.remove()
     _loguru_logger.configure(patcher=_context_patcher)
 
-    common_kwargs = dict(
-        level="DEBUG",
-        format=_file_format,
-        enqueue=True,
-        encoding="utf-8",
-        rotation="2 MB",
-        retention=5,
-        compression="zip",
-        diagnose=False,
-        backtrace=False,
-    )
+    common_kwargs = {
+        "level": "DEBUG",
+        "format": _file_format,
+        "enqueue": True,
+        "encoding": "utf-8",
+        "rotation": "2 MB",
+        "retention": 5,
+        "compression": "zip",
+        "diagnose": False,
+        "backtrace": False,
+    }
 
     # Per-layer sinks
     for layer_name, prefixes in _LAYER_FILTERS.items():

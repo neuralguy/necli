@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from config.settings import get, set_value
 
@@ -20,7 +19,7 @@ def list_hosts() -> dict[str, dict]:
     return dict(_get_hosts())
 
 
-def get_host(alias: str) -> Optional[dict]:
+def get_host(alias: str) -> dict | None:
     return _get_hosts().get(alias)
 
 

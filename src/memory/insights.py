@@ -27,13 +27,12 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Optional
-
-from logger import logger
 
 import session.storage as storage
-from config.paths import BASE_DIR
 from config.i18n import get_lang
+from config.paths import BASE_DIR
+from logger import logger
+
 from .memdir import MEMORY_TYPES, format_manifest, write_memory
 
 _REPORT_DIR = BASE_DIR / "insights"
@@ -76,8 +75,8 @@ def collect_metrics(loaded: list[dict]) -> dict:
     error_kinds: dict[str, int] = {}
     error_hits = 0
     active_days: set[str] = set()
-    first_ts: Optional[float] = None
-    last_ts: Optional[float] = None
+    first_ts: float | None = None
+    last_ts: float | None = None
     user_msg_lengths: list[int] = []
     hour_counts: dict[int, int] = {}
     session_spans: list[tuple[float, float]] = []
@@ -85,8 +84,8 @@ def collect_metrics(loaded: list[dict]) -> dict:
 
     for item in loaded:
         sess = item["session"]
-        s_first: Optional[float] = None
-        s_last: Optional[float] = None
+        s_first: float | None = None
+        s_last: float | None = None
         s_user = 0
         for m in sess.messages:
             ts = float(m.timestamp or 0)
@@ -150,7 +149,7 @@ def collect_metrics(loaded: list[dict]) -> dict:
     msgs_per_day = round(total_user / len(active_days), 1) if active_days else 0
 
     periods = [("Morning (6-12)", range(6, 12)), ("Afternoon (12-18)", range(12, 18)),
-               ("Evening (18-24)", range(18, 24)), ("Night (0-6)", range(0, 6))]
+               ("Evening (18-24)", range(18, 24)), ("Night (0-6)", range(6))]
     time_of_day = [(label, sum(hour_counts.get(h, 0) for h in rng)) for label, rng in periods]
 
     return {
@@ -279,7 +278,7 @@ def parse_analysis(raw: str) -> dict:
     except (json.JSONDecodeError, ValueError):
         m = _JSON_BLOCK_RE.search(text)
         if not m:
-            raise ValueError("no JSON object in model response")
+            raise ValueError("no JSON object in model response")  # noqa: B904
         data = json.loads(m.group(0))
     if not isinstance(data, dict):
         raise ValueError("model response is not a JSON object")
@@ -335,11 +334,6 @@ def _bars(pairs, color: str) -> str:
             f'<div class="bar-value">{c}</div></div>'
         )
     return "".join(rows)
-
-def _list(items: list) -> str:
-    if not items:
-        return ""
-    return "".join(f"<li>{_esc(x)}</li>" for x in items if str(x).strip())
 
 def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -> str:
     a = analysis

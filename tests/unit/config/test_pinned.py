@@ -6,6 +6,7 @@ import pytest
 
 from config import pinned
 
+
 @pytest.fixture(autouse=True)
 def _isolated(isolated_data, monkeypatch):
     monkeypatch.setattr(pinned, "_PATH", isolated_data / "pinned_sessions.json", raising=False)

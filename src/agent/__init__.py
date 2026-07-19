@@ -7,20 +7,20 @@
 
 from agent.context import AgentContext
 from agent.loop import (
+    build_first_message,
+    get_current_ctx,
+    get_current_plan,
     run_agent,
     run_agent_interactive,
-    get_current_plan,
-    get_current_ctx,
     set_current_ctx,
-    build_first_message,
 )
 
 __all__ = [
     "AgentContext",
+    "build_first_message",
+    "get_current_ctx",
+    "get_current_plan",
     "run_agent",
     "run_agent_interactive",
-    "get_current_plan",
-    "get_current_ctx",
     "set_current_ctx",
-    "build_first_message",
 ]

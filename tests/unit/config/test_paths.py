@@ -3,8 +3,8 @@
 import sys
 from pathlib import Path
 
-
 from config import paths
+
 
 class TestResolveBaseDir:
     def test_env_override(self, monkeypatch, tmp_path):

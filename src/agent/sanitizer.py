@@ -306,10 +306,7 @@ def strip_fake_tool_output(text: str) -> str:
                 return groups[0]
             return ""
 
-        if pattern.groups > 0:
-            result = pattern.sub(_replace, result)
-        else:
-            result = pattern.sub("", result)
+        result = pattern.sub(_replace, result) if pattern.groups > 0 else pattern.sub("", result)
     return _restore_call_blocks(result, call_blocks)
 
 def sanitize_response(text: str) -> str:
@@ -363,10 +360,7 @@ def sanitize_response(text: str) -> str:
                 return groups[0]
             return ""
 
-        if pattern.groups > 0:
-            result = pattern.sub(_replace, result)
-        else:
-            result = pattern.sub("", result)
+        result = pattern.sub(_replace, result) if pattern.groups > 0 else pattern.sub("", result)
 
     # Восстанавливаем защищённые call-блоки
     result = _restore_call_blocks(result, _call_blocks)

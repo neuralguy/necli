@@ -8,8 +8,8 @@ from rich.text import Text
 
 import tools
 from agent.syntax import _EXT_LEXER_MAP
-from config.themes import t
 from config.i18n import t as _i18n
+from config.themes import t
 from config.ui import ui
 from tools._html_unescape import unescape_nested as _unescape_for_display
 
@@ -29,45 +29,47 @@ def set_replay_active(active: bool) -> None:
     _REPLAY_ACTIVE = bool(active)
 
 
-def _store_tool(call, result, subtitle: str = "") -> None:
+def _render_store():
+    """Текущий RenderStore или None (None также при активном replay)."""
     if _REPLAY_ACTIVE:
-        return
+        return None
+    from agent.loop import get_current_ctx
+    ctx = get_current_ctx()
+    if ctx is None:
+        return None
+    return getattr(ctx, "render_store", None)
+
+
+def _store_tool(call, result, subtitle: str = "") -> None:
     try:
-        from agent.loop import get_current_ctx
-        ctx = get_current_ctx()
-        if ctx is None or getattr(ctx, "render_store", None) is None:
+        store = _render_store()
+        if store is None:
             return
         if result is None:
-            ctx.render_store.add_command_only(call, subtitle=subtitle)
+            store.add_command_only(call, subtitle=subtitle)
         else:
-            ctx.render_store.add_tool(call, result, subtitle=subtitle)
+            store.add_tool(call, result, subtitle=subtitle)
     except Exception:
         pass
 
 
 def _store_command(cmd: str, tool_name: str, args: dict, subtitle: str = "") -> None:
-    if _REPLAY_ACTIVE:
-        return
     try:
-        from agent.loop import get_current_ctx
-        ctx = get_current_ctx()
-        if ctx is None or getattr(ctx, "render_store", None) is None:
+        store = _render_store()
+        if store is None:
             return
         call = tools.ToolCall(command=cmd, tool_name=tool_name, args=dict(args or {}), raw="")
-        ctx.render_store.add_command_only(call, subtitle=subtitle)
+        store.add_command_only(call, subtitle=subtitle)
     except Exception:
         pass
 
 
 def _store_assistant(text: str, subtitle: str = "", message_num: int = 0) -> None:
-    if _REPLAY_ACTIVE:
-        return
     try:
-        from agent.loop import get_current_ctx
-        ctx = get_current_ctx()
-        if ctx is None or getattr(ctx, "render_store", None) is None:
+        store = _render_store()
+        if store is None:
             return
-        ctx.render_store.add_assistant_block(text, subtitle=subtitle, message_num=message_num)
+        store.add_assistant_block(text, subtitle=subtitle, message_num=message_num)
     except Exception:
         pass
 
@@ -101,31 +103,26 @@ def show_plan_update(plan, action: str = "", focus_index: int | None = None) -> 
     except Exception:
         pass
 
-def MAX_RESULT_LENGTH():
-    return int(ui.get("limits.max_result_length", 15000))
-def RESPONSE_BORDER():
-    return t("success")
-def MAX_WIDTH():
+def MAX_WIDTH():  # noqa: N802
     return int(ui.get("limits.max_width", 100))
 
 # Инструменты, у которых при успехе output скрывается: пользователь видит факт
 # изменения по панели команды и ✓-статусу, текст не нужен.
 _SILENT_OK_TOOLS = frozenset({
-    "write_file", "create_file", "patch_file",
-    "delete_file", "rename_file", "copy_file", "move_file",
-    "mkdir", "rmdir", "create_docx",
+    "create_file", "patch_file",
+    "create_docx",
 })
 
 
-def COMPACT_HEAD_LINES():
+def COMPACT_HEAD_LINES():  # noqa: N802
     return int(ui.get("limits.compact_head_lines", 10))
-def COMPACT_TAIL_LINES():
+def COMPACT_TAIL_LINES():  # noqa: N802
     return int(ui.get("limits.compact_tail_lines", 10))
 
 # Для верстки с рамками (не compact) — больший лимит на статичный вывод.
-def PANEL_HEAD_LINES():
+def PANEL_HEAD_LINES():  # noqa: N802
     return int(ui.get("limits.panel_head_lines", 5))
-def PANEL_TAIL_LINES():
+def PANEL_TAIL_LINES():  # noqa: N802
     return int(ui.get("limits.panel_tail_lines", 5))
 
 def _spinner_frames() -> list[str]:
@@ -188,26 +185,18 @@ def _mcp_display_for(tool_name: str) -> tuple[str, str] | None:
     return (f"{emoji} {label}".strip(), _resolve_color(info, "magenta"))
 
 class _ToolDisplayProxy:
+    def _lookup(self, key):
+        return _tool_display_entry(key) or _mcp_display_for(key)
     def get(self, key, default=None):
-        entry = _tool_display_entry(key)
-        if entry is not None:
-            return entry
-        mcp = _mcp_display_for(key)
-        if mcp is not None:
-            return mcp
-        return default
+        entry = self._lookup(key)
+        return entry if entry is not None else default
     def __getitem__(self, key):
-        entry = _tool_display_entry(key)
-        if entry is not None:
-            return entry
-        mcp = _mcp_display_for(key)
-        if mcp is not None:
-            return mcp
-        raise KeyError(key)
+        entry = self._lookup(key)
+        if entry is None:
+            raise KeyError(key)
+        return entry
     def __contains__(self, key):
-        if _tool_display_entry(key) is not None:
-            return True
-        return _mcp_display_for(key) is not None
+        return self._lookup(key) is not None
 
 TOOL_DISPLAY = _ToolDisplayProxy()
 
@@ -248,9 +237,7 @@ def _format_path_for_title(path) -> str:
         names = [str(p) for p in path if p]
         if not names:
             return ""
-        if len(names) == 1:
-            return names[0]
-        return f"{len(names)} files"
+        return names[0] if len(names) == 1 else f"{len(names)} files"
     return str(path) if path else ""
 
 def _compact_display_value(value: str) -> str:
@@ -332,6 +319,14 @@ def _format_elapsed(elapsed: float) -> str:
     return f" {elapsed:.1f}s" if elapsed >= 0.05 else ""
 
 
+def _truncate_cmd(cmd: str) -> str:
+    """Однострочная команда — целиком (до 120); многострочная — первая строка + …."""
+    if "\n" in cmd:
+        first = cmd.split("\n", 1)[0]
+        return first[:80] + " …"
+    return cmd[:120] + ("…" if len(cmd) > 120 else "")
+
+
 def _compact_title_text(
     tool_name: str, args: dict, status_icon: str = "", status_color: str = "",
     lead_frame: str = "",
@@ -349,43 +344,16 @@ def _compact_title_text(
         display_name = f"{lead_frame} {label}"
     txt = Text()
     raw_path = args.get("path", "")
-    if not raw_path and tool_name in ("copy_file", "rename_file", "move_file"):
-        raw_path = args.get("src") or args.get("source") or ""
     path_disp = _format_path_for_title(raw_path)
     arg_disp = path_disp
     is_file_path = bool(path_disp)
-    if path_disp and tool_name in ("copy_file", "rename_file", "move_file"):
-        dest_raw = args.get("dest") or args.get("destination") or args.get("dst") \
-            or args.get("new_path") or ""
-        dest_disp = _format_path_for_title(dest_raw)
-        if dest_disp:
-            arg_disp = f"{path_disp} → {dest_disp}"
-            is_file_path = False
-    if tool_name == "grep_files":
-        pat = args.get("pattern", "") or args.get("query", "") or ""
-        gpath_raw = args.get("path", "") or "."
-        gpath = _format_path_for_title(gpath_raw) or "."
-        txt.append(f"{display_name}(", style=f"bold {color}")
-        if pat:
-            txt.append(pat, style=f"bold {color}")
-            txt.append(" → ", style=f"bold {color}")
-        txt.append(gpath, style=_file_link_style(gpath if isinstance(gpath_raw, str) else "", color))
-        txt.append(")", style=f"bold {color}")
-        if status_icon:
-            txt.append("  ")
-            txt.append(status_icon, style=status_color)
-        return txt
-    elif not arg_disp and tool_name == "web_search":
+    if not arg_disp and tool_name == "web_search":
         urls = args.get("urls", []) or []
         arg_disp = args.get("query", "") or args.get("url", "") or (", ".join(urls) if urls else "")
     elif not arg_disp and tool_name == "shell":
         cmd = args.get("command", "") or ""
         # Однострочная команда — целиком; многострочная — первая строка + …
-        if "\n" in cmd:
-            first = cmd.split("\n", 1)[0]
-            arg_disp = first[:80] + (" …" if len(first) > 80 or "\n" in cmd else "")
-        else:
-            arg_disp = cmd[:120] + ("…" if len(cmd) > 120 else "")
+        arg_disp = _truncate_cmd(cmd)
     elif not arg_disp and tool_name == "ssh":
         host = args.get("host", "") or ""
         cmd = args.get("command", "") or args.get("command_str", "") or ""
@@ -393,20 +361,14 @@ def _compact_title_text(
             cmd = f"↑ {args.get('upload')} → {args.get('dest', '')}"
         elif not cmd and args.get("download"):
             cmd = f"↓ {args.get('download')} → {args.get('dest', '')}"
-        if "\n" in cmd:
-            first = cmd.split("\n", 1)[0]
-            cmd = first[:80] + (" …" if len(first) > 80 or "\n" in cmd else "")
-        else:
-            cmd = cmd[:120] + ("…" if len(cmd) > 120 else "")
+        cmd = _truncate_cmd(cmd)
         arg_disp = f"{host}: {cmd}" if host and cmd else (cmd or host)
     if arg_disp:
         txt.append(f"{display_name}(", style=f"bold {color}")
         if is_file_path and isinstance(raw_path, str):
             txt.append(arg_disp, style=_file_link_style(raw_path, color))
-        elif is_file_path and isinstance(raw_path, list):
-            # Несколько файлов — без линка (там display "N files: a, b, c")
-            txt.append(arg_disp, style=f"bold {color}")
         else:
+            # Несколько файлов (list) или не-путь — без линка.
             txt.append(arg_disp, style=f"bold {color}")
         txt.append(")", style=f"bold {color}")
     else:
@@ -415,11 +377,6 @@ def _compact_title_text(
         txt.append("  ")
         txt.append(status_icon, style=status_color)
     return txt
-
-
-def _compact_separator(width: int | None = None) -> Text:
-    w = width if width is not None else _w()
-    return Text("  " + "─" * max(10, w - 4), style="dim")
 
 
 def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult | None, cmd: str) -> str:
@@ -458,27 +415,6 @@ def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult |
             return "\n".join(infos)
         return ""
 
-    if tool_name in ("ls", "tree", "find_files", "grep_files"):
-        if result is None:
-            return ""
-        out = (result.output or "").strip()
-        if tool_name == "ls":
-            m = re.search(r"(\d+)\s+dirs,\s+(\d+)\s+files", out)
-            if m:
-                return _i18n("compact.dirs_files_n", dirs=int(m.group(1)), files=int(m.group(2)))
-            return ""
-        if tool_name == "grep_files":
-            n = len([ln for ln in out.split("\n")[1:] if ln.strip()])
-            return _i18n("compact.found_n", n=n)
-        if tool_name == "find_files":
-            m = re.search(r"(\d+)", out)
-            if m:
-                return _i18n("compact.found_n", n=int(m.group(1)))
-            return out.split("\n", 1)[0][:100]
-        # tree — считаем строки-элементы (без корневой строки пути)
-        n = max(0, len([ln for ln in out.split("\n") if ln.strip()]) - 1)
-        return _i18n("compact.found_n", n=n)
-
     if tool_name == "docx_screenshot":
         if result is None:
             return ""
@@ -491,7 +427,7 @@ def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult |
             return _i18n("compact.page_n", n=nums)
         return ""
 
-    if tool_name in ("write_file", "create_file"):
+    if tool_name == "create_file":
         if result is None or result.status != "ok":
             return ""
         n = None
@@ -511,7 +447,7 @@ def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult |
         if result is not None:
             for line in (result.output or "").split("\n"):
                 s = line.strip()
-                if s.startswith("✓") or "patch" in s.lower() or s.startswith("⚠") or s.startswith("✗"):
+                if s.startswith(("✓", "⚠", "✗")) or "patch" in s.lower():
                     return s[:100]
         return ""
 
@@ -526,9 +462,9 @@ def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult |
     return ""
 
 
-def COMPACT_PREVIEW_LINES():
+def COMPACT_PREVIEW_LINES():  # noqa: N802
     return int(ui.get("limits.compact_preview_lines", 8))
-def COMPACT_PREVIEW_LINES_SHELL():
+def COMPACT_PREVIEW_LINES_SHELL():  # noqa: N802
     return int(ui.get("limits.compact_preview_lines_shell", 5))
 
 # Когда True — compact-preview показывает все строки, без обрезки и без "… +N lines"
@@ -558,8 +494,8 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
     if tool_name == "patch_file" and result is not None and result.status == "ok":
         return _compact_patch_preview(args, result)
 
-    # write_file / create_file — summary "N строк" + нумерованный листинг контента
-    if tool_name in ("write_file", "create_file") and isinstance(args.get("content"), str):
+    # create_file — summary "N строк" + нумерованный листинг контента
+    if tool_name == "create_file" and isinstance(args.get("content"), str):
         content = args["content"]
         lines = content.split("\n")
         if lines and lines[-1] == "":
@@ -631,9 +567,8 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
             out.append(Text("        " + _i18n("compact.more_lines", n=rest), style="dim italic"))
         return out
 
-    # grep_files / find_files / lsp_* — первые 3 результата + "… +N строк"
+    # grep_files / lsp_* — первые 3 результата + "… +N строк"
     if tool_name in (
-        "grep_files", "find_files",
         "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
     ) and result is not None and result.status == "ok":
         return _compact_result_list_preview(tool_name, result)
@@ -648,8 +583,8 @@ def _compact_result_list_preview(tool_name: str, result: tools.ToolResult) -> li
         return None
     raw = output.split("\n")
 
-    # У grep/find/lsp_diagnostics первая строка — заголовок-сводка, не результат.
-    has_header = tool_name in ("grep_files", "find_files", "lsp_diagnostics")
+    # У grep/lsp_diagnostics первая строка — заголовок-сводка, не результат.
+    has_header = tool_name == "lsp_diagnostics"
     header = raw[0] if has_header else ""
     rows = raw[1:] if has_header else raw
     rows = [ln for ln in rows if ln.strip()]
@@ -666,7 +601,7 @@ def _compact_result_list_preview(tool_name: str, result: tools.ToolResult) -> li
     limit = None if _EXPANDED_PREVIEW else 2
     head = rows if limit is None else rows[:limit]
     for ln in head:
-        out.append(Text("      " + ln.strip(), style=t("dim_text")))
+        out.append(Text("      " + ln.strip(), style=t("dim_text")))  # noqa: PERF401
     if len(rows) > len(head):
         rest = len(rows) - len(head)
         out.append(Text(
@@ -906,25 +841,23 @@ def show_tool_combined(
 
     _store_tool(call, result, subtitle=subtitle)
     _show_tool_compact(call, result, cmd, tool_name, args, subtitle=subtitle)
-    return
 
 def show_output(result: tools.ToolResult):
     """Legacy wrapper — used when call is not available. Renders output-only panel."""
     _show_tool_compact(None, result, "", result.name, {}, subtitle="")
-    return
 
 
 def render_md_panel(text: str, subtitle: str = "", message_num: int = 0):
     from rich.markdown import Markdown
-    from ui.formatting import latex_to_unicode
 
-    from ui.formatting import escape_md_underscores
+    from ui.formatting import escape_md_underscores, latex_to_unicode
 
     _store_assistant(text, subtitle=subtitle, message_num=message_num)
     text = latex_to_unicode(text)
     md = Markdown(escape_md_underscores(text), code_theme="monokai", inline_code_theme="monokai")
 
     from rich.console import Group as RGroup
+
     from agent.stream_render import _inline_md
     stripped = text.lstrip("\n").rstrip()
     # Первая строка склеивается с "●". Если она — block-element
@@ -948,7 +881,7 @@ def render_md_panel(text: str, subtitle: str = "", message_num: int = 0):
 
 # Subagent display — вынесено в agent/subagent_display.py
 from agent.subagent_display import (  # noqa: E402, F401
+    show_subagent_done,
     show_subagent_start,
     show_subagent_status,
-    show_subagent_done,
 )

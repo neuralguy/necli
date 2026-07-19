@@ -24,14 +24,13 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from rich.text import Text
 from rich.panel import Panel
+from rich.text import Text
 
 from agent.display import _w
 from config import settings as _settings
 from config.themes import t as _theme
 from config.ui import ui
-
 
 # Кэш для _think_enabled: значение читается на каждом chunk LiveStream
 # (parse_partial_thought + strip_think_blocks + has_think_blocks + parse_think_blocks),
@@ -150,7 +149,7 @@ def _extract_partial_thought(body: str) -> str | None:
         # Ключ ещё не дошёл в стриме — пока показывать нечего.
         return None
 
-    _SIMPLE_ESC = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\', '/': '/'}
+    _SIMPLE_ESC = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\', '/': '/'}  # noqa: N806
     i = m.end()
     out: list[str] = []
     n = len(body)

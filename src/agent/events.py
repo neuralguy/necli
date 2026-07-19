@@ -13,6 +13,7 @@ from typing import Protocol, runtime_checkable
 import tools
 from planner import Plan
 
+
 @runtime_checkable
 class AgentEventHandler(Protocol):
     """Протокол обработки событий агентного цикла."""

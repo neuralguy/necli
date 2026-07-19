@@ -1,5 +1,4 @@
-from prompts._core import _OPEN, _CLOSE
-
+from prompts._core import _CLOSE, _OPEN
 
 ORCHESTRATION_TRIGGER_BLOCK = r"""# Orchestration decision
 
@@ -25,7 +24,7 @@ Optimize for correct, polished results in as few rounds as possible — in that 
 
 - SCOUT BEFORE ACTION: locate symbols/text/call-sites before editing, deleting, renaming, or refactoring.
 - Batch independent work: gather context in one pass, edit related changes together, run tests at the end.
-- Reading is `read_files`; searching is `grep_files`; never use shell cat/head/tail/sed/awk/grep to read.
+- Reading is `read_files`; never use shell cat/head/tail/sed/awk/grep to read.
 - LOCATE before you read. Use LSP for symbols and grep for text, then read a TARGETED range around hits.
   Read a whole file only when it is small or genuinely all needed.
 - Read multiple files in one `read_files` call. Do not slice one file into tiny ranges or re-read unchanged

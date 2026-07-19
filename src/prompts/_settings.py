@@ -72,9 +72,10 @@ Open line STARTS with three colons; close line is bare {_CLOSE}. Markers are asy
     {{"path": "main.py"}}
     {_CLOSE}
 
-2) Content tools (write_file, create_file, create_docx) — path in header, raw body:
+2) Content tools (create_file, create_docx) — path in header, raw body
+   (create_file creates or fully overwrites):
 
-    {_OPEN} write_file path="src/x.py"
+    {_OPEN} create_file path="src/x.py"
     print("hi")
     {_CLOSE}
 

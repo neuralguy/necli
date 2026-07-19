@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-
 from agent import render_store
 from agent.render_store import RenderItem, RenderStore
 from tools.models import ToolCall, ToolResult
+
 
 class TestRenderItem:
     def test_to_dict_roundtrip(self):
@@ -61,11 +61,11 @@ class TestAddMethods:
         assert it.payload == {"steps": ["a", "b"]}
 
     def test_add_tool_with_call_and_result(self):
-        call = ToolCall(command="ls", tool_name="ls", args={"path": "."}, raw="raw")
-        res = ToolResult(name="ls", status="ok", output="out", exit_code=0)
+        call = ToolCall(command="shell", tool_name="shell", args={"path": "."}, raw="raw")
+        res = ToolResult(name="shell", status="ok", output="out", exit_code=0)
         it = self.store.add_tool(call, res, subtitle="s")
         assert it.kind == "tool"
-        assert it.payload["call"]["tool_name"] == "ls"
+        assert it.payload["call"]["tool_name"] == "shell"
         assert it.payload["result"]["status"] == "ok"
         assert it.payload["subtitle"] == "s"
 

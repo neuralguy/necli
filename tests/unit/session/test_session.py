@@ -80,11 +80,10 @@ class TestAutoTitle:
         s.add_user_message("hello world")
         assert s.title == "hello world"
 
-    def test_title_capped_at_60(self, isolated_data):
+    def test_title_keeps_full_text_normalized(self, isolated_data):
         s = Session()
-        long = "a" * 100
-        s.add_user_message(long)
-        assert len(s.title) <= 61  # 60 + ellipsis
+        s.add_user_message("  hello\n   world  ")
+        assert s.title == "hello world"
 
     def test_existing_title_preserved(self, isolated_data):
         s = Session(title="custom")
@@ -141,7 +140,7 @@ class TestBuildCompressText:
 
     def test_truncates_long_tool_block_in_assistant(self, isolated_data):
         s = Session()
-        big_block = ":::call write_file path=\"x\"\n" + "x" * 1000 + "\ncall:::"
+        big_block = ":::call create_file path=\"x\"\n" + "x" * 1000 + "\ncall:::"
         s.add_assistant_message("text " + big_block, model="gpt")
         text = s.build_compress_text()
         assert "truncated" in text

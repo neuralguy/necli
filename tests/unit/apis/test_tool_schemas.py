@@ -14,9 +14,7 @@ from tools.registry import TOOL_REGISTRY
 # ssh/subagent теперь гейтятся скиллами и в agent-mode по умолчанию скрыты —
 # тестируются отдельно в TestSkillGating. Здесь только негейтящиеся write-тулы.
 WRITE_TOOLS = {
-    "shell", "write_file", "patch_file", "create_file", "delete_file",
-    "rename_file", "copy_file", "move_file", "create_docx", "mkdir",
-    "rmdir", "apply_diff",
+    "shell", "patch_file", "create_file", "create_docx",
 }
 
 def _names(schemas):
@@ -83,7 +81,7 @@ class TestAgentMode:
 
     def test_includes_read_only_tools(self):
         names = set(_names(get_tool_schemas("agent")))
-        assert READ_ONLY_TOOLS <= names
+        assert names >= READ_ONLY_TOOLS
 
     def test_returns_fresh_list_copy(self):
         a = get_tool_schemas("agent")
@@ -94,7 +92,7 @@ class TestAgentMode:
 class TestSkillGating:
     """Гейтящиеся скиллами тулы скрыты, пока скилл не активен."""
 
-    GATED = {"web_search", "image_search", "ssh", "subagent"}
+    GATED = {"web_search", "image_search", "ssh", "subagent"}  # noqa: RUF012
 
     def test_gated_hidden_by_default(self):
         names = set(_names(get_tool_schemas("agent")))
@@ -123,7 +121,7 @@ class TestSkillGating:
 
     def test_all_skills_active_exposes_all_gated(self):
         names = set(_names(get_tool_schemas("agent", {"web", "ssh", "subagents"})))
-        assert self.GATED <= names
+        assert names >= self.GATED
 
     def test_ungated_tools_always_present(self):
         names = set(_names(get_tool_schemas("agent", set())))
@@ -152,7 +150,7 @@ class TestPlanMode:
 
     def test_includes_all_read_only_tools(self):
         names = set(_names(get_tool_schemas("plan")))
-        assert READ_ONLY_TOOLS <= names
+        assert names >= READ_ONLY_TOOLS
 
     def test_plan_tool_always_present(self):
         assert "plan" in _names(get_tool_schemas("plan"))

@@ -26,6 +26,26 @@ _THROTTLE_KEYWORDS = (
     "throttled",
     "overloaded",
 )
+
+_TRANSIENT_PROVIDER_KEYWORDS = (
+    "peer closed connection without sending complete message body",
+    "incomplete chunked read",
+    "remoteprotocolerror",
+    "readerror",
+    "protocolerror",
+    "connection reset",
+    "connection aborted",
+    "connection closed",
+    "server disconnected",
+    "stream closed",
+    "stream error",
+    "no live api keys available",
+    "please try again later",
+    "temporarily unavailable",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+)
 _RETRY_AFTER_RE = re.compile(r"retry[- ]?after[\"'\s:=]+(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
@@ -44,9 +64,10 @@ def is_throttled(exc: Exception) -> bool:
         return status in _RETRYABLE_STATUSES
     # Статус неизвестен (httpx TransportError и пр.) — fallback на ключевые слова.
     s_lower = str(exc).lower()
-    if any(k in s_lower for k in _THROTTLE_KEYWORDS):
-        return True
-    return False
+    exc_name = type(exc).__name__.lower()
+    return any(k in s_lower for k in _THROTTLE_KEYWORDS) or any(
+        k in s_lower or k in exc_name for k in _TRANSIENT_PROVIDER_KEYWORDS
+    )
 
 
 def _retry_after_seconds(exc: Exception) -> float | None:
@@ -81,7 +102,7 @@ async def with_throttle_retry(coro_factory, on_retry=None):
     for attempt in range(_MAX_RETRIES):
         try:
             return await coro_factory()
-        except Exception as e:
+        except Exception as e:  # noqa: PERF203
             if is_throttled(e) and attempt < _MAX_RETRIES - 1:
                 delay = _backoff_delay(attempt, e)
                 logger.warning(

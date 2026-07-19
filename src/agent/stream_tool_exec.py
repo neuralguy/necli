@@ -7,58 +7,14 @@
 
 import logging
 import time
-from pathlib import Path
 
 import tools
-from tools._paths import resolve_path
-from tools.call_parser import parse_call_block as _parse_call_block
-from tools.registry import is_tool_allowed, build_blocked_result
-from agent.executor import execute_and_show
 from agent.display import show_command, show_tool_combined
+from agent.executor import execute_and_show
+from tools.call_parser import parse_call_block as _parse_call_block
+from tools.registry import build_blocked_result, is_tool_allowed
 
 logger = logging.getLogger(__name__)
-
-
-def _precheck_create_file(stream, complete) -> bool:
-    """Если create_file целится в существующий файл — формируем error и просим early-abort.
-
-    Возвращает True если pre-check сработал (стрим будет прерван).
-    """
-    if complete.tool_name != "create_file":
-        return False
-    call = _parse_call_block(
-        complete.tool_name, complete.attrs_header,
-        complete.body, complete.raw,
-    )
-    if call is None:
-        return False
-    path_str = (call.args or {}).get("path") or ""
-    if not path_str:
-        return False
-    try:
-        abs_path = Path(resolve_path(path_str))
-    except Exception:
-        return False
-    if not abs_path.exists():
-        return False
-    err = tools.ToolResult(
-        name="create_file",
-        status="error",
-        output=(
-            f"File already exists: {path_str}. "
-            f"Use write_file to overwrite or patch_file to modify."
-        ),
-        exit_code=1,
-        command=call.command,
-    )
-    show_tool_combined(
-        call, err,
-        subtitle="[bold red]\u25a0 aborted: file exists[/bold red]",
-    )
-    from agent.loop import _tool_call_identity
-    stream.request_early_abort(err, _tool_call_identity(call))
-    logger.info("early abort: create_file on existing %s", path_str)
-    return True
 
 
 def _build_parse_error_result(tool_name: str, body: str, raw: str, reason: str) -> tools.ToolResult:
@@ -84,12 +40,12 @@ def _build_parse_error_result(tool_name: str, body: str, raw: str, reason: str) 
 
 def _diagnose_parse_failure(tool_name: str, attrs_header: str, body: str) -> str:
     """Пытается понять, ПОЧЕМУ parse_call_block вернул None — для понятного сообщения."""
-    from tools.call_parser import NAMED_TOOLS, _CONTENT_TOOLS, _PATCH_TOOLS
+    from tools.call_parser import _CONTENT_TOOLS, _PATCH_TOOLS, NAMED_TOOLS
 
     if tool_name not in NAMED_TOOLS:
         return f"unknown tool '{tool_name}'"
 
-    if tool_name in _CONTENT_TOOLS or tool_name in _PATCH_TOOLS:
+    if tool_name in _CONTENT_TOOLS or tool_name in _PATCH_TOOLS:  # noqa: SIM102
         if 'path=' not in (attrs_header or ''):
             return f"'{tool_name}' requires path=\"...\" in the fence header"
 
@@ -97,7 +53,7 @@ def _diagnose_parse_failure(tool_name: str, attrs_header: str, body: str) -> str
     if not stripped:
         if tool_name not in _CONTENT_TOOLS:
             return "empty block body"
-    elif stripped.startswith('{') or stripped.startswith('['):
+    elif stripped.startswith(('{', '[')):
         return "body looks like JSON but does not parse — check quotes, commas, escaping"
 
     return "unknown reason (see body above)"
@@ -118,9 +74,6 @@ def handle_complete_tool(stream, complete) -> bool:
     if complete.tool_name in ("think", "plan"):
         return False
 
-    if _precheck_create_file(stream, complete):
-        return False
-
     # Skipped из-за interrupt
     if complete.body and stream.ctx.interrupted:
         call = _parse_call_block(
@@ -135,7 +88,7 @@ def handle_complete_tool(stream, complete) -> bool:
         return False
 
     # Пустое тело допустимо для shorthand с attrs в шапке
-    # (`:::call delete_file path="x.py"` без JSON body). Парсер сам разрулит:
+    # (например `:::call poll question="...?"` без JSON body). Парсер сам разрулит:
     # если ни body, ни attrs не дают валидных args — вернёт None → нижняя
     # ветка ниже покажет parse error с диагностикой.
     if not complete.body and not (complete.attrs_header or "").strip():

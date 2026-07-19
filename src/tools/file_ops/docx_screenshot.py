@@ -22,10 +22,10 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from logger import logger
-from tools._paths import resolve_path, clean_path
-from tools.models import ToolCall, ToolResult
 from config.paths import BASE_DIR
+from logger import logger
+from tools._paths import clean_path, resolve_path
+from tools.models import ToolCall, ToolResult
 
 _DPI = 200
 
@@ -71,8 +71,8 @@ def _find_soffice() -> str | None:
         candidates.extend(
             str(Path(base) / "LibreOffice" / "program" / "soffice.exe")
             for base in (
-                os.environ.get("ProgramFiles", r"C:\Program Files"),
-                os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                os.environ.get("ProgramFiles", r"C:\Program Files"),  # noqa: SIM112
+                os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),  # noqa: SIM112
             )
         )
     for cand in candidates:
@@ -225,7 +225,7 @@ def _parse_pages_arg(args: dict, op_id: str) -> list[int]:
         for p in pages:
             try:
                 nums.append(int(p))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError):  # noqa: PERF203
                 continue
     elif isinstance(pages, str):
         for tok in pages.split(","):

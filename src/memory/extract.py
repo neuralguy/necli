@@ -94,7 +94,7 @@ def _parse_items(raw: str) -> list[dict]:
     out: list[dict] = []
     for item in data:
         if isinstance(item, dict) and item.get("name") and item.get("body"):
-            out.append(item)
+            out.append(item)  # noqa: PERF401
     return out
 
 

@@ -76,7 +76,7 @@ class TestSnapshotRound:
         for i in range(3):
             _write(undo_env, "a.txt", f"v{i}")
             undo_store.snapshot_round(undo_env, f"r{i}")
-        rc, out, _ = undo_store._git(["rev-list", "--count", undo_store._TIP_REF], undo_env, check=False)
+        _rc, out, _ = undo_store._git(["rev-list", "--count", undo_store._TIP_REF], undo_env, check=False)
         assert int(out) == 3
 
     def test_no_workdir_no_crash(self, tmp_path, monkeypatch):

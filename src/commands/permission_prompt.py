@@ -5,10 +5,10 @@ from rich.console import Console
 from rich.text import Text
 
 import tools
-from config.permissions import set_decision
-from ui.menu import select_menu
-from config.themes import t
 from config.i18n import t as _t
+from config.permissions import set_decision
+from config.themes import t
+from ui.menu import select_menu
 
 console = Console()
 
@@ -92,7 +92,7 @@ def _smart_preview(call: tools.ToolCall) -> str:
         first = str(cmd).splitlines()[0] if cmd else ""
         return f"$ {_clip(first, 60)}" if first else "(empty command)"
 
-    if name in ("write_file", "create_file"):
+    if name == "create_file":
         path = path_of()
         n = _count_lines(args.get("content"))
         if "b64" in args:
@@ -110,20 +110,7 @@ def _smart_preview(call: tools.ToolCall) -> str:
             return f"{path}  (insert @ line {args.get('line', '?')})"
         return f"{path}  (find/replace)"
 
-    if name == "apply_diff":
-        diff = str(args.get("diff") or "")
-        plus = sum(1 for ln in diff.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
-        minus = sum(1 for ln in diff.splitlines() if ln.startswith("-") and not ln.startswith("---"))
-        return f"diff  (+{plus} −{minus})" if (plus or minus) else "apply diff"
-
-    if name in ("delete_file", "rename_file", "copy_file", "move_file", "mkdir", "rmdir"):
-        src = path_of() or _clip(args.get("src") or args.get("source"), 32)
-        dst = args.get("dst") or args.get("dest") or args.get("destination") or args.get("new_path")
-        if dst:
-            return f"{src} → {_clip(dst, 32)}"
-        return src
-
-    if name in ("read_files", "read_file", "grep_files", "find_files", "ls", "tree"):
+    if name in ("read_files", "read_file"):
         if args.get("pattern"):
             return f"{_clip(args['pattern'], 32)}  in {path_of() or '.'}"
         return path_of() or "."
@@ -162,8 +149,9 @@ def confirm_tool_call(call: tools.ToolCall) -> bool:
     try:
         import config as _cfg
         if _cfg.get_telegram_enabled() and _cfg.get_telegram_approve():
-            from apis.telegram import get_bridge
             import html as _html
+
+            from apis.telegram import get_bridge
             bridge = get_bridge()
             if bridge.is_running:
                 q = (

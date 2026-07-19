@@ -16,8 +16,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from functools import lru_cache
-from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def _get_encoding(encoding_name: str):
         return None
 
 
-def _count_tiktoken(text: str, encoding_name: str) -> Optional[int]:
+def _count_tiktoken(text: str, encoding_name: str) -> int | None:
     """Считает токены через tiktoken. Возвращает None если недоступен."""
     enc = _get_encoding(encoding_name)
     if enc is None:

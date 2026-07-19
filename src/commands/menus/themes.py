@@ -9,14 +9,21 @@ from rich.table import Table
 from rich.text import Text
 
 import config
-from config.themes import (
-    get_theme, set_theme, set_custom_color, reset_custom,
-    get_active_theme_name, has_custom_overrides, list_themes,
-    BUILTIN_THEMES, ROLES, ROLE_LABELS,
-)
-from config.i18n import t as _
-from ui.menu import _panel_menu_direct
 from agent.theme_preview import render_theme_preview
+from config.i18n import t as _
+from config.themes import (
+    BUILTIN_THEMES,
+    ROLE_LABELS,
+    ROLES,
+    get_active_theme_name,
+    get_theme,
+    has_custom_overrides,
+    list_themes,
+    reset_custom,
+    set_custom_color,
+    set_theme,
+)
+from ui.menu import _panel_menu_direct
 
 console = Console()
 
@@ -135,16 +142,16 @@ def themes_interactive():
 
         def render_fn(sel: int) -> str:
             # Палитра для превью: подсвеченная тема либо «текущая + custom»
-            if sel < len(theme_names):
-                colors = BUILTIN_THEMES[theme_names[sel]]
+            if sel < len(theme_names):  # noqa: B023, SIM108
+                colors = BUILTIN_THEMES[theme_names[sel]]  # noqa: B023
             else:
                 # На пунктах кастом/сброс — показываем актуальную палитру.
                 colors = get_theme()
 
             list_panel = _build_theme_list_panel(
-                theme_names, sel, current, custom, list_w
+                theme_names, sel, current, custom, list_w  # noqa: B023
             )
-            preview = render_theme_preview(colors, width=preview_w)
+            preview = render_theme_preview(colors, width=preview_w)  # noqa: B023
             return list_panel + preview
 
         choice = _panel_menu_direct(
@@ -255,9 +262,9 @@ def _theme_customize():
 
         def render_fn(sel: int) -> str:
             list_panel = _build_customize_panel(
-                roles_list, custom_overrides, current_colors, sel, list_w
+                roles_list, custom_overrides, current_colors, sel, list_w  # noqa: B023
             )
-            preview = render_theme_preview(current_colors, width=preview_w)
+            preview = render_theme_preview(current_colors, width=preview_w)  # noqa: B023
             return list_panel + preview
 
         choice = _panel_menu_direct(

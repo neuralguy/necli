@@ -19,12 +19,10 @@
 """
 
 import re
-from typing import Optional
 
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
-
 
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _HEADING_RE = re.compile(r"^#{1,6}\s")
@@ -110,7 +108,7 @@ class BlockStreamer:
         self._printed_blocks: int = 0       # сколько блоков уже ушло в scrollback
         self._emitted_blocks: list[str] = []  # тексты блоков, уже ушедших в scrollback (по содержимому)
         self._active_text: str = ""          # текст текущего активного блока
-        self._live: Optional[Live] = None
+        self._live: Live | None = None
         self._done: bool = False             # finalize() вызван — update() игнорируем до reset()
         self._emitted_any: bool = False      # хоть один блок ушёл в scrollback
 
@@ -154,8 +152,9 @@ class BlockStreamer:
 
         if is_first:
             from rich.console import Group
-            from config.themes import t
+
             from agent.stream_render import _inline_md
+            from config.themes import t
             from ui.formatting import latex_to_unicode
             block_text = latex_to_unicode(block_text)
             stripped = block_text.lstrip("\n").rstrip()

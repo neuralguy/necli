@@ -53,7 +53,7 @@ def memory_write(call: ToolCall) -> ToolResult:
             name, body, mtype=mtype, timestamp=_now(),
             working_dir=get_working_dir(), scope=scope,
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.opt(exception=True).error("memory_write failed: {}", e)
         return ToolResult(
             name="memory_write", status="error",

@@ -1,5 +1,4 @@
-from prompts._core import _OPEN, _CLOSE
-
+from prompts._core import _CLOSE, _OPEN
 
 TOOL_FORMAT_BLOCK = f"""# Tool call format
 
@@ -27,6 +26,12 @@ You call tools via NATIVE function calling: emit one or more tool_calls with the
 arguments object. The provider executes them and returns the result. Never write the call as plain
 text — always use the function-calling mechanism. Never duplicate the same call twice.
 
+⚡ BATCHING: emit ALL independent tool_calls TOGETHER in ONE reply (parallel function calls). One call
+per reply is wasteful and slow — it multiplies rounds and cost. Examples of calls that MUST be batched:
+several reads/greps for scouting, several patch_file edits in different files (or different spots of one
+file), plan updates + the action for that step. Split into separate replies ONLY when a later call's
+arguments depend on an earlier call's output. THIS IS MUST HAVE, DON'T IGNORE THIS. BATCH AS MUCH, AS YOU CAN!
+
 ⛔ FORBIDDEN in your reply text: any text-mode / fenced imitation of a tool call. Do NOT write
 pseudo-call code fences, do NOT write textual FIND/REPLACE patch sections, do NOT write `$ <command>`
 lines or `Output:` / `Result:` / tool-result markers to simulate execution. Such text is NOT a tool
@@ -48,7 +53,7 @@ still executes, but always prefer three.
 Three categories of `{_OPEN}` blocks:
 
 1) JSON tools — body is a JSON object with the arguments. This is the DEFAULT for EVERY tool
-   except the two content/patch cases below (shell, grep_files, ls, find_files, lsp_*, poll, etc.):
+   except the two content/patch cases below (shell, lsp_*, poll, etc.):
 
     {_OPEN} read_files
     {{"path": "main.py"}}
@@ -58,10 +63,11 @@ Three categories of `{_OPEN}` blocks:
     {{"command": "pytest -q"}}
     {_CLOSE}
 
-2) Content tools (write_file, create_file, create_docx) — path REQUIRED in the open header, body is
-   raw content (no escaping needed, body can contain triple-backtick fences or tildes):
+2) Content tools (create_file, create_docx) — path REQUIRED in the open header, body is
+   raw content (no escaping needed, body can contain triple-backtick fences or tildes).
+   create_file creates a new file or fully overwrites an existing one:
 
-    {_OPEN} write_file path="src/main.py"
+    {_OPEN} create_file path="src/main.py"
     print("hi")
     {_CLOSE}
 
@@ -81,8 +87,7 @@ Three categories of `{_OPEN}` blocks:
 
 TOOLS_LIST_BLOCK = """# Available tools
 
-shell, read_files, write_file, patch_file, create_file, delete_file, rename_file, copy_file,
-move_file, ls, tree, mkdir, rmdir, find_files, grep_files, poll, ssh, web_search, subagent,
+shell, read_files, patch_file, create_file, poll, ssh, web_search, subagent,
 skill, create_docx, docx_screenshot, lsp_definition, lsp_references, lsp_hover, lsp_diagnostics,
 memory_write, memory_list, memory_read.
 
@@ -100,7 +105,7 @@ scope="project" (default) for context specific to the current project."""
 LSP_TOOLS_BLOCK = r"""## LSP tools
 
 Available when an LSP server is configured for the file's language (via `.data/lsp_servers.json`).
-If none is configured, these tools return an error — fall back to grep_files.
+If none is configured, these tools return an error.
 
 For lsp_definition/lsp_references/lsp_hover: `line` is 1-based, `character` is the 0-based column of
 the symbol. They return `path:line:column`. lsp_diagnostics output lines: `SEVERITY line:col
@@ -117,8 +122,8 @@ Use LSP first for symbol questions:
 - signature/type/docs → `lsp_hover`
 - post-edit code errors → `lsp_diagnostics`
 
-Use `grep_files` for text only: string literals, comments, log/error messages, config keys, or patterns
-you will feed into LSP. Fall back from LSP to grep/read only when LSP is unavailable or returns nothing."""
+Use `read_files` and grep for text only: string literals, comments, log/error messages, config keys, or patterns
+you will feed into LSP. Fall back from LSP to file reading only when LSP is unavailable or returns nothing."""
 
 
 TOOL_STRATEGY_BLOCK_NATIVE = TOOL_STRATEGY_BLOCK.replace(

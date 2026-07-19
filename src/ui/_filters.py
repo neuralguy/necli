@@ -2,7 +2,6 @@
 
 import config
 
-
 # Суффиксы, которые всегда игнорируются (объединение из completer + file_context)
 _IGNORE_SUFFIXES = frozenset({
     ".pyc", ".pyo", ".so", ".dylib", ".dll",
