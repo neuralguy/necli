@@ -225,3 +225,10 @@ class TestRenderLine:
         log = ThinkLog()
         line = log.render_line(partial="typing", streaming=True)
         assert "typing" in line.plain
+
+    def test_strips_markdown_from_closed_and_partial_thoughts(self):
+        log = ThinkLog()
+        log.add("## **Inspect** [source](https://example.com)\n- `plain` text")
+        assert log.steps[0].text == "Inspect source\nplain text"
+        assert "*" not in log.render_line(partial="**Writing** `now`").plain
+        assert "Writing now" in log.render_line(partial="**Writing** `now`").plain

@@ -337,7 +337,7 @@ def select_session_menu(
     render_width = max(20, cols - 1)
 
     term_h = rows
-    max_visible = max(3, (term_h - 8) // 3)
+    max_visible = max(3, (term_h - 8) // 2)
     need_scroll = total > max_visible
 
     def _format_tokens_short(n: int) -> str:
@@ -407,7 +407,10 @@ def select_session_menu(
             else:
                 title_style = row_bg + Style.parse("green")
 
-            meta = f"{activity} · {msgs} msgs · {_format_tokens_short(tokens)} · {sid[:12]}"
+            folder = str(s.get("working_dir", "")).rstrip("/").rsplit("/", 1)[-1]
+            meta = f"{activity} · {msgs} msgs · {_format_tokens_short(tokens)}"
+            if folder:
+                meta += f" · {folder}"
             meta_style = row_bg + Style.parse("bold white") if is_selected else row_bg + Style(dim=True)
             body.append("\n")
             body.append(_pad_menu_text(marker + pin + title, inner_width), style=title_style)
@@ -521,23 +524,70 @@ def select_api_model_menu(
     render_width = max(20, out_console.width - 1)
 
     term_h = shutil.get_terminal_size((80, 24)).lines
-    max_visible = max(3, term_h - 10)
+    max_visible = max(3, term_h - 12)
 
-    def _viewport(sel: int, scroll_off: int, n: int) -> tuple[int, int, int]:
-        if n <= max_visible:
-            return 0, n, 0
+    def _build_rows() -> list:
+        """Плоский список строк таблицы: ('group', name) и ('model', order_idx).
+        Заголовки групп учитываются как реальные строки — окно скролла берётся
+        по этому списку, а не по позициям моделей, чтобы не вылезать за экран.
+        """
+        rows = []
+        prev_group = None
+        for orig_idx in order:
+            grp = _group_of_idx(orig_idx)
+            if grp != prev_group:
+                rows.append(("group", grp))
+                prev_group = grp
+            rows.append(("model", orig_idx))
+        return rows
+
+    def _row_of_model_pos(model_pos: int, rows: list) -> int:
+        seen = -1
+        for ridx, row in enumerate(rows):
+            if row[0] == "model":
+                seen += 1
+                if seen == model_pos:
+                    return ridx
+        return 0
+
+    def _viewport(sel: int, scroll_off: int, n_rows: int) -> tuple[int, int, int]:
+        if n_rows <= max_visible:
+            return 0, n_rows, 0
         if sel < scroll_off:
             scroll_off = sel
         elif sel >= scroll_off + max_visible:
             scroll_off = sel - max_visible + 1
-        scroll_off = max(0, min(scroll_off, n - max_visible))
+        scroll_off = max(0, min(scroll_off, n_rows - max_visible))
         return scroll_off, scroll_off + max_visible, scroll_off
 
+    # Фиксированная ширина колонок: считаем единожды по всем строкам,
+    # чтобы при скролле viewport'а ширина не пересчитывалась и не дёргалась.
+    _marker = "> "
+    _model_w = _cell_width("Model")
+    _in_w = _cell_width("In")
+    _out_w = _cell_width("Out")
+    _ctx_w = _cell_width("Ctx")
+    _id_w = _cell_width("ID")
+    for orig in order:
+        m = api_models[orig]
+        _model_w = max(_model_w, _cell_width(m.display_name) + len(_marker))
+        _in_w = max(_in_w, _cell_width(f"${m.input_price:.2f}"))
+        _out_w = max(_out_w, _cell_width(f"${m.output_price:.2f}"))
+        _ctx_w = max(_ctx_w, _cell_width(_format_context_limit(m.context_window)))
+        _id_w = max(_id_w, _cell_width(m.id))
+        grp = _group_of_idx(orig)
+        _model_w = max(_model_w, _cell_width(grp.upper()))
+
     scroll_offset = 0
+    flat_rows = _build_rows()
+    flat_total = len(flat_rows)
 
     def render_fn(sel: int) -> str:
-        nonlocal scroll_offset
-        vp_start, vp_end, scroll_offset = _viewport(sel, scroll_offset, total)
+        nonlocal scroll_offset, flat_rows, flat_total
+        flat_rows = _build_rows()
+        flat_total = len(flat_rows)
+        sel_row = _row_of_model_pos(sel, flat_rows)
+        vp_start, vp_end, scroll_offset = _viewport(sel_row, scroll_offset, flat_total)
 
         table = Table(
             show_header=True,
@@ -546,25 +596,26 @@ def select_api_model_menu(
             padding=(0, 1),
             show_edge=False,
             show_lines=False,
+            width=render_width,
         )
-        table.add_column("Model", min_width=16, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("In", justify="right", min_width=5, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("Out", justify="right", min_width=5, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("Ctx", justify="right", min_width=6, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("ID", min_width=14, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("Model", width=_model_w, max_width=_model_w, min_width=_model_w, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("In", justify="right", width=_in_w, max_width=_in_w, min_width=_in_w, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("Out", justify="right", width=_out_w, max_width=_out_w, min_width=_out_w, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("Ctx", justify="right", width=_ctx_w, max_width=_ctx_w, min_width=_ctx_w, no_wrap=True, header_style="bold dim yellow")
+        table.add_column("ID", no_wrap=True, min_width=_id_w, max_width=_id_w, header_style="bold dim yellow")
 
-        prev_group = _group_of_idx(order[vp_start - 1]) if 0 < vp_start < len(order) else None
-        for pos in range(vp_start, vp_end):
-            m = api_models[order[pos]]
-            group = _group_of_idx(order[pos])
-            if group != prev_group:
+        for ridx in range(vp_start, vp_end):
+            row = flat_rows[ridx]
+            if row[0] == "group":
                 table.add_row(
-                    Text(group.upper(), style="bold dim yellow"),
+                    Text(row[1].upper(), style="bold dim yellow"),
                     Text(""), Text(""), Text(""), Text(""),
                 )
-                prev_group = group
+                continue
+            orig_idx = row[1]
+            m = api_models[orig_idx]
             is_current = m.id == current_id
-            is_selected = pos == sel
+            is_selected = ridx == sel_row
             marker = "> " if is_selected else "  "
 
             input_str = f"${m.input_price:.2f}"
@@ -591,14 +642,14 @@ def select_api_model_menu(
             )
 
         scroll_hint = ""
-        if total > max_visible:
+        if flat_total > max_visible:
             scroll_hint = f"({sel + 1}/{total})"
-            if vp_start > 0 and vp_end < total:
-                scroll_hint = f"↑{vp_start} ↓{total - vp_end} " + scroll_hint
+            if vp_start > 0 and vp_end < flat_total:
+                scroll_hint = f"↑{vp_start} ↓{flat_total - vp_end} " + scroll_hint
             elif vp_start > 0:
                 scroll_hint = f"↑{vp_start} " + scroll_hint
-            elif vp_end < total:
-                scroll_hint = f"↓{total - vp_end} " + scroll_hint
+            elif vp_end < flat_total:
+                scroll_hint = f"↓{flat_total - vp_end} " + scroll_hint
 
         search_text = f"🔍 {query}▌" if query else "🔍 type to search by name or id..."
         search_style = "bold cyan" if query else "dim"

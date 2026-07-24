@@ -32,7 +32,6 @@ from commands.slash import _handle_slash
 from commands.slash_handler import handle_slash_result
 from config.i18n import t as tr
 from session import Session
-from tools.ssh import close_all_connections
 from ui.clipboard import cleanup_old_images
 from ui.file_context import expand_at_references
 from ui.prompt import _BG_RESUME, _EOF, InputPrompt
@@ -142,7 +141,7 @@ def interactive(model, workdir, resume, api_provider):
                 console.print(f"[red]{tr('boot.session_not_found', name=resume)}[/red]")
                 return
         else:
-            session = Session()
+            session = Session(working_dir=workdir)
 
         _think_on_startup = bool(config.get("think_enabled", False))
         state = InteractiveState(
@@ -274,8 +273,7 @@ def interactive(model, workdir, resume, api_provider):
                 _ctx0 = get_current_ctx()
                 if _ctx0 is not None:
                     _ctx0.prompt_input = state.prompt_input
-                    # Callback пересчёта статуса на Ctrl+O reprint (после
-                    # compress/decompress last_status_text устаревает).
+                    # Callback пересчёта статуса на Ctrl+O reprint.
                     _ctx0.rebuild_status = lambda: build_status_line(state)
             except Exception:
                 logger.debug("bind ctx prompt/rebuild_status failed", exc_info=True)
@@ -421,7 +419,7 @@ def interactive(model, workdir, resume, api_provider):
                 # каждый запрос). В поток шлём ТОЛЬКО короткий one-shot сигнал при
                 # переключении, чтобы модель явно заметила смену в середине диалога.
                 if state.mode_state["changed"]:
-                    from prompts import (
+                    from system_prompt import (
                         MODE_SWITCH_TO_AGENT,
                         MODE_SWITCH_TO_AUTONOMOUS,
                         MODE_SWITCH_TO_PLANNING,
@@ -436,7 +434,7 @@ def interactive(model, workdir, resume, api_provider):
                     state.mode_state["changed"] = False
 
                 if state.think_changed:
-                    from prompts import THINK_SWITCH_OFF, THINK_SWITCH_ON
+                    from system_prompt import THINK_SWITCH_OFF, THINK_SWITCH_ON
                     notice = THINK_SWITCH_ON if state.think_enabled else THINK_SWITCH_OFF
                     agent_message = notice + "\n\n" + agent_message
                     state.think_changed = False
@@ -485,12 +483,6 @@ def interactive(model, workdir, resume, api_provider):
         finally:
             from session import storage as _storage
             _storage.save(state.session)
-            try:
-                closed = close_all_connections()
-                if closed:
-                    console.print(f"  [dim]{tr('send.ssh_closed', n=closed)}[/dim]")
-            except Exception:
-                logger.debug("close_all_connections failed", exc_info=True)
             try:
                 from apis.mcp_client import shutdown_mcp
                 shutdown_mcp()

@@ -25,9 +25,10 @@ class TestAliases:
 
 class TestCoercion:
     def test_line_string_to_int(self):
-        args, err = validate_and_normalize("patch_file", {"path": "f", "line": "42", "insert": "x"})
+        args, err = validate_and_normalize("lsp_references", {"path": "f", "line": "42", "character": "7"})
         assert err is None
         assert args["line"] == 42
+        assert args["character"] == 7
 
     def test_background_string_to_bool(self):
         args, err = validate_and_normalize("shell", {"command": "ls", "background": "true"})
@@ -35,9 +36,10 @@ class TestCoercion:
         assert args["background"] is True
 
     def test_uncoercible_int_left_as_is(self):
-        args, err = validate_and_normalize("patch_file", {"path": "f", "line": "abc", "insert": "x"})
+        args, err = validate_and_normalize("lsp_references", {"path": "f", "line": "abc", "character": "7"})
         assert err is None
         assert args["line"] == "abc"
+        assert args["character"] == 7
 
 
 class TestRequired:

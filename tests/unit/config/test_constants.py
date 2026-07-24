@@ -42,11 +42,11 @@ class TestReadOnlyTools:
         assert isinstance(READ_ONLY_TOOLS, frozenset)
 
     def test_contains_read_tools(self):
-        for name in ("read_files",):
+        for name in ("read_files", "grep"):
             assert name in READ_ONLY_TOOLS
 
     def test_contains_lsp_tools(self):
-        for name in ("lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics"):
+        for name in ("lsp_references", "lsp_diagnostics"):
             assert name in READ_ONLY_TOOLS
 
     def test_excludes_write_tools(self):

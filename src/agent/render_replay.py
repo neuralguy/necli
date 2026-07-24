@@ -340,7 +340,6 @@ def _replay_think(steps: list) -> None:
 
 def _replay_plan(plan: dict, action: str = "", focus_index=None) -> None:
     try:
-        from agent.display import is_expanded_preview
         from planner import Plan, PlanStep, StepStatus, render_plan_panel
     except Exception:
         return
@@ -363,6 +362,5 @@ def _replay_plan(plan: dict, action: str = "", focus_index=None) -> None:
         idx = int(focus_index) if focus_index is not None else None
     except (TypeError, ValueError):
         idx = None
-    full = bool(is_expanded_preview() or action == "create" or p.is_complete or idx is None)
     console.print()
-    console.print(render_plan_panel(p, compact=False, focus_index=idx, full=full))
+    console.print(render_plan_panel(p, compact=False, focus_index=idx))

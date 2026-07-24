@@ -1,10 +1,10 @@
-"""OpenAI tools JSON schemas для всех necli инструментов.
+"""OpenAI tools JSON schemas for all necli tools.
 
-Используется в API-режиме для нативной передачи инструментов через
-параметр `tools` в OpenAI-совместимый API.
+Used in API mode to pass native tools via the `tools` parameter
+to an OpenAI-compatible API.
 
-Схемы соответствуют тому, что парсер из tools/parser.py принимает
-как args, чтобы execute_call мог их выполнить без изменений.
+Schemas match what the parser in tools/parser.py accepts as args,
+so execute_call can execute them unchanged.
 """
 
 from __future__ import annotations
@@ -18,17 +18,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "shell",
             "description": (
                 "Run a shell command (git, pip, make, tests, etc.). "
-                "Do NOT use for file operations (cat/echo/tee/heredoc/sed for writes) — "
-                "use create_file/patch_file. "
-                "`cd` is allowed and may be chained to enter any directory "
-                "(e.g. `cd /any/path && cmd`); it applies only within this single call. "
-                "Prefer separate calls for unrelated commands. "
-                "For heavy/long commands (builds, full test suites, long downloads) set "
-                "background=true: the command runs detached, you get a job-id immediately "
-                "and can keep working; a notification with its output is delivered "
-                "automatically once it finishes. Do NOT call poll just to wait for a "
-                "background job; wait for the automatic completion notification. "
-                "Foreground commands time out at 60s."
+                "Do NOT use for file operations (cat/echo/tee/heredoc/sed for writes) — use create_file/patch_file. "
+                "cd /any/path && cmd applies only within this single call. "
             ),
             "parameters": {
                 "type": "object",
@@ -54,20 +45,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "read_files",
             "description": (
-                "Read up to 20 files at once. Files are read fully. "
-                "Use 'lines' ONLY to verify changes after patch_file. "
+                "Read up to 20 files at once, or list a directory."
                 "Supports images, .docx, .csv/.tsv, Excel."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "oneOf": [
-                            {"type": "string"},
-                            {"type": "array", "items": {"type": "string"}},
-                        ],
-                        "description": "Single file path, or multiple file paths.",
-                    },
                     "paths": {
                         "type": "array",
                         "items": {
@@ -77,17 +60,41 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                     "type": "object",
                                     "properties": {
                                         "path": {"type": "string"},
-                                        "lines": {"type": "string"},
-                                        "encoding": {"type": "string"},
+                                        "lines": {"type": "string", "description": "Line range like '10-50' or '5'."},
                                     },
                                     "required": ["path"],
                                 },
                             ]
                         },
-                        "description": "Multiple file paths, optionally with per-file line ranges.",
+                        "description": "One or more file paths. Each item is a path string, or an object with path + optional lines.",
                     },
-                    "lines": {"type": "string", "description": "Line range like '10-50' or '5'."},
-                    "encoding": {"type": "string", "description": "Text encoding, default utf-8."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": (
+                "Search file contents with a regular expression or list files by include globs. "
+                "Path may be a file or directory; directories are searched recursively while automatically excluding hidden directories, dependencies, caches, "
+                "build output, and other project junk."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regular expression to find in file contents"},
+                    "path": {"type": "string", "description": "File or directory to search"},
+                    "include": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "File glob(s), e.g. '*.py' or 'src/**/*.ts'. Here you can specify a file path",
+                    },
+                    "case_sensitive": {"type": "boolean", "description": "Match case exactly; default false"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Maximum results, default 100"},
                 },
             },
         },
@@ -97,21 +104,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "patch_file",
             "description": (
-                "Targeted file edit — ONE change per call. Use find/replace, "
-                "line/insert, or delete_lines. For several edits in one file, "
-                "make several separate patch_file calls (one change each)."
+                "Targeted file edit. `replace` replaces the exact text in `find`."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "find": {"type": "string", "description": "Text to find (one change per call)."},
-                    "replace": {"type": "string", "description": "Replacement text."},
-                    "line": {"type": "integer", "description": "Line number for insert."},
-                    "insert": {"type": "string", "description": "Text to insert after 'line'."},
-                    "delete_lines": {"type": "string", "description": "Range like '10-15' to delete."},
+                    "find": {"type": "string", "description": "Text to find"},
+                    "replace": {"type": "string", "description": "Replacement text"},
                 },
-                "required": ["path"],
+                "required": ["path", "find"],
             },
         },
     },
@@ -120,16 +122,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "create_file",
             "description": (
-                "Create a new file OR fully overwrite an existing one. "
-                "Use for new files or full rewrites of small files (<30 lines). "
-                "For editing existing files use patch_file."
+                "Create a new file or fully overwrite an existing one. "
+                "For editing existing files use patch_file"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "content": {"type": "string"},
-                    "encoding": {"type": "string"},
                 },
                 "required": ["path", "content"],
             },
@@ -147,8 +147,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Images: either base64 data URIs (data:image/png;base64,...) "
                 "or local file paths in <img src>. Requires pandoc in PATH. "
                 "EDITING an existing .docx: do NOT rewrite the whole HTML. "
-                "read_files on the .docx returns its exact HTML source (marked "
-                "'editable via patch_file/create_docx'); edit it IN PLACE with "
+                "read_files on the .docx returns its exact HTML source, edit it IN PLACE with "
                 "patch_file (small find/replace on that HTML), then call create_docx "
                 "once with the FULL updated HTML to regenerate the .docx for viewing. "
                 "The HTML source is persisted, so patch_file targets survive between turns."
@@ -173,37 +172,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "docx_screenshot",
             "description": (
-                "Render a page of a .docx (or .pdf) to a PNG image and attach it "
-                "to your next turn so you can SEE the actual laid-out page: fonts, "
-                "margins, tables, formulas, page breaks — things invisible in the "
-                "HTML source. Uses LibreOffice (docx→pdf) + PyMuPDF (pdf→png). "
-                "Use after create_docx to visually verify formatting, or to inspect "
-                "any page(s) of an existing document. Render a single page via 'page', "
-                "or multiple pages at once via 'pages' (range '2-5', set '1,3,7', "
-                "mixed '2-4,8,10-11', list [1,4,9], or 'all' for the whole document). "
-                "All rendered pages are attached in order to your next turn."
+                "Render a page of a .docx (or .pdf) to a PNG image. Check fonts, "
+                "margins, tables, formulas, page breaks — things invisible in the HTML source. "
+                "Use after create_docx to visually verify formatting of an existing document"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": ".docx or .pdf path."},
-                    "page": {"type": "integer", "description": "1-based single page number, default 1."},
                     "pages": {
                         "type": "string",
                         "description": (
                             "Multiple pages: range '2-5', set '1,3,7', mixed '2-4,8,10-11', "
-                            "or 'all'. Overrides 'page' when provided."
+                            "or 'all' for all pages. Omit for single page (default 1)."
                         ),
-                    },
-                    "dpi": {
-                        "type": "integer",
-                        "description": (
-                            "Render resolution in DPI (clamped to 50-600). Higher = sharper "
-                            "but larger images; raise it to read small text/formulas. Default 200."
-                        ),
-                        "minimum": 50,
-                        "maximum": 600,
-                        "default": 200,
                     },
                 },
                 "required": ["path"],
@@ -215,7 +197,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "poll",
             "description": (
-                "Ask user a question with options. Use INSTEAD of plain text questions "
+                "Ask user a question with options. Use instead of plain text questions "
                 "when uncertain. Single step: {question, options}. "
                 "Multi-step: {steps: [{question, options, multiple}, ...]}. "
                 "Max 10 steps. Each step is single-select by default; set "
@@ -258,50 +240,50 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "ssh",
+            "name": "web_search",
             "description": (
-                "Run command on remote server via SSH (ControlMaster pooling). "
-                "Use ONLY host aliases configured via /ssh, not IPs. "
-                "Dangerous commands require user confirmation. "
-                "Supports upload/download."
+                "Search the web"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "host": {"type": "string"},
-                    "command": {"type": "string"},
-                    "upload": {"type": "string", "description": "Local file to upload."},
-                    "download": {"type": "string", "description": "Remote file to download."},
-                    "dest": {"type": "string"},
+                    "queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 5,
+                        "description": "Search queries (1-5). Each query is searched separately",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max results per query (default 5)",
+                    },
                 },
-                "required": ["host"],
+                "required": ["queries"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "web_search",
+            "name": "web_fetch",
             "description": (
-                "Search the web via DuckDuckGo OR fetch URL(s) directly. "
-                "Search mode: {\"query\": \"...\"}, optional fetch=true / fetch_indices. "
-                "Direct fetch mode: {\"url\": \"https://...\"} or {\"urls\": [...]} — "
-                "extracts page text via trafilatura, results cached for 1 hour. "
-                "Add raw=true (or html=true) to get the page's raw HTML markup "
-                "instead of extracted text."
+                "Fetch content from one or more URLs"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
-                    "url": {"type": "string", "description": "Direct fetch — single URL"},
-                    "urls": {"type": "array", "items": {"type": "string"}, "description": "Direct fetch — multiple URLs"},
-                    "max_results": {"type": "integer"},
-                    "fetch": {"type": "boolean"},
-                    "fetch_indices": {"type": "array", "items": {"type": "integer"}},
-                    "raw": {"type": "boolean", "description": "Return raw HTML markup instead of extracted text (fetch mode)."},
-                    "html": {"type": "boolean", "description": "Alias for raw."},
+                    "urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One or more URLs to fetch",
+                    },
+                    "raw": {
+                        "type": "boolean",
+                        "description": "Return raw HTML markup instead of extracted text",
+                    },
                 },
+                "required": ["urls"],
             },
         },
     },
@@ -311,34 +293,23 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "image_search",
             "description": (
                 "Search for images on the web. Useful for finding pictures for "
-                "websites, mockups, docs, etc. Default source is DuckDuckGo (no key "
-                "needed); Unsplash/Pexels are also used if their API keys are set in "
-                "config api_keys. Returns a numbered list of image URLs with "
-                "dimensions, page link and source. "
-                "Set download=true to download images into the project (validated "
-                "with Pillow — broken/non-image files are skipped); use "
-                "download_indices to pick specific results and download_dir to "
-                "choose the folder (default assets/images). License is NOT filtered — "
-                "the source is shown so you can check usage rights yourself."
+                "websites, mockups, docs, etc. Searches and downloads images to assets/images"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "What to search for, e.g. 'mountain sunset'."},
-                    "max_results": {"type": "integer", "description": "Max images to return (1-50, default 10)."},
-                    "source": {
-                        "type": "string",
-                        "enum": ["auto", "ddg", "unsplash", "pexels"],
-                        "description": "Image source. 'auto' (default) = DuckDuckGo + any configured stock sources.",
+                    "queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 5,
+                        "description": "Search queries (1-5). Each query is searched separately",
                     },
-                    "size": {"type": "string", "description": "ddg size filter: Small|Medium|Large|Wallpaper."},
-                    "type": {"type": "string", "description": "ddg type filter: photo|clipart|gif|transparent|line."},
-                    "color": {"type": "string", "description": "ddg color filter, e.g. Red, Blue, Monochrome."},
-                    "download": {"type": "boolean", "description": "Download images to disk and validate them."},
-                    "download_indices": {"type": "array", "items": {"type": "integer"}, "description": "Indices of results to download (default: all)."},
-                    "download_dir": {"type": "string", "description": "Target folder for downloads (default assets/images)."},
+                    "max_results": {"type": "integer", "description": "Max images to return per query (default 10)"},
+                    "size": {"type": "string", "description": "ddg size filter: Small|Medium|Large|Wallpaper"},
+                    "type": {"type": "string", "description": "ddg type filter: photo|clipart|gif|transparent|line"},
                 },
-                "required": ["query"],
+                "required": ["queries"],
             },
         },
     },
@@ -347,15 +318,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "expand_tool_result",
             "description": (
-                "Возвращает ПОЛНЫЙ текст ранее обрезанного tool output. "
-                "Используй, когда в результате видишь маркер "
+                "Returns the FULL text of a previously truncated tool output. "
+                "Use when you see the marker "
                 "'expand via call expand_tool_result {\"id\": \"...\"}' "
-                "и нужен полный текст. id живёт только в текущем процессе CLI."
+                "in a result and need the full text"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "Идентификатор из маркера в обрезанном output"},
+                    "id": {"type": "string", "description": "Identifier from the marker in the truncated output"},
                 },
                 "required": ["id"],
             },
@@ -366,35 +337,31 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "memory_write",
             "description": (
-                "Сохранить долговременный факт в персистентную память "
-                "(переживает сессии, автоматически подмешивается в системный промпт). "
-                "Сохраняй ТОЛЬКО то, что НЕ выводимо из кода/git/AGENTS.md: "
-                "предпочтения и роль пользователя (type=user), обратную связь о том, "
-                "как вести работу (type=feedback), контекст текущих задач/целей/инцидентов "
-                "(type=project), внешние референсы/значения (type=reference). "
-                "scope='global' — факт НЕ привязан к одному проекту (кто пользователь, "
-                "его общие предпочтения/стиль работы, универсальные референсы); такой "
-                "факт виден во ВСЕХ проектах. scope='project' (по умолчанию) — только "
-                "контекст текущего проекта. Относительные даты переводи в абсолютные "
-                "(YYYY-MM-DD). Если файл с таким name уже есть в этом scope — он обновляется."
+                "Save a long-term fact to persistent memory. "
+                "Only store what is NOT derivable from code/git/AGENTS.md: "
+                "user preferences and role (type=user), feedback on how to work "
+                "(type=feedback), context of current tasks/goals/incidents "
+                "(type=project), external references/values (type=reference). "
+                "Convert relative dates to absolute (YYYY-MM-DD). If a file with "
+                "that name already exists in this scope, it is updated."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Короткое имя файла памяти, напр. 'user-profile'."},
-                    "body": {"type": "string", "description": "Содержимое: сам факт. Для feedback добавляй 'Why:' и 'How to apply:'."},
+                    "name": {"type": "string", "description": "Short memory file name, e.g. 'user-profile'."},
+                    "body": {"type": "string", "description": "The fact content. For feedback, add 'Why:' and 'How to apply:'"},
                     "type": {
                         "type": "string",
                         "enum": ["user", "feedback", "project", "reference"],
-                        "description": "Тип памяти.",
+                        "description": "Memory type",
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["project", "global"],
                         "description": (
-                            "project (default) — память текущего проекта. "
-                            "global — кросс-проектный факт (про пользователя/общие "
-                            "предпочтения), виден во всех проектах."
+                            "project (default) — memory of the current project. "
+                            "global — cross-project fact (about the user/general "
+                            "preferences), visible in all projects."
                         ),
                     },
                 },
@@ -406,7 +373,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "memory_list",
-            "description": "Список сохранённых memory-файлов проекта с кратким содержанием.",
+            "description": "List of saved memory files for the project with brief contents",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -414,10 +381,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "memory_read",
-            "description": "Прочитать содержимое конкретного memory-файла целиком.",
+            "description": "Read the full contents of a specific memory file",
             "parameters": {
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Имя memory-файла (с .md или без)."}},
+                "properties": {"name": {"type": "string", "description": "Memory file name (with or without .md)"}},
                 "required": ["name"],
             },
         },
@@ -466,9 +433,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "enum": ["coder", "researcher", "reviewer", "planner", "coordinator"],
                     },
-                    "preset": {"type": "string", "description": "Preset role name from .data/agents/."},
-                    "label": {"type": "string", "description": "Required 1-2 word name of WHAT this subagent does (e.g. 'Auth API', 'Landing'), shown in the live panel."},
-                    "phase": {"type": "string", "description": "Display phase name."},
+                    "preset": {"type": "string", "description": "Preset role name from .data/agents/"},
+                    "label": {"type": "string", "description": "Required 1-2 word name of WHAT this subagent does (e.g. 'Auth API', 'Landing')"},
+                    "phase": {"type": "string", "description": "Display phase name"},
                     "depends_on": {
                         "type": "array",
                         "items": {"type": "integer"},
@@ -552,7 +519,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "skill",
-            "description": "Load a skill from .data/skills by name.",
+            "description": "Load a skill from .data/skills by name",
             "parameters": {
                 "type": "object",
                 "properties": {"name": {"type": "string"}},
@@ -563,32 +530,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "lsp_definition",
-            "description": (
-                "Go to definition via LSP. Use when you need to find where a "
-                "symbol (function/class/variable) is defined. Returns list of "
-                "'path:line:column'. Args: path (file with symbol), line (1-based), "
-                "character (0-based column of symbol)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File path."},
-                    "line": {"type": "integer", "description": "1-based line number where the symbol is."},
-                    "character": {"type": "integer", "description": "0-based column position of the symbol."},
-                },
-                "required": ["path", "line", "character"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "lsp_references",
             "description": (
                 "Find all references to a symbol via LSP. Use to locate every "
-                "usage of a function/class/variable across the project. Returns "
-                "list of 'path:line:column'. Args same as lsp_definition."
+                "usage of a function/class/variable across the project"
             ),
             "parameters": {
                 "type": "object",
@@ -607,15 +552,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "lsp_diagnostics",
             "description": (
                 "Get LSP diagnostics (errors, warnings, type problems) for a file. "
-                "Re-parses the file from disk and waits up to 4s for the language "
-                "server to report issues. Use after editing to catch type errors, "
-                "unused imports, undefined names, etc. Output lines: "
-                "'SEVERITY line:col [source:code] message'."
+                "Use after editing to catch type errors, undefined names, etc."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path to diagnose."},
+                    "path": {"type": "string", "description": "File path to diagnose"},
                 },
                 "required": ["path"],
             },
@@ -624,38 +566,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "lsp_hover",
-            "description": (
-                "Get hover info (type, signature, docstring) for a symbol via "
-                "LSP. Use to inspect what a function/class is without reading "
-                "its source file. Args same as lsp_definition."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "line": {"type": "integer"},
-                    "character": {"type": "integer"},
-                },
-                "required": ["path", "line", "character"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "plan",
             "description": (
-                "Task checklist (3+ steps), UI only — runs no code. action: create "
-                "(goal + steps[], once, min 3), update (by index or title, status: "
-                "pending|in_progress|done|skipped), add_step. Mark in_progress when "
-                "starting a step, done when finished; all done/skipped before final reply."
+                "Task checklist (3+ steps). action: create (goal + steps[], once, min 3), update (by index or title, status: "
+                "pending|in_progress|done|skipped), add_step. Mark in_progress when starting a step, done when finished; all done/skipped before final reply."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["create", "update", "add_step"]},
-                    "goal": {"type": "string", "description": "Одна строка — цель всей задачи (для create)."},
+                    "goal": {"type": "string", "description": "Single line — the goal of the entire task (for create)."},
                     "steps": {
                         "type": "array",
                         "items": {
@@ -666,16 +586,39 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             },
                             "required": ["title"],
                         },
-                        "description": "Полный список шагов (для create). Минимум 3.",
+                        "description": "Full list of steps for create. Minimum 3.",
                     },
-                    "index": {"type": "integer", "description": "1-based индекс шага (для update)."},
-                    "title": {"type": "string", "description": "Заголовок шага: для add_step или поиска шага в update."},
+                    "index": {
+                        "oneOf": [
+                            {"type": "integer"},
+                            {"type": "array", "items": {"type": "integer"}, "minItems": 1},
+                        ],
+                        "description": "1-based step index or list of indices (for update).",
+                    },
+                    "title": {"type": "string", "description": "Step title: for add_step or finding a step in update."},
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "done", "skipped"],
-                        "description": "Новый статус шага (для update/add_step).",
+                        "description": "New step status (for update/add_step).",
                     },
-                    "notes": {"type": "string", "description": "Краткая заметка к шагу (опционально)."},
+                    "notes": {"type": "string", "description": "Brief note on the step (optional)."},
+                    "updates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "index": {"type": "integer", "description": "1-based step index"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "done", "skipped"],
+                                    "description": "New status",
+                                },
+                                "notes": {"type": "string", "description": "Note (optional)"},
+                            },
+                            "required": ["index"],
+                        },
+                        "description": "List of changes for batch update: each object has an index and optionally status/notes.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -686,15 +629,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "think",
             "description": (
-                "Размышление вслух перед действиями. НЕ выполняет код — отображает "
-                "мысль в UI. Используется когда включён think-режим: РОВНО ОДИН вызов "
-                "think перед любыми другими инструментами и перед финальным ответом, "
-                "с одной длинной мыслью, покрывающей все рассуждения."
+                "Think out loud before acting. Does NOT execute code — displays "
+                "the thought in the UI. Used when think-mode is enabled: EXACTLY ONE call "
+                "to think before any other tools and before the final answer, "
+                "with one long thought covering all reasoning."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "thought": {"type": "string", "description": "Текст рассуждения."},
+                    "thought": {"type": "string", "description": "Reasoning text"},
                 },
                 "required": ["thought"],
             },
@@ -705,11 +648,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 from config import READ_ONLY_TOOLS as _READ_ONLY_TOOL_NAMES  # noqa: E402
 
-_PLANNING_TOOL_NAMES = _READ_ONLY_TOOL_NAMES | {"poll", "skill", "web_search"}
+_PLANNING_TOOL_NAMES = _READ_ONLY_TOOL_NAMES | {"poll", "skill", "web_search", "web_fetch"}
 _AUTONOMOUS_TOOL_NAMES = _PLANNING_TOOL_NAMES | {"shell", "subagent"}
 
-# Кэш для get_tool_schemas. Ключ — (mode, mcp_signature), где mcp_signature —
-# кортеж имён MCP-инструментов. Инвалидируется при любом изменении набора MCP.
+# Cache for get_tool_schemas. Key — (mode, mcp_signature), where mcp_signature is
+# a tuple of MCP tool names. Invalidated whenever the MCP set changes.
 _SCHEMAS_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 
 
@@ -731,40 +674,25 @@ def _resolve_think_for_schemas() -> bool:
         return False
 
 
-def _skill_gated_filter(active_skills) -> frozenset:
-    """Набор гейтящихся инструментов, которые сейчас НЕ должны быть в схемах.
-
-    Возвращает frozenset скрытых имён (для хешируемого cache_key).
-    """
-    try:
-        from skills.registry import GATED_TOOLS, visible_gated_tools
-
-        visible = visible_gated_tools(set(active_skills or ()))
-        return frozenset(GATED_TOOLS - visible)
-    except Exception:
-        return frozenset()
 
 
 def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, Any]]:
-    """Возвращает JSON-схемы инструментов для нужного режима.
+    """Returns JSON schemas for tools matching the given mode.
 
-    plan/planning → read-only инструменты + plan (+ think если включён).
-    autonomous    → planning-инструменты + shell + subagent (+ think если включён).
-    agent         → все базовые + MCP + plan (+ think если включён).
+    plan/planning → read-only tools + plan (+ think if enabled).
+    autonomous    → planning tools + shell + subagent (+ think if enabled).
+    agent         → all base tools + MCP + plan (+ think if enabled).
 
-    think попадает в схемы ТОЛЬКО при активном think-режиме — иначе модель
-    звала бы его без надобности. plan доступен всегда (структурирование задач).
+    think is included ONLY when think-mode is active — otherwise the model
+    would call it unnecessarily. plan is always available (task structure).
 
-    active_skills — множество загруженных скиллов. Инструменты, гейтящиеся
-    скиллом (web_search/image_search→web, ssh→ssh, subagent→subagents),
-    исключаются из схем, пока соответствующий скилл не активен. Так модель не
-    видит инструмент, пока не загрузит его скилл.
+    active_skills kept for call compatibility and does not affect the result:
+    skills add instructions but do not restrict tools.
     """
     think_on = _resolve_think_for_schemas()
     restricted_mode = mode in ("plan", "planning", "autonomous", "auto")
     mcp_sig = () if restricted_mode else _mcp_signature()
-    hidden = _skill_gated_filter(active_skills)
-    cache_key = (mode, mcp_sig, think_on, hidden)
+    cache_key = (mode, mcp_sig, think_on)
     cached = _SCHEMAS_CACHE.get(cache_key)
     if cached is not None:
         return list(cached)
@@ -787,34 +715,32 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
             base.extend(get_mcp_tool_schemas())
         except Exception:
             pass
-    if hidden:
-        base = [s for s in base if s["function"]["name"] not in hidden]
     _SCHEMAS_CACHE[cache_key] = base
     return list(base)
 
 
 def tool_requires_args(name: str) -> bool:
-    """True, если у инструмента есть обязательные параметры.
+    """True if the tool has required parameters.
 
-    Нужен для восстановления после прокси-бага: при стриминге native tool_calls
-    некоторые провайдеры отдают args пустым `{}`. Если у инструмента есть
-    required-поля, пустой `{}` — почти наверняка потерянные аргументы, и нужен
-    фолбэк-перезапрос. Для безаргументных инструментов (memory_list и т.п.)
-    пустой `{}` валиден — фолбэк не нужен.
+    Needed for recovery from a proxy bug: when streaming native tool_calls,
+    some providers return empty `{}` args. If a tool has required fields,
+    empty `{}` almost certainly means lost arguments, so a fallback re-request
+    is needed. For argument-less tools (memory_list etc.), empty `{}` is valid
+    and no fallback is needed.
     """
     for s in TOOL_SCHEMAS:
         fn = s.get("function", {})
         if fn.get("name") == name:
             params = fn.get("parameters", {}) or {}
             return bool(params.get("required"))
-    # Неизвестный/MCP-инструмент: безопаснее считать, что аргументы нужны
-    # (лишний фолбэк дешевле потерянных args). Но если это вообще не наш тул —
-    # пустой dict не критичен; возвращаем False, чтобы не зацикливать.
+    # Unknown/MCP tool: safer to assume args are needed
+    # (extra fallback is cheaper than lost args). But if it's not our tool at all —
+    # empty dict is harmless; return False to avoid loops.
     return False
 
 
 def invalidate_schemas_cache() -> None:
-    """Сбрасывает кэш get_tool_schemas. Вызывается при изменении MCP servers."""
+    """Resets the get_tool_schemas cache. Called when MCP servers change."""
     _SCHEMAS_CACHE.clear()
 
 

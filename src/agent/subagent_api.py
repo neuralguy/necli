@@ -27,7 +27,6 @@ from apis.agent_adapter import (
     ApiSession,
     _content_to_text,
     _ensure_tool_call_ids,
-    _tool_calls_to_text_blocks,
 )
 from apis.messages import (
     AIMessage,
@@ -318,7 +317,7 @@ class _ApiSubagentRunner:
             f"{self._workspace_prompt()}"
             "CONTEXT DISCIPLINE (your context is small — keep it lean, every token counts):\n"
             "  - LOCATE, then read NARROW. Never open a file whole to find something. For a symbol "
-            "(function/class/method/variable) the FIRST tool is LSP (lsp_definition/references/hover); "
+            "(function/class/method/variable) the FIRST tool is LSP (lsp_references/hover); "
             "for text it's grep_files. Then read a TARGETED window (≈±60 lines) around the hit — not the "
             "entire file. Read a file in full ONLY if it's genuinely small (≲200 lines) or you truly "
             "need all of it. Dragging a 1000-line file into context to touch one function is exactly the "
@@ -505,11 +504,9 @@ class _ApiSubagentRunner:
             tool_calls = list(getattr(result, "tool_calls", []) or [])
             tool_calls = _ensure_tool_call_ids(tool_calls)
             self._track_usage(getattr(result, "usage_metadata", None))
-            if on_chunk is not None:
-                if raw_text:
-                    on_chunk(raw_text)
-                if tool_calls:
-                    on_chunk(raw_text + _tool_calls_to_text_blocks(tool_calls))
+            if on_chunk is not None and raw_text:
+                on_chunk(raw_text)
+            # Native-вызовы передаются структурно: не подмешиваем :::call в UI.
         elif on_chunk is not None:
             final_chunk = await stream_with_throttle_retry(
                 lambda: llm.astream(msgs),
@@ -521,7 +518,6 @@ class _ApiSubagentRunner:
             self._track_usage(getattr(final_chunk, "usage_metadata", None))
             if tool_calls:
                 tool_calls = _ensure_tool_call_ids(tool_calls)
-                on_chunk(raw_text + _tool_calls_to_text_blocks(tool_calls))
         else:
             result = await with_throttle_retry(lambda: llm.ainvoke(msgs))
             raw_text = _content_to_text(getattr(result, "content", result))
@@ -711,9 +707,8 @@ class _ApiSubagentRunner:
                 # Native tool_calls конвертируем в ToolCall для исполнения
                 native_as_calls = []
                 if native_tool_calls:
-                    from apis.agent_adapter import _tool_calls_to_text_blocks as _blocks
-                    blocks_text = _blocks(native_tool_calls)
-                    native_as_calls = parse_tool_calls(blocks_text)
+                    from agent.loop import _native_tool_calls_to_calls
+                    native_as_calls = _native_tool_calls_to_calls(native_tool_calls)
 
                 # Если native_tool_calls есть — используем именно их (исходник истины)
                 all_calls = native_as_calls if native_tool_calls else text_calls

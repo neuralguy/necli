@@ -195,10 +195,10 @@ class Plan:
             return ""
 
         status_icons = {
-            StepStatus.PENDING: "○",
-            StepStatus.IN_PROGRESS: "▶",
-            StepStatus.DONE: "✓",
-            StepStatus.SKIPPED: "–",
+            StepStatus.PENDING: "[ ]",
+            StepStatus.IN_PROGRESS: "[•]",
+            StepStatus.DONE: "[✓]",
+            StepStatus.SKIPPED: "[–]",
         }
 
         # Определяем текущий шаг
@@ -219,7 +219,7 @@ class Plan:
         for i in range(window_start, window_end):
             step = self.steps[i]
             icon = status_icons[step.status]
-            line = f"  {i + 1}. [{icon}] {step.title}"
+            line = f"  {i + 1}. {icon} {step.title}"
             if step.notes:
                 line += f" — {step.notes}"
             lines.append(line)
@@ -294,6 +294,33 @@ def _parse_plan_body(match):
         # 'goal' field is optional, defaults to empty string
 
     return PlanCommand(action=action, data=data)
+
+
+def _plan_command_from_data(data: dict) -> PlanCommand | None:
+    """Проверяет данные plan-вызова независимо от транспорта."""
+    if not isinstance(data, dict):
+        return None
+    action = data.get("action", "")
+    if action not in ("create", "update", "add_step", "remove_step"):
+        return None
+    if action == "create":
+        steps = data.get("steps")
+        if not isinstance(steps, list) or len(steps) < 3:
+            return None
+    return PlanCommand(action=action, data=data)
+
+
+def parse_native_plan_commands(tool_calls: list[dict] | None) -> list[PlanCommand]:
+    """Извлекает plan из native function calls без текстовой конвертации."""
+    commands = []
+    for call in tool_calls or ():
+        if not isinstance(call, dict) or call.get("name") != "plan":
+            continue
+        args = call.get("args")
+        command = _plan_command_from_data(args if isinstance(args, dict) else {})
+        if command:
+            commands.append(command)
+    return commands
 
 
 def parse_plan_commands(text: str) -> list[PlanCommand]:
@@ -428,18 +455,29 @@ def apply_plan_commands(
 
         elif plan is not None:
             if cmd.action == "update":
-                step_idx = _resolve_step_index(plan, cmd.data)
-                if step_idx is not None:
-                    plan.update_step(
-                        step_idx,
-                        status=cmd.data.get("status"),
-                        notes=cmd.data.get("notes"),
-                    )
+                updates_list = cmd.data.get("updates")
+                if updates_list is not None:
+                    for item in updates_list:
+                        step_idx = _resolve_step_index(plan, item)
+                        if step_idx is not None:
+                            plan.update_step(
+                                step_idx,
+                                status=item.get("status"),
+                                notes=item.get("notes"),
+                            )
                 else:
-                    logger.warning(
-                        "plan update: step not resolved, data=%r, steps=%d",
-                        cmd.data, len(plan.steps),
-                    )
+                    step_idx = _resolve_step_index(plan, cmd.data)
+                    if step_idx is not None:
+                        plan.update_step(
+                            step_idx,
+                            status=cmd.data.get("status"),
+                            notes=cmd.data.get("notes"),
+                        )
+                    else:
+                        logger.warning(
+                            "plan update: step not resolved, data=%r, steps=%d",
+                            cmd.data, len(plan.steps),
+                        )
 
             elif cmd.action == "add_step":
                 title = cmd.data.get("title", "")
@@ -467,10 +505,10 @@ def apply_plan_commands(
 
 
 _STATUS_STYLES = {
-    StepStatus.PENDING: ("○", "dim"),
-    StepStatus.IN_PROGRESS: ("▶", "bold cyan"),
-    StepStatus.DONE: ("✓", "green"),
-    StepStatus.SKIPPED: ("–", "dim yellow"),
+    StepStatus.PENDING: ("[ ]", "dim"),
+    StepStatus.IN_PROGRESS: ("[•]", "bold cyan"),
+    StepStatus.DONE: ("[✓]", "green"),
+    StepStatus.SKIPPED: ("[–]", "dim yellow"),
 }
 
 

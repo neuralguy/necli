@@ -13,6 +13,9 @@ class TestGetDefault:
     def test_known_default(self, isolated_data):
         assert get("response_timeout") == _DEFAULT_CONFIG["response_timeout"]
 
+    def test_native_tool_format_is_enabled_by_default(self, isolated_data):
+        assert get("tool_format_force_native") is True
+
 
 class TestSetValue:
     def test_persists(self, isolated_data):

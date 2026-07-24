@@ -31,11 +31,9 @@ def execute_skill(call: ToolCall) -> ToolResult:
             output=_i18n("skill.not_found", name=name, hint=hint),
             exit_code=1,
         )
-    header = f"{_i18n('skill.base_path')}: {skill.path}/\n\n"
+    header = f"{_i18n('skill.loaded', name=skill.name)}\n\n"
     body = skill.body
-    if name == "ssh":
-        body += _render_ssh_hosts()
-    elif name == "subagents":
+    if name == "subagents":
         body += _render_subagent_info()
     return ToolResult(
         name="skill",
@@ -63,24 +61,3 @@ def _render_subagent_info() -> str:
         pass
     return out
 
-
-def _render_ssh_hosts() -> str:
-    """Живой список настроенных SSH-хостов — подставляется в скилл при загрузке."""
-    try:
-        from config.ssh import list_hosts
-
-        hosts = list_hosts()
-    except Exception:
-        return "\n\n## Доступные хосты\n\n(не удалось прочитать список)"
-    if not hosts:
-        return (
-            "\n\n## Доступные хосты\n\n"
-            "Ни одного хоста не настроено. Попроси пользователя добавить сервер через /ssh."
-        )
-    lines = ["\n\n## Доступные хосты\n", "alias  →  user@host:port"]
-    for alias, info in hosts.items():
-        user = info.get("user", "root")
-        host = info.get("host", "")
-        port = info.get("port", 22)
-        lines.append(f"  - {alias}  →  {user}@{host}:{port}")
-    return "\n".join(lines)

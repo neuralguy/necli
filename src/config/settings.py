@@ -24,7 +24,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "telegram_chat_id": "",
     "telegram_enabled": False,
     "think_enabled": False,
-    "tool_format_force_native": False,
+    "tool_format_force_native": True,
     # Авто-резюм агента при завершении фоновой shell-задачи: если задача
     # завершилась, пока агент ждёт ввода пользователя, он сам продолжит работу
     # с её результатом (не прерывая пользователя, если тот печатает).

@@ -24,8 +24,7 @@ import re
 # Скилл → набор инструментов, которые он «открывает».
 # Единственное место правды. Добавляешь скилл с тулами — правишь здесь.
 SKILL_TOOLS: dict[str, set[str]] = {
-    "web": {"web_search", "image_search"},
-    "ssh": {"ssh"},
+    "web": {"web_search", "web_fetch", "image_search"},
     "subagents": {"subagent"},
 }
 
@@ -80,10 +79,8 @@ def visible_gated_tools(active_skills: set[str] | None) -> set[str]:
 
 
 def is_tool_gated_out(tool: str, active_skills: set[str] | None) -> bool:
-    """True, если инструмент гейтится скиллом и сейчас НЕ должен быть виден."""
-    if tool not in GATED_TOOLS:
-        return False
-    return tool not in visible_gated_tools(active_skills)
+    """Инструменты всегда доступны; скиллы добавляют только инструкции."""
+    return False
 
 
 def _skill_loads_by_round(messages: list) -> dict[str, int]:

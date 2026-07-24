@@ -5,7 +5,6 @@ import re
 import shutil
 
 from rich.console import Group
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
@@ -14,6 +13,7 @@ from agent.display import (
     SPINNER_FRAMES,
     TOOL_DISPLAY,
 )
+from agent.markdown import ResponseMarkdown
 from config.i18n import t as _i18n
 from config.themes import t
 from config.ui import ui
@@ -37,10 +37,31 @@ def make_writing_indicator(spinner_frame: str, tool_name: str) -> Text:
     _, color = TOOL_DISPLAY.get(tool_name, ("Tool", t("warning")))
     txt = Text()
     txt.append(f"  {spinner_frame} ", style=f"bold {color}")
+    if tool_name == "tool":
+        txt.append("using tool…", style="dim")
+        return txt
     prefix = ui.get("indicators.writing_prefix", "writing ")
     suffix = ui.get("indicators.writing_suffix", "…")
     txt.append(f"{prefix}{tool_name}{suffix}", style="dim")
     return txt
+
+
+_TABLE_SEPARATOR_RE = re.compile(
+    r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+(?:\s*:?-{3,}:?\s*)?\|?\s*$"
+)
+
+
+def _starts_table(text: str) -> bool:
+    """Return whether the first two lines form a GitHub-flavored table."""
+    lines = text.splitlines()
+    return len(lines) >= 2 and "|" in lines[0] and bool(_TABLE_SEPARATOR_RE.match(lines[1]))
+
+
+def _is_markdown_block(first_line: str, rest: str) -> bool:
+    return bool(
+        re.match(r"^(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|~~~)", first_line)
+        or _starts_table(first_line + ("\n" + rest if rest else ""))
+    )
 
 
 def _inline_md(text: str) -> str:
@@ -58,7 +79,7 @@ def _build_markdown(display_text: str, streaming: bool = True):
     suffix = "\u258c" if streaming else ""
     display_text = escape_md_underscores(display_text)
     try:
-        return Markdown(display_text + suffix, code_theme="monokai", inline_code_theme="monokai")
+        return ResponseMarkdown(display_text + suffix, code_theme="monokai", inline_code_theme="monokai")
     except Exception:
         return Text(display_text + suffix)
 
@@ -106,7 +127,7 @@ def render_streaming_response(text: str, message_num: int = 0, streaming: bool =
     header.append("● ", style=f"bold {t('success')}")
     if total > max_lines:
         header.append(_i18n("stream.lines_count", n=total) + " ", style="dim")
-    is_block = bool(re.match(r"^(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|~~~)", first_line))
+    is_block = _is_markdown_block(first_line, rest)
     if first_line and not is_block:
         header.append(Text.from_markup(_inline_md(first_line)))
         if not rest:
@@ -150,6 +171,46 @@ def _lang_from_path(path: str | None) -> str:
         return "text"
     from agent.syntax import _EXT_LEXER_MAP
     return _EXT_LEXER_MAP.get(ext_m.group(1).lower(), "text")
+
+
+def _partial_json_arguments(body: str) -> list[tuple[str, str]]:
+    """Extract complete and in-progress JSON arguments without exposing the call syntax."""
+    values: list[tuple[str, str]] = []
+    for match in re.finditer(r'"([^"\\]+)"\s*:\s*(?:"((?:\\.|[^"\\])*)"|([^,}\]\s"]+))', body):
+        key, quoted, bare = match.groups()
+        value = quoted if quoted is not None else bare
+        values.append((key, value.replace(r"\n", "\n").replace(r"\t", "\t").replace(r'\"', '"')))
+    if values:
+        return values
+
+    partial = re.search(r'"([^"\\]+)"\s*:\s*"((?:\\.|[^"\\])*)$', body)
+    if partial:
+        return [(partial.group(1), partial.group(2).replace(r"\n", "\n").replace(r"\t", "\t"))]
+    return []
+
+
+def _render_partial_arguments(
+    body: str, tool_name: str, spinner_frame: str, elapsed_seconds: float,
+):
+    """Render generic calls as readable argument rows while JSON is still streaming."""
+    display_name, color = TOOL_DISPLAY.get(tool_name, ("Tool", "yellow"))
+    header = Text()
+    header.append(f"{spinner_frame or '●'} ", style=f"bold {color}")
+    header.append(display_name, style=f"bold {color}")
+    if elapsed_seconds > 0:
+        header.append(f"  {elapsed_seconds:.1f}s", style="dim")
+
+    rows = [header]
+    args = _partial_json_arguments(body)
+    if not args:
+        rows.append(Text("  preparing arguments…", style="dim"))
+    else:
+        for key, value in args[-8:]:
+            row = Text("  ")
+            row.append(f"{key}: ", style="dim")
+            row.append(value, style=t("dim_text"))
+            rows.append(row)
+    return Group(*rows)
 
 
 def _format_patch_body_for_stream(body: str, attrs_header: str):
@@ -505,6 +566,11 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
             file_path, body, attrs_header, elapsed_seconds, spinner_frame,
         )
 
+    # JSON-инструменты получают те же читабельные argument rows в fenced и
+    # native режимах, вместо промежуточного сырого JSON тела вызова.
+    if tool_name != "shell" and body.lstrip().startswith(("{", "[")):
+        return _render_partial_arguments(body, tool_name, spinner_frame, elapsed_seconds)
+
     lines = display_text.split("\n")
     total_lines = len(lines)
 
@@ -544,7 +610,7 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
 
 def render_reasoning_panel(text: str, streaming: bool = False):
     """Панель с реальными мыслями ИИ (reasoning_content) — формат think-блока с пометкой raw."""
-    from agent.display import _w, is_compact
+    from agent.display import _w, is_compact, is_expanded_preview
     from ui.formatting import latex_to_unicode
 
     muted = t("dim_text")
@@ -589,12 +655,22 @@ def render_reasoning_panel(text: str, streaming: bool = False):
         if cur:
             all_lines.append(cur)
 
+        if streaming or is_expanded_preview():
+            vis_lines = all_lines
+            hidden = 0
+        else:
+            max_lines = int(ui.get("limits.think_preview_lines", 5))
+            vis_lines = all_lines[:max_lines]
+            hidden = len(all_lines) - len(vis_lines)
+
         out: list = [header]
-        for i, ln in enumerate(all_lines):
+        for i, ln in enumerate(vis_lines):
             pad = f"   {prefix}" if i == 0 else "      "
             line = Text(pad, style=muted)
             line.append(ln, style=f"italic {muted}")
             out.append(line)
+        if hidden > 0:
+            out.append(Text("        " + _i18n("compact.think_expand", n=hidden), style="dim italic"))
         return Group(*out)
 
     body = Text(full, style=f"italic {muted}")

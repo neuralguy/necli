@@ -169,20 +169,23 @@ def handle_complete_tool(stream, complete) -> bool:
         return False
 
     from agent.loop import _tool_call_identity
+    from apis.agent_adapter import current_active_skills
 
-    if complete.tool_name == "web_search":
+    if not is_tool_allowed(
+        call.tool_name, stream.ctx.mode, current_active_skills(),
+    ):
+        blocked = build_blocked_result(call, stream.ctx.mode)
+        show_tool_combined(call, blocked, subtitle=_mk_subtitle(blocked))
+        stream.inline_results.append(blocked)
+        stream.inline_call_keys.append(_tool_call_identity(call))
+        return True
+
+    if complete.tool_name in ("web_search", "web_fetch"):
         res = execute_and_show(
             [call], event_handler=stream.ctx.event_handler,
             subtitle=subtitle, subtitle_factory=_mk_subtitle,
         )
         stream.inline_results.extend(res)
-        stream.inline_call_keys.append(_tool_call_identity(call))
-        return True
-
-    if not is_tool_allowed(call.tool_name, stream.ctx.mode):
-        blocked = build_blocked_result(call, stream.ctx.mode)
-        show_tool_combined(call, blocked, subtitle=_mk_subtitle(blocked))
-        stream.inline_results.append(blocked)
         stream.inline_call_keys.append(_tool_call_identity(call))
         return True
 

@@ -13,6 +13,7 @@ retry и backoff. Используется напрямую для custom про
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -401,6 +402,7 @@ class BaseProvider:
         dynamic_timeout = self._calc_timeout(params)
         full_reasoning = ""
         line_buffer = ""
+        decoder = codecs.getincrementaldecoder("utf-8")()
 
         client_kwargs: dict[str, Any] = {
             "timeout": httpx.Timeout(dynamic_timeout, connect=30.0),
@@ -458,7 +460,7 @@ class BaseProvider:
                 )
 
             async for raw_bytes in resp.aiter_bytes():
-                line_buffer += raw_bytes.decode("utf-8", errors="ignore")
+                line_buffer += decoder.decode(raw_bytes)
 
                 while "\n" in line_buffer:
                     line, line_buffer = line_buffer.split("\n", 1)

@@ -254,7 +254,7 @@ class TestIterCallBlocks:
         assert m1.group("name") == "shell"
 
 
-@pytest.mark.parametrize("tool", ["read_files", "shell", "poll", "create_file"])
+@pytest.mark.parametrize("tool", ["read_files", "grep", "shell", "poll", "create_file"])
 def test_known_tools_parse(tool):
     text = _wrap(tool, '{"path": "."}')
     calls = parse_call_calls(text)

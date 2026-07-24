@@ -14,8 +14,8 @@ from tools.registry import (
 class TestRegistry:
     def test_core_tools_present(self):
         expected = {
-            "shell", "read_files", "read_file", "patch_file",
-            "create_file", "poll", "skill", "ssh", "subagent", "web_search",
+            "shell", "read_files", "read_file", "grep", "patch_file",
+            "create_file", "poll", "skill", "subagent", "web_search", "web_fetch",
             "create_docx", "docx_screenshot", "expand_tool_result",
         }
         missing = expected - set(TOOL_REGISTRY.keys())
@@ -25,7 +25,7 @@ class TestRegistry:
         assert TOOL_REGISTRY["read_file"] is TOOL_REGISTRY["read_files"]
 
     def test_lsp_tools_registered(self):
-        for t in ("lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics"):
+        for t in ("lsp_references", "lsp_diagnostics"):
             assert t in TOOL_REGISTRY
 
     def test_list_tools_sorted(self):
@@ -76,6 +76,11 @@ class TestReadOnlyAndAllowed:
     def test_is_tool_allowed_agent_mode_all(self):
         assert is_tool_allowed("create_file", "agent") is True
         assert is_tool_allowed("shell", "agent") is True
+
+    def test_skills_do_not_restrict_agent_tools(self):
+        for tool in ("web_search", "image_search", "subagent"):
+            assert is_tool_allowed(tool, "agent", set()) is True
+            assert is_tool_allowed(tool, "agent", {"web", "ssh", "subagents"}) is True
 
     def test_is_tool_allowed_planning_mode_readonly_only(self):
         for t in PLANNING_TOOLS:

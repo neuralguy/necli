@@ -29,9 +29,14 @@ _loaded = False
 
 
 def _parse_model(raw: dict) -> ApiModelInfo:
+    from models import normalize_model_name
+
+    raw_id = raw["id"]
+    raw_dn = raw.get("display_name", "")
+    display_name = raw_dn if raw_dn else normalize_model_name(raw_id)
     return ApiModelInfo(
-        id=raw["id"],
-        display_name=raw.get("display_name", raw["id"]),
+        id=raw_id,
+        display_name=display_name,
         context_window=raw.get("context_window", 128_000),
         input_price=raw.get("input_price", 0.0),
         output_price=raw.get("output_price", 0.0),

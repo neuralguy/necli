@@ -50,11 +50,12 @@ class TestToolCallsToTextBlocks:
         assert ':::call create_file path="a.py"' in out
         assert "print(1)" in out
 
-    def test_create_file_with_encoding(self):
+    def test_create_file_with_content(self):
         out = aa._tool_calls_to_text_blocks([
-            {"name": "create_file", "args": {"path": "a.bin", "content": "x", "encoding": "base64"}},
+            {"name": "create_file", "args": {"path": "a.bin", "content": "x"}},
         ])
-        assert 'encoding="base64"' in out
+        assert ':::call create_file path="a.bin"' in out
+        assert "x" in out
 
     def test_create_file_content_in_body_simple(self):
         out = aa._tool_calls_to_text_blocks([

@@ -63,8 +63,9 @@ def memory_write(call: ToolCall) -> ToolResult:
     return ToolResult(
         name="memory_write", status="ok",
         output=(
-            f"Saved memory '{mf.name}' (type={mf.type}, scope={scope}, "
-            f"created={mf.created}, updated={mf.updated})."
+            f"=== path: {mf.path} ===\n"
+            f"[scope={scope}, type={mf.type}, "
+            f"created={mf.created}, updated={mf.updated}]\n{mf.body}"
         ),
         command=call.command,
     )
@@ -131,6 +132,7 @@ def memory_read(call: ToolCall) -> ToolResult:
             return ToolResult(
                 name="memory_read", status="ok",
                 output=(
+                    f"=== path: {path} ===\n"
                     f"[scope={found_scope}, type={mf.type}, "
                     f"created={mf.created}, updated={mf.updated}]\n{mf.body}"
                 ),

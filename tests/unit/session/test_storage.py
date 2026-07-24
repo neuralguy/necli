@@ -22,7 +22,7 @@ class TestSaveLoad:
         assert (s.dir / "summary.json").exists()
 
     def test_load_roundtrip(self, isolated_data):
-        s = Session()
+        s = Session(working_dir="/home/user/project")
         s.add_user_message("hi")
         s.add_assistant_message("ans", model="gpt", duration=1.5)
         save(s)
@@ -31,6 +31,7 @@ class TestSaveLoad:
         assert loaded is not None
         assert loaded.id == s.id
         assert loaded.title == s.title
+        assert loaded.working_dir == "/home/user/project"
         assert len(loaded.messages) == 2
         assert loaded.messages[0].content == "hi"
         assert loaded.messages[1].duration == 1.5
@@ -54,16 +55,6 @@ class TestSaveLoad:
         loaded = load(s.id)
         assert loaded._compressed_stats is not None
         assert loaded._compressed_stats["messages"] == 1
-
-    def test_load_pre_compress_backup_restored(self, isolated_data):
-        s = Session()
-        s.add_user_message("original message")
-        s.compress_reset("summary")
-        save(s)
-        loaded = load(s.id)
-        assert hasattr(loaded, "_pre_compress_messages")
-        assert len(loaded._pre_compress_messages) == 1
-        assert loaded._pre_compress_messages[0]["content"] == "original message"
 
     def test_load_corrupt_json_returns_none(self, isolated_data):
         sdir = isolated_data / "sessions" / "broken"

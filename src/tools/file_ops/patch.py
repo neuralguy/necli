@@ -129,64 +129,11 @@ def patch_file(call: ToolCall) -> ToolResult:
             modified = modified.replace(find, replace, 1)
             changes.append("  find/replace: applied 1")
 
-    elif "line" in args and "insert" in args:
-        try:
-            line_num = int(args["line"])
-        except (ValueError, TypeError):
-            return ToolResult(
-                name="patch_file",
-                status="error",
-                output=f"Invalid line value: {args['line']!r} (expected a number)",
-                exit_code=1,
-                command=call.command,
-            )
-        insert_text = args["insert"]
-        lines = modified.split("\n")
-        # Семантика: line_num — 1-based номер строки, ПОСЛЕ которой вставляем.
-        # Разрешаем line_num = len(lines) + 1 для дозаписи в конец файла.
-        if line_num < 1 or line_num > len(lines) + 1:
-            return ToolResult(
-                name="patch_file",
-                status="error",
-                output=(f"Line {line_num} out of range (1-{len(lines) + 1})"),
-                exit_code=1,
-                command=call.command,
-            )
-        # list.insert(i, x) вставляет ПЕРЕД индексом i; для "после строки line_num"
-        # это индекс line_num (т.к. line_num — 1-based, а индекс — 0-based).
-        lines.insert(line_num, insert_text)
-        modified = "\n".join(lines)
-        line_starts.append(line_num + 1)
-        changes.append(f"  insert after line {line_num}")
-
-    elif "delete_lines" in args:
-        range_str = str(args["delete_lines"])
-        lines = modified.split("\n")
-        try:
-            if "-" in range_str:
-                start_s, end_s = range_str.split("-", 1)
-                start = max(1, int(start_s))
-                end = min(len(lines), int(end_s))
-            else:
-                start = end = int(range_str)
-            del lines[start - 1 : end]
-            modified = "\n".join(lines)
-            line_starts.append(start)
-            changes.append(f"  deleted lines {start}-{end}")
-        except (ValueError, TypeError):
-            return ToolResult(
-                name="patch_file",
-                status="error",
-                output=f"Invalid lines format: {range_str}",
-                exit_code=1,
-                command=call.command,
-            )
-
     else:
         return ToolResult(
             name="patch_file",
             status="error",
-            output=("Specify patches, find/replace, line/insert or delete_lines"),
+            output=("Specify find and replace"),
             exit_code=1,
             command=call.command,
         )
@@ -241,11 +188,6 @@ def patch_file(call: ToolCall) -> ToolResult:
         "patch_file: {} (+{} -{} ~{}, sections={})",
         path_str, added, removed, changed, len(changes),
     )
-
-    if path.suffix == ".py":
-        from tools.auto_checks import queue_python_auto_check
-        if queue_python_auto_check(path, path_str):
-            output_parts.append("↻ auto-check queued: lsp_diagnostics + ruff")
 
     return ToolResult(
         name="patch_file",

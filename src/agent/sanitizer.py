@@ -362,6 +362,10 @@ def sanitize_response(text: str) -> str:
 
         result = pattern.sub(_replace, result) if pattern.groups > 0 else pattern.sub("", result)
 
+    # Схлопываем пустые строки, пока тела tool-вызовов ещё защищены: формат
+    # create_file/create_docx и patch_file значим, его нельзя нормализовать.
+    result = re.sub(r"\n{3,}", "\n\n", result)
+
     # Восстанавливаем защищённые call-блоки
     result = _restore_call_blocks(result, _call_blocks)
 
@@ -371,8 +375,6 @@ def sanitize_response(text: str) -> str:
     result = _PROXY_WRAP_RE.sub("", result)
     result = _PROXY_QUERY_TAG_RE.sub("", result)
 
-    # Очищаем множественные пустые строки
-    result = re.sub(r"\n{3,}", "\n\n", result)
     final = result.strip()
     if len(text) - len(final) > 50:
         logger.debug(

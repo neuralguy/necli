@@ -119,6 +119,39 @@ def get_context_limit(model: str) -> int:
         return cw
     return _DEFAULT_CONTEXT_LIMIT
 
+def normalize_model_name(model_id: str) -> str:
+    """Преобразует model id в читаемое display name.
+
+    - Берёт часть после последнего /
+    - Заменяет - на пробел, но между числами на точку
+    - Каждое слово с заглавной буквы
+
+    Пример: "anthropic/claude-haiku-4-5" → "Claude Haiku 4.5"
+    """
+    if not model_id:
+        return ""
+    name = model_id.rsplit("/", 1)[-1]
+    parts = name.split("-")
+
+    def _is_number(s: str) -> bool:
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+
+    tokens = [part[0].upper() + part[1:] if part else part for part in parts]
+
+    if not tokens:
+        return ""
+    result = tokens[0]
+    for i in range(1, len(tokens)):
+        if _is_number(parts[i - 1]) and _is_number(parts[i]):
+            result += "." + tokens[i]
+        else:
+            result += " " + tokens[i]
+    return result
+
 def _normalize(s: str) -> str:
     return s.lower().replace(" ", "").replace("-", "").replace("_", "")
 

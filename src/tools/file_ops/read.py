@@ -1,8 +1,6 @@
 """read_files — чтение одного или нескольких файлов.
 
 Поддерживает текстовые форматы, CSV/TSV, Excel, DOCX, PDF, изображения.
-Per-session кэш чтений: при mtime+size совпадении возвращает короткое
-NOT CHANGED уведомление вместо повторной отправки контента.
 """
 
 from pathlib import Path
@@ -121,8 +119,7 @@ def invalidate_read_cache(path: Path | str) -> None:
     Ключ кэша пишется как str(resolve_path(path).resolve()) — working_dir-aware
     через ContextVar. Строим ключ ТЕМ ЖЕ путём (а не Path(path).resolve(),
     который резолвит относительно cwd процесса), иначе при cwd != working_dir
-    ключи расходятся и инвалидация молча промахивается — кэш вечно отвечает
-    NOT CHANGED, хотя контент уже вытеснен pruner'ом из истории.
+    ключи расходятся и инвалидация молча промахивается.
     """
     keys: set[str] = set()
     try:
@@ -212,18 +209,6 @@ def _read_binary_cached(
 ) -> ToolResult:
     """Общий код для бинарных форматов (CSV/Excel/PDF/DOCX): cache-hit → читатель → record → lines filter."""
     try:
-        cached = _cache_get_valid(path, cache_key)
-        if cached is not None and cached.get("binary") and not lines_range:
-            cached["read_count"] += 1
-            return ToolResult(
-                name="read_files", status="ok",
-                output=(
-                    f"[{path_str} · {fmt} — "
-                    f"NOT CHANGED since previous read in this session. "
-                    f"Use the previously received content.]"
-                ),
-                exit_code=0, command=command,
-            )
         content = reader_fn(path)
         if not content:
             content = empty_msg
@@ -256,6 +241,23 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
             command=command,
         )
 
+    if path.is_dir():
+        try:
+            entries = sorted(path.iterdir(), key=lambda entry: entry.name.casefold())
+        except OSError as e:
+            return ToolResult(
+                name="read_files", status="error", output=f"Read error: {e}",
+                exit_code=1, command=command,
+            )
+        listing = "\n".join(
+            f"{entry.name}/" if entry.is_dir() else entry.name for entry in entries
+        )
+        return ToolResult(
+            name="read_files", status="ok",
+            output=f"[{path_str} · directory]\n{listing}",
+            exit_code=0, command=command,
+        )
+
     if not path.is_file():
         return ToolResult(
             name="read_files",
@@ -268,21 +270,6 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
     cache_key = str(path.resolve())
 
     if path.suffix.lower() in _IMAGE_EXTENSIONS:
-        cached = _cache_get_valid(path, cache_key)
-        if cached is not None and cached.get("binary"):
-            cached["read_count"] += 1
-            return ToolResult(
-                name="read_files",
-                status="ok",
-                output=(
-                    f"[image: {path_str} — "
-                    f"NOT CHANGED since previous read in this session. "
-                    f"Image already sent to model earlier, not resent. "
-                    f"To re-read after a change — modify the file.]"
-                ),
-                exit_code=0,
-                command=command,
-            )
         _cache_record(path, cache_key, 1, 1, binary=True)
         return ToolResult(
             name="read_files",
@@ -342,39 +329,6 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
             output=f"[{path_str} · {total_lines} lines]\n{requested}",
             exit_code=1, command=command,
         )
-    if not lines_range:
-        effective_end = min(total_lines, MAX_LINES) if total_lines > MAX_LINES else total_lines
-        effective_range = (1, effective_end) if total_lines > 0 else None
-    else:
-        effective_range = requested
-
-    cached = _cache_get_valid(path, cache_key)
-    if cached is not None and effective_range is not None and not cached.get("binary"):
-        seen = cached["ranges"]
-        if _range_covered(seen, effective_range[0], effective_range[1]):
-            cached["read_count"] += 1
-            seen_str = _format_seen_ranges(seen)
-            req_str = (
-                f"{effective_range[0]}-{effective_range[1]}"
-                if effective_range[0] != effective_range[1]
-                else str(effective_range[0])
-            )
-            info = (
-                f"[{path_str} · {total_lines} lines — "
-                f"NOT CHANGED since previous read in this session]"
-            )
-            note = (
-                f"Requested lines {req_str} were already read earlier "
-                f"(seen ranges: {seen_str}). File unchanged (mtime/size match), "
-                f"so content is not resent. "
-                f"Use previously received content from history."
-            )
-            return ToolResult(
-                name="read_files", status="ok",
-                output=f"{info}\n{note}",
-                exit_code=0, command=command, full_content=False,
-            )
-
     if not lines_range and total_lines > MAX_LINES:
         content_out = "\n".join(all_file_lines[:MAX_LINES])
         info = f"[{path_str} · {total_lines} lines (showing first {MAX_LINES})]"
@@ -425,10 +379,8 @@ def read_files(call: ToolCall) -> ToolResult:
     Читает один или несколько файлов (до 20).
 
     Принимает:
-      {"path": "file.py"}                          — один файл
-      {"path": "file.py", "lines": "10-50"}        — один файл с фильтром строк
       {"paths": ["a.py", "b.py", ...]}             — несколько файлов
-      {"paths": [{"path": "a.py", "lines": "1-10"}, {"path": "b.py"}]}  — индивидуальные параметры
+      {"paths": [{"path": "a.py", "lines": "1-10"}, {"path": "b.py"}]}  — с индивидуальными параметрами
     """
     args = call.args
 
@@ -441,8 +393,6 @@ def read_files(call: ToolCall) -> ToolResult:
     _dropped_paths: list[str] = []
     if paths_arg and isinstance(paths_arg, list):
         if len(paths_arg) > MAX_READ_FILES:
-            # Фикс 1.6: вместо тихого обрезания собираем имена выкинутых
-            # файлов и добавляем уведомление в начало output.
             for skipped in paths_arg[MAX_READ_FILES:]:
                 if isinstance(skipped, str):
                     _dropped_paths.append(skipped)
@@ -453,20 +403,6 @@ def read_files(call: ToolCall) -> ToolResult:
                 file_specs.append({"path": item})
             elif isinstance(item, dict):
                 file_specs.append(item)
-    else:
-        path_str = clean_path(args.get("path", ""))
-        if not path_str:
-            path_str = clean_path(args.get("raw", ""))
-        if not path_str:
-            return ToolResult(
-                name="read_files",
-                status="error",
-                output="File path (path or paths) not specified",
-                exit_code=1,
-                command=call.command,
-            )
-        file_specs.append({"path": path_str, "lines": str(args.get("lines", "")), "encoding": args.get("encoding", "utf-8")})
-
     if not file_specs:
         return ToolResult(
             name="read_files",
@@ -487,9 +423,8 @@ def read_files(call: ToolCall) -> ToolResult:
                 output="Empty path in paths", exit_code=1, command=call.command,
             ))
             continue
-        enc = spec.get("encoding", "utf-8") if isinstance(spec, dict) else "utf-8"
         lr = str(spec.get("lines", "")) if isinstance(spec, dict) else ""
-        r = _read_single_file(p, encoding=enc, lines_range=lr, command=call.command)
+        r = _read_single_file(p, encoding="utf-8", lines_range=lr, command=call.command)
         results.append(r)
         if r.image_path and not first_image_path:
             first_image_path = r.image_path

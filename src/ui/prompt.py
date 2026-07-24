@@ -67,6 +67,16 @@ _EOF = object()
 _BG_RESUME = object()
 
 
+class _PastedTextHistory(ThreadedHistory):
+    """Раскрывает временные маркеры перед сохранением записи истории."""
+
+    def __init__(self, history, expand):
+        super().__init__(history)
+        self._expand = expand
+
+    def append_string(self, string: str) -> None:
+        super().append_string(self._expand(string))
+
 
 def _get_clipboard_text() -> str:
     """Читает текст из системного буфера обмена."""
@@ -138,14 +148,15 @@ class InputPrompt:
         self.mode: str = "agent"
         self.activity_status: str = "idle"
         self.session = None
-        # Callback пересчёта status-строки. Используется в reprint_separator
-        # (Ctrl+O) как fallback, когда _last_status_text пуст/устарел после
-        # compress/decompress — иначе separator выродится в голую линию.
+        # Callback пересчёта status-строки для Ctrl+O reprint.
         self.status_provider = None
         self._last_status_text: str | None = None
+        self._pasted_texts: dict[str, list[str]] = {}
+        self._submitted_display_text: str | None = None
+        self._submitted_text: str | None = None
         self._combined_completer, self._file_completer = make_combined_completer(working_dir)
         self._session = PromptSession(
-            history=ThreadedHistory(FileHistory(str(_HISTORY_FILE))),
+            history=_PastedTextHistory(FileHistory(str(_HISTORY_FILE)), self._expand_for_history),
             key_bindings=self._make_bindings(),
             completer=self._combined_completer,
             complete_while_typing=True,
@@ -191,6 +202,29 @@ class InputPrompt:
             return True
         return False
 
+    def _insert_pasted_text(self, buf, text: str) -> None:
+        """Вставляет многострочный текст как маркер, сохраняя оригинал до отправки."""
+        if "\n" not in text:
+            buf.insert_text(text)
+            return
+        marker = f"[Pasted {len(text.splitlines())} lines]"
+        self._pasted_texts.setdefault(marker, []).append(text)
+        buf.insert_text(marker)
+
+    def _expand_pasted_text(self, text: str) -> str:
+        """Раскрывает маркеры вставок перед сохранением и отправкой."""
+        for marker, pasted_texts in self._pasted_texts.items():
+            while pasted_texts and marker in text:
+                text = text.replace(marker, pasted_texts.pop(0), 1)
+        self._pasted_texts.clear()
+        return text
+
+    def _expand_for_history(self, text: str) -> str:
+        """Раскрывает вставки для истории, не меняя видимый буфер."""
+        self._submitted_display_text = text
+        self._submitted_text = self._expand_pasted_text(text)
+        return self._submitted_text
+
     def _make_bindings(self) -> KeyBindings:
         kb = KeyBindings()
 
@@ -211,10 +245,14 @@ class InputPrompt:
                 buf.insert_text("\n")
                 return
 
-            # Иначе обычная отправка
-            text = buf.text.strip()
-            if text:
-                buf.validate_and_handle()
+            buf.validate_and_handle()
+
+        @kb.add("c-c", eager=True)
+        def _cancel_input(event):
+            self._pasted_texts.clear()
+            self._submitted_display_text = None
+            self._submitted_text = None
+            event.current_buffer.reset()
 
         @kb.add(Keys.Escape, Keys.Enter)
         def _newline(event):
@@ -251,7 +289,7 @@ class InputPrompt:
             text = _get_clipboard_text()
             if text:
                 text = text.replace("\r\n", "\n").replace("\r", "\n")
-                event.current_buffer.insert_text(text)
+                self._insert_pasted_text(event.current_buffer, text)
 
         # ── Ctrl+O: toggle expanded/compact view (только в compact-режиме) ──
         @kb.add("c-o", eager=True)
@@ -275,9 +313,7 @@ class InputPrompt:
                     pi = getattr(ctx, "prompt_input", None)
                     if pi is not None and hasattr(pi, "reprint_separator"):
                         fresh = getattr(ctx, "last_status_text", None)
-                        # После compress/decompress last_status_text может
-                        # устареть/опустеть → пересчитываем через callback,
-                        # иначе separator выродится в голую линию.
+                        # Пустой статус пересчитываем через callback.
                         if not fresh:
                             rebuild = getattr(ctx, "rebuild_status", None)
                             if callable(rebuild):
@@ -313,7 +349,7 @@ class InputPrompt:
             data = event.data or ""
             if data:
                 data = data.replace("\r\n", "\n").replace("\r", "\n")
-                event.current_buffer.insert_text(data)
+                self._insert_pasted_text(event.current_buffer, data)
 
         return kb
 
@@ -441,9 +477,13 @@ class InputPrompt:
                     lambda: self._make_prompt_fragments(),
                     bottom_toolbar=None,
                 )
-            cleaned = result.strip() if result else ""
+            display_result = result or ""
+            result = self._submitted_text or display_result
+            self._submitted_display_text = None
+            self._submitted_text = None
+            cleaned = result.strip()
             if cleaned:
-                self._echo_submitted(result)
+                self._echo_submitted(result, displayed_text=display_result)
             return cleaned
         except EOFError:
             return _EOF
@@ -515,7 +555,7 @@ class InputPrompt:
                     logger.debug("prompt_task raised on bg-exit", exc_info=True)
             return _BG_RESUME
 
-    def _echo_submitted(self, text: str) -> None:
+    def _echo_submitted(self, text: str, displayed_text: str | None = None) -> None:
         """Перепечатывает отправленный ввод белым текстом на сером фоне на всю
         ширину (многострочно). Сначала стирает строки, которые prompt_toolkit
         оставил в скроллбэке (prompt + перенесённые строки ввода)."""
@@ -536,7 +576,7 @@ class InputPrompt:
             mode_prefix = "🚀 agent > "
         prefix_w = _vw(mode_prefix)
         rows = 0
-        for i, ln in enumerate(text.split("\n")):
+        for i, ln in enumerate((displayed_text or text).split("\n")):
             line_w = (prefix_w if i == 0 else 0) + _vw(ln)
             rows += max(1, (line_w + w - 1) // w) if line_w else 1
 

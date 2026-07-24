@@ -23,7 +23,6 @@ from apis.agent_adapter import (
     ApiSession,
     _content_to_text,
     _ensure_tool_call_ids,
-    _tool_calls_to_text_blocks,
 )
 from apis.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from apis.registry import get_provider
@@ -36,6 +35,16 @@ from tools.registry import execute_call
 logger = logging.getLogger(__name__)
 
 MAX_COMMIT_ITERATIONS = 40
+
+
+def _native_tool_calls_to_calls(native_calls: list[dict]) -> list[tools.ToolCall]:
+    calls = []
+    for call in native_calls:
+        name = call.get("name") or "shell"
+        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        command = str(args.get("command") or "shell") if name == "shell" else name
+        calls.append(tools.ToolCall(command=command, tool_name=name, args=args, raw=""))
+    return calls
 
 _COMMIT_MODE_BLOCK = (
     "\n\n━━━ COMMIT AGENT MODE ━━━\n"
@@ -202,8 +211,7 @@ async def run_commit_agent(
         session.messages.append(AIMessage(**kwargs))
 
         if native_calls:
-            blocks = _tool_calls_to_text_blocks(native_calls)
-            calls = parse_tool_calls(blocks)
+            calls = _native_tool_calls_to_calls(native_calls)
         else:
             calls = parse_tool_calls(raw_text)
         calls = [c for c in calls if c.tool_name != "think"]

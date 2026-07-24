@@ -1,5 +1,6 @@
 """Terminal rendering of tool commands and their output."""
 
+import json
 import re
 
 from rich.console import Console
@@ -77,7 +78,6 @@ def _store_assistant(text: str, subtitle: str = "", message_num: int = 0) -> Non
 def show_plan_update(plan, action: str = "", focus_index: int | None = None) -> None:
     if plan is None or not getattr(plan, "steps", None):
         return
-    full = action == "create" or bool(getattr(plan, "is_complete", False))
     if focus_index is None:
         focus_index = getattr(plan, "current_step_index", None)
     if focus_index is None:
@@ -89,7 +89,6 @@ def show_plan_update(plan, action: str = "", focus_index: int | None = None) -> 
             plan,
             compact=False,
             focus_index=focus_index,
-            full=full,
         ))
         if not _REPLAY_ACTIVE:
             from agent.loop import get_current_ctx
@@ -108,6 +107,19 @@ def MAX_WIDTH():  # noqa: N802
 
 # Инструменты, у которых при успехе output скрывается: пользователь видит факт
 # изменения по панели команды и ✓-статусу, текст не нужен.
+_TOOL_TITLE_ARG = {
+    "web_fetch": "urls",
+    "web_search": "queries",
+    "skill": "name",
+    "memory_read": "name",
+    "memory_write": "name",
+    "poll": "question",
+    "subagent": "prompt",
+    "expand_tool_result": "id",
+    "read_files": "paths",
+    "read_file": "paths",
+}
+
 _SILENT_OK_TOOLS = frozenset({
     "create_file", "patch_file",
     "create_docx",
@@ -234,10 +246,17 @@ def _format_path_for_title(path) -> str:
     панели отдельными строками — каждая со своим bytes/lines.
     """
     if isinstance(path, (list, tuple)):
-        names = [str(p) for p in path if p]
+        names: list[str] = []
+        for p in path:
+            if isinstance(p, dict):
+                p = p.get("path", str(p))
+            if p:
+                names.append(str(p))
         if not names:
             return ""
         return names[0] if len(names) == 1 else f"{len(names)} files"
+    if isinstance(path, dict):
+        path = path.get("path", str(path))
     return str(path) if path else ""
 
 def _compact_display_value(value: str) -> str:
@@ -319,6 +338,31 @@ def _format_elapsed(elapsed: float) -> str:
     return f" {elapsed:.1f}s" if elapsed >= 0.05 else ""
 
 
+def _format_tool_tokens(call: tools.ToolCall | None, result: tools.ToolResult) -> str:
+    """Показывает токены, записанные инструментом и возвращённые из него."""
+    from session.tokens import count_tokens
+    from ui import format_tokens
+
+    read_tools = {
+        "read_files", "read_file", "grep", "lsp_references",
+        "lsp_diagnostics", "web_search", "web_fetch", "image_search",
+        "docx_screenshot", "skill", "memory_list", "memory_read",
+    }
+    write_tools = {"create_file", "patch_file", "create_docx", "memory_write"}
+    tool_name = call.tool_name if call else result.name
+    if tool_name in read_tools:
+        return f" ↑{format_tokens(count_tokens(result.output))}"
+    if tool_name in write_tools:
+        payload = json.dumps(call.args if call else {}, ensure_ascii=False, default=str)
+        return f" ↓{format_tokens(count_tokens(payload))}"
+
+    payload = json.dumps(call.args if call else {}, ensure_ascii=False, default=str)
+    return (
+        f" ↓{format_tokens(count_tokens(payload))}"
+        f" ↑{format_tokens(count_tokens(result.output))}"
+    )
+
+
 def _truncate_cmd(cmd: str) -> str:
     """Однострочная команда — целиком (до 120); многострочная — первая строка + …."""
     if "\n" in cmd:
@@ -344,29 +388,43 @@ def _compact_title_text(
         display_name = f"{lead_frame} {label}"
     txt = Text()
     raw_path = args.get("path", "")
+    if not raw_path and tool_name in ("read_files", "read_file"):
+        # read_files использует paths (plural), не path.
+        _paths = args.get("paths")
+        if _paths:
+            raw_path = _paths if isinstance(_paths, (list, tuple)) else str(_paths)
     path_disp = _format_path_for_title(raw_path)
     arg_disp = path_disp
-    is_file_path = bool(path_disp)
-    if not arg_disp and tool_name == "web_search":
-        urls = args.get("urls", []) or []
-        arg_disp = args.get("query", "") or args.get("url", "") or (", ".join(urls) if urls else "")
-    elif not arg_disp and tool_name == "shell":
+    if tool_name == "grep" and args.get("pattern"):
+        pat = str(args["pattern"])[:60]
+        arg_disp = f"{pat} -> {path_disp}" if path_disp else pat
+    is_file_path = bool(path_disp) and tool_name != "grep"
+    if not arg_disp:
+        _title_arg_key = _TOOL_TITLE_ARG.get(tool_name)
+        if _title_arg_key:
+            val = args.get(_title_arg_key)
+            if isinstance(val, list):
+                items = [str(v)[:60] for v in val[:3]]
+                arg_disp = ", ".join(items)
+                if len(val) > 3:
+                    arg_disp += ", …"
+            elif val:
+                arg_disp = str(val)[:120]
+    if not arg_disp and tool_name == "shell":
         cmd = args.get("command", "") or ""
-        # Однострочная команда — целиком; многострочная — первая строка + …
         arg_disp = _truncate_cmd(cmd)
-    elif not arg_disp and tool_name == "ssh":
-        host = args.get("host", "") or ""
-        cmd = args.get("command", "") or args.get("command_str", "") or ""
-        if not cmd and args.get("upload"):
-            cmd = f"↑ {args.get('upload')} → {args.get('dest', '')}"
-        elif not cmd and args.get("download"):
-            cmd = f"↓ {args.get('download')} → {args.get('dest', '')}"
-        cmd = _truncate_cmd(cmd)
-        arg_disp = f"{host}: {cmd}" if host and cmd else (cmd or host)
     if arg_disp:
         txt.append(f"{display_name}(", style=f"bold {color}")
-        if is_file_path and isinstance(raw_path, str):
-            txt.append(arg_disp, style=_file_link_style(raw_path, color))
+        link_path: str | None = None
+        if is_file_path:
+            if isinstance(raw_path, str):
+                link_path = raw_path
+            elif path_disp and isinstance(path_disp, str) and tool_name in ("read_files", "read_file"):
+                # read_files paths=[{path: '/foo'}, ...] — raw_path список,
+                # но path_disp уже извлёк путь; используем его для линка.
+                link_path = path_disp
+        if link_path:
+            txt.append(arg_disp, style=_file_link_style(link_path, color))
         else:
             # Несколько файлов (list) или не-путь — без линка.
             txt.append(arg_disp, style=f"bold {color}")
@@ -385,11 +443,12 @@ def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult |
         first_line = (result.output or "").strip().split("\n")[0][:80]
         return first_line or _i18n("compact.error")
 
-    if tool_name == "web_search":
+    if tool_name in ("web_search", "web_fetch"):
         if result is not None:
             out = (result.output or "").strip()
             if not out:
                 return ""
+            # web_search: считаем результаты
             n_results = len(re.findall(r"(?m)^\[\d+\] ", out))
             if n_results:
                 return _i18n("compact.results_n", n=n_results)
@@ -569,9 +628,13 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
 
     # grep_files / lsp_* — первые 3 результата + "… +N строк"
     if tool_name in (
-        "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
+        "lsp_references", "lsp_diagnostics",
     ) and result is not None and result.status == "ok":
         return _compact_result_list_preview(tool_name, result)
+
+    # memory_read/memory_write — метаданные + тело (первые 5 строк)
+    if tool_name in ("memory_read", "memory_write") and result is not None and result.status == "ok":
+        return _compact_memory_preview(result)
 
     return None
 
@@ -606,6 +669,49 @@ def _compact_result_list_preview(tool_name: str, result: tools.ToolResult) -> li
         rest = len(rows) - len(head)
         out.append(Text(
             "        " + _i18n("compact.more_lines", n=rest),
+            style=f"italic {t('dim_text')}",
+        ))
+    return out
+
+
+def _compact_memory_preview(result: tools.ToolResult) -> list | None:
+    """Превью memory_read: метаданные + тело (первые 5 строк)."""
+    output = (result.output or "").rstrip("\n")
+    if not output:
+        return None
+
+    # Отрезаем строку с путём
+    rest = re.sub(r"^=== path: .+? ===\s*", "", output).strip()
+
+    # Парсим мета-строку [scope=..., type=..., created=..., updated=...]
+    meta_match = re.match(r"^\[(.+?)\]\s*\n?", rest)
+    body = rest
+    meta_parts = []
+    if meta_match:
+        meta_str = meta_match.group(1)
+        body = rest[meta_match.end():].strip()
+        # Вытаскиваем scope и type, остальное убираем
+        for kv in meta_str.split(","):
+            kv = kv.strip()
+            if kv.startswith(("scope=", "type=")):
+                meta_parts.append(kv)
+
+    out: list = []
+    if meta_parts:
+        out.append(Text(
+            f"   {ui.get('symbols.summary_prefix', '⎿  ')}{', '.join(meta_parts)}",
+            style=t("info"),
+        ))
+
+    # Показываем первые 5 строк тела
+    body_lines = body.split("\n")
+    limit = 5
+    head = body_lines[:limit]
+    out.extend(Text(f"      {ln}", style=t("dim_text")) for ln in head)
+    if len(body_lines) > limit:
+        rest_n = len(body_lines) - limit
+        out.append(Text(
+            "      " + _i18n("compact.more_lines", n=rest_n),
             style=f"italic {t('dim_text')}",
         ))
     return out
@@ -781,6 +887,13 @@ def _show_tool_compact(
 ):
     """Компактный режим: заголовок Tool(path) ✓ 1.2s + preview/сводка."""
     raw_args = args or {}
+    # memory_read/memory_write: inject file path from result into raw_args for title
+    if tool_name in ("memory_read", "memory_write") and result is not None:
+        _out = result.output or ""
+        _pm = re.search(r"^=== path: (.+?) ===\s*", _out)
+        if _pm:
+            raw_args = dict(raw_args)
+            raw_args["path"] = _pm.group(1)
     args = prepare_display_args(raw_args, tool_name)
 
     is_ok = True
@@ -798,7 +911,7 @@ def _show_tool_compact(
 
     elapsed = (result.elapsed if result else 0.0) or 0.0
     time_str = _format_elapsed(elapsed)
-    status_full = f"{icon}{time_str}" if icon else ""
+    status_full = f"{icon}{time_str}{_format_tool_tokens(call, result)}" if icon else ""
 
     console.print()
     console.print(_compact_title_text(tool_name, args, status_full, status_color))
@@ -848,17 +961,16 @@ def show_output(result: tools.ToolResult):
 
 
 def render_md_panel(text: str, subtitle: str = "", message_num: int = 0):
-    from rich.markdown import Markdown
-
+    from agent.markdown import ResponseMarkdown
     from ui.formatting import escape_md_underscores, latex_to_unicode
 
     _store_assistant(text, subtitle=subtitle, message_num=message_num)
     text = latex_to_unicode(text)
-    md = Markdown(escape_md_underscores(text), code_theme="monokai", inline_code_theme="monokai")
+    md = ResponseMarkdown(escape_md_underscores(text), code_theme="monokai", inline_code_theme="monokai")
 
     from rich.console import Group as RGroup
 
-    from agent.stream_render import _inline_md
+    from agent.stream_render import _inline_md, _is_markdown_block
     stripped = text.lstrip("\n").rstrip()
     # Первая строка склеивается с "●". Если она — block-element
     # (заголовок/список/цитата/fence) — рендерим всё как Markdown под header.
@@ -867,14 +979,14 @@ def render_md_panel(text: str, subtitle: str = "", message_num: int = 0):
     first_nl = stripped.find("\n")
     first_line = stripped if first_nl < 0 else stripped[:first_nl]
     rest = "" if first_nl < 0 else stripped[first_nl + 1:].lstrip("\n")
-    is_block = bool(re.match(r"^(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|~~~)", first_line))
+    is_block = _is_markdown_block(first_line, rest)
     header = Text()
     header.append("● ", style=f"bold {t('success')}")
     if first_line and not is_block:
         header.append(Text.from_markup(_inline_md(first_line)))
         if not rest:
             return header
-        rest_md = Markdown(escape_md_underscores(rest), code_theme="monokai", inline_code_theme="monokai")
+        rest_md = ResponseMarkdown(escape_md_underscores(rest), code_theme="monokai", inline_code_theme="monokai")
         return RGroup(header, rest_md)
     return RGroup(header, md)
 

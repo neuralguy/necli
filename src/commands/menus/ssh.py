@@ -4,7 +4,6 @@ from rich.console import Console
 
 from config.i18n import t as _
 from config.ssh import add_host, list_hosts, parse_host_string, remove_host
-from tools.ssh import check_connection
 from ui.menu import select_menu
 
 console = Console()
@@ -81,12 +80,7 @@ def _ssh_detail(alias: str, cfg: dict):
             return "back"
 
         if choice == 0:
-            with console.status(f"[cyan]{_('ssh.connecting', name=alias)}[/cyan]", spinner="dots"):
-                ok, info = check_connection(alias)
-            if ok:
-                console.print(f"  [green]✓[/green] {_('ssh.conn_ok', info=info)}")
-            else:
-                console.print(f"  [red]✗[/red] {_('ssh.conn_err', info=info)}")
+            console.print("  [yellow]⚠[/yellow] SSH connection check unavailable (tools.ssh removed)")
             continue
 
         if choice == 1:

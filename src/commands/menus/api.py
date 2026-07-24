@@ -546,68 +546,29 @@ def _api_provider_detail(provider: dict, active_api: str, active_model: str):
 
 
 def _api_add_menu():
-    """Menu for adding a new API provider."""
+    """Добавление нового провайдера: сразу запрос имени и URL."""
+    import re as _re
+
     from apis.config import add_api_config
-
-    no_key = _("api.no_key_needed")
-    items = [
-        {"label": "OpenAI", "hint": "api.openai.com"},
-        {"label": "Anthropic", "hint": "api.anthropic.com"},
-        {"label": "Google Gemini", "hint": "generativelanguage.googleapis.com"},
-        {"label": "OpenRouter", "hint": "openrouter.ai"},
-        {"label": "Groq", "hint": "api.groq.com"},
-        {"label": "xAI Grok", "hint": "api.x.ai"},
-        {"label": "Ollama 🏠", "hint": f"localhost:11434 · {no_key}"},
-        {"label": "LM Studio 🏠", "hint": f"localhost:1234 · {no_key}"},
-        {"label": _("api.custom"), "hint": _("api.any_url")},
-    ]
-
-    cloud_ids = ["openai", "anthropic", "google", "openrouter", "groq", "xai"]
-    local_ids = ["ollama", "lmstudio"]
-
-    choice = select_menu(items, title=_("api.add_title"))
-    if choice is None:
-        return
-
-    if choice < len(cloud_ids):
-        pid = cloud_ids[choice]
-        name, base_url, ptype, api_format = _KNOWN_PROVIDERS[pid]
-        add_api_config(
-            provider_id=pid, name=name, base_url=base_url,
-            provider_type=ptype, api_format=api_format,
-        )
-        console.print(f"  [green]\u2713[/green] {_('api.added', name=name)}")
-        console.print(f"  [dim]{_('api.next_set_key')}[/dim]")
-        return
-
-    local_start = len(cloud_ids)
-    local_end = local_start + len(local_ids)
-    if local_start <= choice < local_end:
-        pid = local_ids[choice - local_start]
-        name, base_url = _LOCAL_PROVIDERS[pid]
-        add_api_config(
-            provider_id=pid, name=name, base_url=base_url,
-            provider_type="openai_compatible", api_format="openai",
-        )
-        console.print(f"  [green]\u2713[/green] {_('api.added', name=name)} [dim]({base_url})[/dim]")
-        console.print(f"  [dim]{_('api.start_server_hint')}[/dim]")
-        return
 
     try:
         console.print()
-        pid = console.input(f"  [bold]{_('api.field_provider_id')}:[/bold] ").strip()
-        if not pid:
+        name = console.input(f"  [bold]{_('api.field_name')}:[/bold] ").strip()
+        if not name:
+            console.print(f"  [red]{_('api.url_required')}[/red]")
             return
-        name = console.input(f"  [bold]{_('api.field_name')}:[/bold] ").strip() or pid
         base_url = console.input(f"  [bold]{_('api.field_base_url')}:[/bold] ").strip()
         if not base_url:
             console.print(f"  [red]{_('api.url_required')}[/red]")
             return
+        pid = _re.sub(r'[^a-z0-9_-]', '', name.lower().replace(' ', '_'))
+        if not pid:
+            pid = "custom"
         add_api_config(
             provider_id=pid, name=name, base_url=base_url,
             provider_type="openai_compatible", api_format="openai",
         )
-        console.print(f"  [green]\u2713[/green] {_('api.added', name=name)}")
+        console.print(f"  [green]\u2713[/green] {_('api.added', name=name)}  [dim]id: {pid}[/dim]")
     except (KeyboardInterrupt, EOFError):
         console.print()
 

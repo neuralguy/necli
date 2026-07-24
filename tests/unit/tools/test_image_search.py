@@ -88,22 +88,17 @@ def test_safe_name_fallback_jpg():
 def test_no_query_errors():
     res = execute_image_search(_call())
     assert res.status == "error"
-    assert "query" in res.output.lower()
-
-
-def test_invalid_source_errors():
-    res = execute_image_search(_call(query="cats", source="bing"))
-    assert res.status == "error"
-    assert "source" in res.output.lower()
+    assert "queries" in res.output.lower()
 
 
 def test_search_lists_results(monkeypatch):
-    fake = [
+    fake_results = [
         _norm(image="http://a.jpg", title="A", width=800, height=600,
               source="a.com", provider="ddg", page="http://a.com/p", thumbnail="http://a.t"),
     ]
-    monkeypatch.setattr(imgs, "_gather_results", lambda *a, **k: fake)
-    res = execute_image_search(_call(query="cats"))
+    monkeypatch.setattr(imgs, "_search_and_download",
+                        lambda q, m, a, d: (fake_results, [], []))
+    res = execute_image_search(_call(queries=["cats"]))
     assert res.status == "ok"
     assert "[0]" in res.output
     assert "http://a.jpg" in res.output
@@ -113,31 +108,53 @@ def test_search_lists_results(monkeypatch):
 
 
 def test_search_no_results(monkeypatch):
-    monkeypatch.setattr(imgs, "_gather_results", lambda *a, **k: [])
-    res = execute_image_search(_call(query="zxqw"))
+    monkeypatch.setattr(imgs, "_search_and_download",
+                        lambda q, m, a, d: ([], [], []))
+    res = execute_image_search(_call(queries=["zxqw"]))
     assert res.status == "ok"
-    assert "No images" in res.output
+    assert "Found 0 image(s)" in res.output
 
 
-def test_results_without_image_url_filtered(monkeypatch):
-    fake = [_norm(image=""), _norm(image="http://ok.png")]
-    monkeypatch.setattr(imgs, "_gather_results", lambda *a, **k: fake)
-    res = execute_image_search(_call(query="x"))
-    # только один валидный
+def test_results_without_image_url_filtered(monkeypatch, tmp_workdir):
+    fake_results = [_norm(image=""), _norm(image="http://ok.png")]
+    monkeypatch.setattr(imgs, "_search_ddg", lambda q, m, a: fake_results)
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeStream(_png_bytes()))
+
+    res = execute_image_search(_call(queries=["x"]))
+    # http://ok.png выводится; пустой image отфильтрован
     assert "http://ok.png" in res.output
-    assert res.output.count("image:") == 1
+    # только один валидный результат (пустой отфильтрован)
+    assert res.output.count("http://ok.png") == 1
 
 
 def test_max_results_clamped(monkeypatch):
     captured = {}
 
-    def fake_gather(query, source, max_results, args):
+    def fake_search(query, max_results, args, dest_dir):
         captured["max"] = max_results
-        return []
+        return ([], [], [])
 
-    monkeypatch.setattr(imgs, "_gather_results", fake_gather)
-    execute_image_search(_call(query="x", max_results=999))
+    monkeypatch.setattr(imgs, "_search_and_download", fake_search)
+    execute_image_search(_call(queries=["x"], max_results=999))
     assert captured["max"] == 50
+
+
+def test_multiple_queries(monkeypatch):
+    calls = []
+
+    def fake_search(query, max_results, args, dest_dir):
+        calls.append(query)
+        return ([_norm(image="http://img.jpg", title=query)], [], [])
+
+    monkeypatch.setattr(imgs, "_search_and_download", fake_search)
+    res = execute_image_search(_call(queries=["cats", "dogs"]))
+    assert len(calls) == 2
+    assert calls == ["cats", "dogs"]
+    assert "[Query 1:" in res.output
+    assert "[Query 2:" in res.output
 
 
 # ---------------- download + validation ----------------
@@ -161,14 +178,14 @@ class _FakeStream:
 
 def test_download_valid_image(monkeypatch, tmp_workdir):
     png = _png_bytes()
-    fake = [_norm(image="http://a/cat.png", title="cat")]
-    monkeypatch.setattr(imgs, "_gather_results", lambda *a, **k: fake)
+    fake_results = [_norm(image="http://a/cat.png", title="cat")]
+    monkeypatch.setattr(imgs, "_search_ddg", lambda q, m, a: fake_results)
 
     import httpx
 
     monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeStream(png))
 
-    res = execute_image_search(_call(query="cat", download=True))
+    res = execute_image_search(_call(queries=["cat"]))
     assert res.status == "ok"
     assert res.image_paths is not None and len(res.image_paths) == 1
     saved = res.image_paths[0]
@@ -179,44 +196,16 @@ def test_download_valid_image(monkeypatch, tmp_workdir):
 
 
 def test_download_rejects_non_image(monkeypatch, tmp_workdir):
-    fake = [_norm(image="http://a/fake.png")]
-    monkeypatch.setattr(imgs, "_gather_results", lambda *a, **k: fake)
+    fake_results = [_norm(image="http://a/fake.png")]
+    monkeypatch.setattr(imgs, "_search_ddg", lambda q, m, a: fake_results)
 
     import httpx
 
     monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeStream(b"<html>not an image</html>"))
 
-    res = execute_image_search(_call(query="x", download=True))
+    res = execute_image_search(_call(queries=["x"]))
     assert res.status == "ok"
     assert res.image_paths is None  # ничего валидного не скачано
     assert "FAILED" in res.output
     assert "downloaded 0" in res.output
     assert "1 failed" in res.output
-
-
-def test_download_indices_selects_subset(monkeypatch, tmp_workdir):
-    png = _png_bytes()
-    fake = [_norm(image=f"http://a/{i}.png") for i in range(3)]
-    monkeypatch.setattr(imgs, "_gather_results", lambda *a, **k: fake)
-
-    calls = []
-
-    def fake_stream(method, url, **k):
-        calls.append(url)
-        return _FakeStream(png)
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "stream", fake_stream)
-
-    res = execute_image_search(_call(query="x", download=True, download_indices=[1]))
-    assert len(calls) == 1
-    assert calls[0] == "http://a/1.png"
-    assert res.image_paths is not None and len(res.image_paths) == 1
-
-
-# ---------------- source dispatch ----------------
-def test_stock_sources_skipped_without_keys(monkeypatch):
-    monkeypatch.setattr(imgs, "_get_api_key", lambda name: None)
-    assert imgs._search_unsplash("x", 5, {}) == []
-    assert imgs._search_pexels("x", 5, {}) == []

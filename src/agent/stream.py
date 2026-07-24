@@ -140,6 +140,7 @@ class LiveStream:
         )
         # Конец уже сохранённого в RenderStore compact-текста (для Ctrl+O).
         self._stored_text_end: int = 0
+        self._native_tool_chunks: dict[int, dict] = {}
 
     def _lead_blank(self) -> None:
         """Одна пустая строка-разделитель перед элементом.
@@ -206,6 +207,9 @@ class LiveStream:
         return cleaned
 
     def _get_partial_tool_info(self):
+        if self._native_tools and self._native_tool_chunks:
+            active = self._native_tool_chunks[min(self._native_tool_chunks)]
+            return True, active["args"], active["name"] or "tool", ""
         start = max(self._current_text_start, self._printed_text_end)
         partial = self._scan_partial_tool(self.buffer, start)
         if partial:
@@ -419,6 +423,7 @@ class LiveStream:
         self._finalizing = False
         self._block_streamer.reset()
         self._stored_text_end = 0
+        self._native_tool_chunks = {}
         self._start_tg_thinking()
         self._start_live()
 
@@ -433,6 +438,34 @@ class LiveStream:
                 eh.emit_stream_chunk(text, "reasoning")
             except Exception as _e:
                 logger.warning("emit_stream_chunk(reasoning) failed: %s", _e)
+
+    def on_native_tool_update(self, chunks: list[dict]) -> None:
+        """Accumulate native tool-call deltas for progressive terminal rendering."""
+        for chunk in chunks or []:
+            if not isinstance(chunk, dict):
+                continue
+            index = chunk.get("index", 0)
+            if not isinstance(index, int):
+                index = 0
+            current = self._native_tool_chunks.setdefault(index, {
+                "name": "",
+                "args": "",
+            })
+            name = chunk.get("name")
+            if name and not current["name"]:
+                current["name"] = str(name)
+            args = chunk.get("args")
+            if isinstance(args, str) and args:
+                current["args"] += args
+            elif isinstance(args, dict):
+                import json
+                current["args"] += json.dumps(args, ensure_ascii=False)
+        if self._native_tool_chunks:
+            self._block_streamer.finalize()
+            if self._live is None:
+                self._start_live()
+            else:
+                self._update_live()
 
     def on_text_update(self, text: str):
         """Called on each streaming text update (full accumulated buffer)."""

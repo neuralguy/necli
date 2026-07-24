@@ -19,10 +19,12 @@ class Session:
         session_id: str | None = None,
         title: str | None = None,
         site: str | None = None,
+        working_dir: str | None = None,
     ):
         self.id = session_id or self._generate_id()
         self.title = title or ""
         self.site: str = site or "api"
+        self.working_dir = working_dir or ""
         self.created_at = time.time()
         self.updated_at = time.time()
         self.messages: list[Message] = []
@@ -303,12 +305,6 @@ class Session:
             "messages": snapshot["messages"],
             "total_cost": snapshot["total_cost"],
         }
-        # Сохраняем оригинальные сообщения в бэкап ДО очистки.
-        # Если уже есть бэкап (повторный compress) — не перезаписываем его,
-        # чтобы не потерять самую первую версию диалога.
-        if not getattr(self, "_pre_compress_messages", None):
-            self._pre_compress_messages = [m.to_dict() for m in self.messages]
-            self._pre_compress_at = time.time()
         self.messages.clear()
         self._cost_cache = None
         meta = (
@@ -350,9 +346,6 @@ class Session:
             "messages": prev["messages"] + compressed_msgs,
             "total_cost": prev["total_cost"] + compressed_cost,
         }
-        if not getattr(self, "_pre_compress_messages", None):
-            self._pre_compress_messages = [m.to_dict() for m in self.messages]
-            self._pre_compress_at = time.time()
         meta = f"[compressed {compressed_msgs} earlier round(s); recent rounds kept verbatim]"
         self.messages = [
             Message(role="system", content=meta, model=model),
@@ -493,6 +486,7 @@ class Session:
             "id": self.id,
             "title": self.title,
             "site": self.site,
+            "working_dir": self.working_dir,
             "chat_url": self.chat_url,
             "created_at": self.created_at,
             "created": format_msk(self.created_at),

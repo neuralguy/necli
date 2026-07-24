@@ -29,7 +29,6 @@ class SlashResult:
     switch_session: str | None = None
     change_dir: str | None = None
     do_compress: bool = False
-    do_decompress: bool = False
     do_commit: bool = False
     commit_hint: str = ""
     undo_n: int | None = None
@@ -180,19 +179,6 @@ def _handle_slash(
         r.toggle_tool_format = True
         return r
 
-    if head == "/plan":
-        from agent import get_current_ctx
-        from planner import render_plan_panel
-        ctx = get_current_ctx()
-        plan = ctx.plan if ctx else None
-        if plan is None or not plan.steps:
-            console.print(f"  [dim]{_('sh.no_plan')}[/dim]")
-            return r
-        console.print()
-        console.print(render_plan_panel(plan, compact=False))
-        console.print()
-        return r
-
     if head == "/reflect":
         r.do_reflect = True
         return r
@@ -202,10 +188,6 @@ def _handle_slash(
             console.print(f"  [dim]{_('slash.nothing_to_compress')}[/dim]")
             return r
         r.do_compress = True
-        return r
-
-    if head == "/decompress":
-        r.do_decompress = True
         return r
 
     if head == "/undo":
@@ -353,7 +335,12 @@ def _handle_slash(
         return r
 
     if head == "/help":
-        _print_help()
+        import sys
+        if sys.stdin.isatty() and sys.stderr.isatty():
+            from commands.menus.help import help_interactive
+            help_interactive()
+        else:
+            _print_help()
         return r
 
     if head == "/themes":

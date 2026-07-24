@@ -157,22 +157,6 @@ class TestCompressReset:
         assert s._compressed_stats is not None
         assert s._compressed_stats["messages"] == 1  # один user
 
-    def test_pre_compress_backup_saved(self, isolated_data):
-        s = Session()
-        s.add_user_message("u")
-        s.compress_reset("c1")
-        assert hasattr(s, "_pre_compress_messages")
-        assert len(s._pre_compress_messages) == 1
-
-    def test_double_compress_keeps_first_backup(self, isolated_data):
-        s = Session()
-        s.add_user_message("u1")
-        s.compress_reset("c1")
-        first_backup = list(s._pre_compress_messages)
-        s.add_user_message("u2")
-        s.compress_reset("c2")
-        assert s._pre_compress_messages == first_backup
-
 
 class TestSessionRename:
     def test_first_user_triggers_rename(self, isolated_data):

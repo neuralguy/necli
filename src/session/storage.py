@@ -58,6 +58,7 @@ def _save_history(session: Session):
         "id": session.id,
         "title": session.title,
         "site": session.site,
+        "working_dir": session.working_dir,
         "chat_url": session.chat_url,
         "created_at": session.created_at,
         "created": format_msk(session.created_at),
@@ -80,10 +81,6 @@ def _save_history(session: Session):
             head_id: [m.to_dict() for m in chain]
             for head_id, chain in tails.items()
         }
-    pre = getattr(session, "_pre_compress_messages", None)
-    if pre:
-        data["pre_compress_messages"] = pre
-        data["pre_compress_at"] = getattr(session, "_pre_compress_at", None)
     path = session.dir / "history.json"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -132,6 +129,7 @@ def _load_from_dir(session_dir) -> Session | None:
     session = Session(
         session_id=data.get("id", session_dir.name),
         site=data.get("site", ""),
+        working_dir=data.get("working_dir", ""),
     )
     session.title = data.get("title", "")
     session.created_at = data.get("created_at", time.time())
@@ -155,11 +153,6 @@ def _load_from_dir(session_dir) -> Session | None:
             for head_id, chain in tails_raw.items()
             if isinstance(chain, list)
         }
-
-    pre = data.get("pre_compress_messages")
-    if pre:
-        session._pre_compress_messages = pre
-        session._pre_compress_at = data.get("pre_compress_at")
     return session
 
 
@@ -226,6 +219,7 @@ def _read_summary(session_dir) -> dict | None:
             "id": data.get("id", session_dir.name),
             "title": title,
             "site": data.get("site", ""),
+            "working_dir": data.get("working_dir", ""),
             "created_at": created,
             "created": data.get("created", format_msk_short(created)),
             "updated_at": updated,
@@ -278,6 +272,7 @@ def _read_summary_from_history(session_dir) -> dict | None:
             "id": data.get("id", session_dir.name),
             "title": _first_user_message_title(msgs, data.get("title", "")),
             "site": data.get("site", ""),
+            "working_dir": data.get("working_dir", ""),
             "created_at": created,
             "created": format_msk_short(created) if created else "—",
             "updated_at": updated,

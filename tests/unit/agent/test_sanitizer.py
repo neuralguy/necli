@@ -206,6 +206,17 @@ class TestOpus48Hallucination:
         assert "1: a" not in out
         assert out.startswith("call:::")
 
+    def test_preserves_content_tool_blank_lines_for_inline_deduplication(self):
+        text = (
+            ':::call create_file path="test.py"\n'
+            'from __future__ import annotations\n\n\n'
+            'class Vector:\n'
+            '    pass\n'
+            'call:::\n'
+        )
+        result = sanitize_response(text)
+        assert "annotations\n\n\nclass Vector" in result
+
     def test_bracket_lines_without_dollar_prefix(self):
         # opus 4.8 иногда опускает строку `$ cmd`, начиная сразу с `[… lines …]`.
         text = (
@@ -264,14 +275,14 @@ class TestOpus48Hallucination:
             ':::call create_docx path="_t/doc.docx"\n<p>hi</p>\ncall:::\n'
             "● ---\n"
             "$ mkdir _t/sub2 ✓ Создана: _t/sub2\n" + dash + "\n\n"
-            "$ lsp_hover _t/sample.py\n\n (function) def add(\n     a: int,\n"
+            "$ lsp_diagnostics _t/sample.py\n\n (function) def add(\n     a: int,\n"
             " ) -> int\n\n" + dash + "\n\n"
             "$ create_docx _t/doc.docx ✓ DOCX written (1494 bytes)\n"
             "[Project: 244 files, 45,988 lines | This step: 1 file changed]\n"
             "next\n"
         )
         result = sanitize_response(text)
-        for leak in ("$ mkdir", "$ lsp_hover", "$ create_docx", "Создана",
+        for leak in ("$ mkdir", "$ lsp_diagnostics", "$ create_docx", "Создана",
                      "def add(", "[Project:", "● ---"):
             assert leak not in result, leak
         # Реальный вызов модели сохранён.

@@ -12,6 +12,7 @@ from tools.file_ops import (
     create_docx,
     create_file,
     docx_screenshot,
+    execute_grep,
     patch_file,
     read_files,
 )
@@ -21,27 +22,17 @@ from tools.models import ToolCall, ToolResult
 from tools.poll import execute_poll
 from tools.shell import execute_shell
 from tools.skill_tool import execute_skill
-from tools.ssh import execute_ssh
 from tools.subagent import execute_subagent
+from tools.web_fetch import execute_web_fetch
 from tools.web_search import execute_web_search
 
 
 # LSP-инструменты импортируются лениво, чтобы избежать циркулярного импорта:
 # apis/lsp_client.py импортирует tools.models, что инициализирует tools/__init__.py,
 # который импортирует tools.registry. Регистрируем тонкие обёртки.
-def _lsp_def(call):
-    from apis.lsp_client import execute_lsp_definition
-    return execute_lsp_definition(call)
-
-
 def _lsp_ref(call):
     from apis.lsp_client import execute_lsp_references
     return execute_lsp_references(call)
-
-
-def _lsp_hover(call):
-    from apis.lsp_client import execute_lsp_hover
-    return execute_lsp_hover(call)
 
 
 def _lsp_diag(call):
@@ -53,23 +44,22 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "shell": execute_shell,
     "read_files": read_files,
     "read_file": read_files,  # alias
+    "grep": execute_grep,
     "patch_file": patch_file,
     "create_file": create_file,
     "create_docx": create_docx,
     "docx_screenshot": docx_screenshot,
     "poll": execute_poll,
     "skill": execute_skill,
-    "ssh": execute_ssh,
     "subagent": execute_subagent,
     "web_search": execute_web_search,
+    "web_fetch": execute_web_fetch,
     "image_search": execute_image_search,
     "expand_tool_result": execute_expand_tool_result,
     "memory_write": memory_write,
     "memory_list": memory_list,
     "memory_read": memory_read,
-    "lsp_definition": _lsp_def,
     "lsp_references": _lsp_ref,
-    "lsp_hover": _lsp_hover,
     "lsp_diagnostics": _lsp_diag,
 }
 
@@ -222,13 +212,17 @@ def execute_call(call: ToolCall) -> ToolResult:
 
 # Канонический набор — config.READ_ONLY_TOOLS. Алиас "read_file" для
 # обратной совместимости с моделями, которые иногда называют его так.
-PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"read_file", "poll", "skill", "web_search"})
+PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"read_file", "poll", "skill", "web_search", "web_fetch"})
 AUTONOMOUS_TOOLS = frozenset(PLANNING_TOOLS | {"shell", "subagent"})
 
 _PLANNING_TOOLS_HUMAN = ", ".join(sorted(_READ_ONLY_CANONICAL))
 
 
-def is_tool_allowed(tool_name: str, mode: str) -> bool:
+def is_tool_allowed(
+    tool_name: str,
+    mode: str,
+    active_skills: set[str] | None = None,
+) -> bool:
     if mode == "agent":
         return True
     if mode in ("autonomous", "auto"):

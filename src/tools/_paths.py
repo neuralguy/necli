@@ -68,7 +68,7 @@ def use_working_dir(path: str):
     return _Ctx(path)
 
 
-def resolve_path(path: str) -> Path:
+def resolve_path(path: str, *, extensions: tuple[str, ...] | None = None) -> Path:
     """Резолвит путь относительно рабочей директории.
 
     Раскрывает ~, переменные окружения, относительные пути.
@@ -80,7 +80,29 @@ def resolve_path(path: str) -> Path:
     p = os.path.expandvars(p)
     if not os.path.isabs(p):
         p = os.path.join(get_working_dir(), p)
-    return Path(os.path.normpath(p))
+    candidate = Path(os.path.normpath(p))
+    if candidate.exists() or candidate.suffix:
+        return candidate
+
+    allowed_extensions = (
+        {extension.lower() for extension in extensions}
+        if extensions is not None else None
+    )
+    try:
+        matches = [
+            child for child in candidate.parent.iterdir()
+            if child.is_file()
+            and child.name.startswith(f"{candidate.name}.")
+            and (allowed_extensions is None or child.suffix.lower() in allowed_extensions)
+        ]
+    except OSError:
+        return candidate
+    if not matches:
+        return candidate
+    return min(
+        matches,
+        key=lambda child: (child.stem != candidate.name, child.name.casefold()),
+    )
 
 
 def clean_path(val) -> str:

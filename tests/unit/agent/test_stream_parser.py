@@ -2,13 +2,14 @@
 
 from rich.console import Console
 
+from agent.display import render_md_panel
 from agent.stream_parser import (
     _clean_display_text,
     _find_next_complete_tool,
     _find_next_partial_tool,
     _find_next_tool_start,
 )
-from agent.stream_render import render_partial_tool
+from agent.stream_render import _is_markdown_block, render_partial_tool
 
 
 def _make_block(tool: str, body: str = "{}") -> str:
@@ -84,6 +85,29 @@ class TestCleanDisplayText:
         result = _clean_display_text(text)
         assert "\n\n\n" not in result
 
+class TestMarkdownTables:
+    def test_first_line_table_is_a_block(self):
+        assert _is_markdown_block("| Name | Value |", "| --- | ---: |\n| alpha | 42 |")
+
+    def test_plain_first_line_is_not_a_block(self):
+        assert not _is_markdown_block("A regular response", "More text")
+
+    def test_final_renderer_keeps_first_line_table(self):
+        console = Console(record=True, width=80)
+        console.print(render_md_panel("| ID | Value |\n| ---: | ---: |\n| 1 | 42 |"))
+        output = console.export_text()
+        assert "ID" in output
+        assert "Value" in output
+        assert "| ---" not in output
+        assert "┌" in output
+        assert "│" in output
+        assert "┼" in output
+        assert "└" in output
+        assert "│ 1  │" in output
+
+        # The full grid distinguishes a data table from a list in terminal output.
+
+
 class TestRenderPartialTool:
     def test_subagent_preview_hides_raw_json(self):
         body = '{"tasks":[{"role":"coder","mode":"agent","prompt":"write file"},{"role":"reviewer","depends_on":[1],"prompt":"check"}]}'
@@ -95,3 +119,24 @@ class TestRenderPartialTool:
         assert "Subagent" in plain
         assert "coder" in plain
         assert '"tasks"' not in plain
+
+
+
+class TestGenericPartialToolRender:
+    def test_renders_json_arguments_as_readable_rows(self):
+        rendered = render_partial_tool(
+            '{"path": "src/app.py", "lines": "10-20"}',
+            "read_files",
+            spinner_frame="x",
+        )
+
+        rows = [row.plain for row in rendered.renderables]
+        assert rows[0].startswith("x ")
+        assert rows[1:] == ["  path: src/app.py", "  lines: 10-20"]
+
+    def test_renders_incomplete_json_argument(self):
+        rendered = render_partial_tool('{"name": "partial_skill', "skill")
+
+        rows = [row.plain for row in rendered.renderables]
+        assert rows[0].startswith("● ")
+        assert len(rows) > 1

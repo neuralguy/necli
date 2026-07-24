@@ -4,9 +4,7 @@ import re
 from wcwidth import wcswidth
 
 import config
-from config.ssh import get_host
 from models import get_context_limit
-from tools.ssh import get_active_connections
 from ui import format_cost, format_tokens
 from ui.formatting import (
     BAR_EMPTY_END,
@@ -46,21 +44,6 @@ def build_status_line(state) -> str:
     ctx_bar = progress_bar(total_tok, ctx_limit, width=10)
     cost_str = format_cost(s.total_cost)
 
-    ssh_status = ""
-    try:
-        active_ssh = get_active_connections()
-        if active_ssh:
-            ssh_parts = []
-            for a in active_ssh[:3]:
-                h = get_host(a)
-                if h:
-                    ssh_parts.append(f"{a}({h['host']})")
-                else:
-                    ssh_parts.append(a)
-            ssh_status = "🔗 " + ",".join(ssh_parts) + " · "
-    except Exception:
-        pass
-
     _api_id = config.get_active_api()
     api_part = f"🔌 {_api_id} · " if _api_id else ""
     think_part = "💭 · " if getattr(state, "think_enabled", False) else ""
@@ -80,25 +63,20 @@ def build_status_line(state) -> str:
     # (минимум 3 символа на хвост, чтобы не выглядело обрезанным)
     budget = max(0, _term_width() - len("─── ") - len(" ") - 3)
 
-    parts = [api_part, think_part, msg_part, io_part, cost_part, ssh_status, model_part, ctx_full]
+    parts = [api_part, think_part, msg_part, io_part, cost_part, model_part, ctx_full]
     line = "".join(parts)
 
     if _visible_len(line) <= budget:
         return line
 
-    # Индексы parts: 0=api, 1=think, 2=msg, 3=io, 4=cost, 5=ssh, 6=model, 7=ctx
+    # Индексы parts: 0=api, 1=think, 2=msg, 3=io, 4=cost, 5=model, 6=ctx
     # Поэтапно сокращаем по приоритету (наименее важное → наиболее важное)
     # 1) убрать api-индикатор
     if _visible_len(line) > budget and api_part:
         parts[0] = ""
         line = "".join(parts)
 
-    # 2) убрать ssh
-    if _visible_len(line) > budget and ssh_status:
-        parts[5] = ""
-        line = "".join(parts)
-
-    # 3) убрать стоимость
+    # 2) убрать стоимость
     if _visible_len(line) > budget and cost_part:
         parts[4] = ""
         line = "".join(parts)

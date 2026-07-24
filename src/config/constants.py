@@ -41,7 +41,7 @@ def is_ignored_dir(name: str) -> bool:
 # LSP-инструменты семантически read-only (навигация/диагностика, ничего не
 # пишут) — поэтому доступны и в plan-режиме главного агента, и plan-субагентам.
 READ_ONLY_TOOLS: frozenset[str] = frozenset({
-    "read_files",
-    "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
+    "read_files", "grep",
+    "lsp_references", "lsp_diagnostics",
     "memory_list", "memory_read",
 })

@@ -30,9 +30,7 @@ class AgentContext:
     render_store: RenderStore = field(default_factory=RenderStore)
     turn_start_time: float = field(default_factory=time.monotonic)
     last_status_text: str = ""
-    # Callback пересчёта status-строки из текущего state. Нужен на Ctrl+O
-    # reprint: после compress/decompress last_status_text может устареть/опустеть,
-    # тогда вместо голой линии пересчитываем актуальный статус.
+    # Callback пересчёта status-строки из текущего state для Ctrl+O reprint.
     rebuild_status: object | None = None
     prompt_input: object | None = None
 

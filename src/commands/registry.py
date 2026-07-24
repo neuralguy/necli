@@ -45,10 +45,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/sessions",    "session", "help.sessions"),
     SlashCommand("/history",     "session", "help.history",     args_hint="[N]"),
     SlashCommand("/compress",    "session", "help.compress"),
-    SlashCommand("/decompress",  "session", "help.decompress"),
     SlashCommand("/undo",        "session", "help.undo",        args_hint="[N]"),
     SlashCommand("/reflect",     "session", "help.reflect"),
-    SlashCommand("/plan",        "session", "help.plan"),
 
     # ── model ───────────────────────────────────────────────
     SlashCommand("/api",         "model",   "help.api"),

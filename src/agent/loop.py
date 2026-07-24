@@ -39,6 +39,7 @@ from planner import (
     apply_plan_commands,
     delete_plan_file,
     load_plan_file,
+    parse_native_plan_commands,
     parse_plan_commands,
     resolve_plan_command_focus,
     save_plan_file,
@@ -72,7 +73,7 @@ def _format_history_block(history, *, leading_newline: bool = False) -> str:
     """
     if not history:
         return ""
-    from prompts import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
+    from system_prompt import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
     header = ("\n" if leading_newline else "") + CONVERSATION_CONTEXT_HEADER
     parts = [header]
     for h_msg in history:
@@ -110,7 +111,7 @@ def _with_interrupt_marker(content: str) -> str:
     Маркер живёт в тексте сохранённого сообщения (а не во флаге ctx), поэтому
     переживает reset_interrupt() и виден модели в истории на следующем ходу.
     """
-    from prompts import INTERRUPTED_NOTICE
+    from system_prompt import INTERRUPTED_NOTICE
     base = (content or "").strip()
     if INTERRUPTED_NOTICE in base:
         return base
@@ -278,8 +279,7 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         from apis.tool_schemas import get_tool_schemas
         from system_prompt import _resolve_native_tools
         api_proof = await _gather_proof(ctx.working_dir)
-        # Активные скиллы определяют видимость гейтящихся инструментов
-        # (web_search/image_search/ssh/subagent) — и в промте, и в схемах.
+        # Активные скиллы передаются для добавления инструкций в системный prompt.
         active_skills = current_active_skills(tool_results)
         api_sys = build_system_prompt(
             proof=api_proof, mode=ctx.mode, working_dir=ctx.working_dir,
@@ -296,6 +296,7 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
             system_prompt=api_sys,
             on_chunk=stream.on_text_update,
             on_reasoning_chunk=stream.on_reasoning_update,
+            on_tool_chunk=stream.on_native_tool_update,
             tools=api_tools,
             images=images,
             tool_results=tool_results,
@@ -307,20 +308,19 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
             native_tool_calls = api_result.get("tool_calls") or []
         else:
             response = api_result
-        # ТОЛЬКО native function-calling: think приходит как tool_call и
-        # стримится в on_chunk БЕЗ сконвертированных :::call think блоков,
-        # поэтому think_log в LiveStream остаётся пустым и thinking-panel не
-        # рисуется. Финальный response уже содержит блоки
-        # (_tool_calls_to_text_blocks) — точечно добираем недостающие мысли,
-        # чтобы stop() напечатал static-панель. В fenced-режиме think уже
-        # распарсен из стрим-буфера во время on_text_update — backfill там
-        # вреден (дублирует панель в финале), поэтому пропускаем.
-        if response and _resolve_native_tools():
+        # Native function-calling: think приходит отдельным структурным вызовом,
+        # поэтому добираем его без синтетического :::call блока.
+        if native_tool_calls and _resolve_native_tools():
             try:
-                thoughts = parse_think_blocks(response)
-                if len(thoughts) > stream.think_log.total:
-                    for t in thoughts[stream.think_log.total:]:
-                        stream.think_log.add(t)
+                thoughts = [
+                    str(call.get("args", {}).get("thought") or "")
+                    for call in native_tool_calls
+                    if isinstance(call, dict) and call.get("name") == "think"
+                    and isinstance(call.get("args"), dict)
+                ]
+                for thought in thoughts[stream.think_log.total:]:
+                    if thought:
+                        stream.think_log.add(thought)
             except Exception:
                 logger.debug("backfill think_log failed", exc_info=True)
     except asyncio.CancelledError:
@@ -338,6 +338,9 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         raise
     else:
         stream.stop(show_final=True)
+    if _resolve_native_tools() and native_tool_calls:
+        _process_plan_commands(response, ctx, native_tool_calls=native_tool_calls)
+        stream._plan_processed_count = len(parse_native_plan_commands(native_tool_calls))
     return _sanitize_agent_response(response), stream.inline_results, stream.inline_call_keys, stream._plan_processed_count, usage, native_tool_calls
 
 
@@ -368,8 +371,17 @@ async def _send_via_api(text, on_chunk, images, tool_results=None, extras=None, 
     return result["text"] if isinstance(result, dict) else result
 
 
-def _process_plan_commands(response: str, ctx: AgentContext, already_processed: int = 0) -> None:
-    plan_cmds = parse_plan_commands(response)
+def _process_plan_commands(
+    response: str,
+    ctx: AgentContext,
+    already_processed: int = 0,
+    native_tool_calls: list[dict] | None = None,
+) -> None:
+    plan_cmds = (
+        parse_native_plan_commands(native_tool_calls)
+        if native_tool_calls is not None and _api_uses_native_tools()
+        else parse_plan_commands(response)
+    )
     remaining = plan_cmds[already_processed:]
     if remaining:
         plan_events = []
@@ -518,7 +530,7 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
     )
     full_response = _sanitize_agent_response(api_result["text"])
     native_tool_calls = api_result.get("tool_calls") or []
-    _process_plan_commands(full_response, ctx)
+    _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
 
     last_tool_name: str | None = None
     for _ in range(MAX_ITERATIONS):
@@ -530,7 +542,7 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
             api_result = await _send_via_api("continue", on_chunk, None, return_result=True)
             full_response = _sanitize_agent_response(api_result["text"])
             native_tool_calls = api_result.get("tool_calls") or []
-            _process_plan_commands(full_response, ctx)
+            _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
             continue
 
         if _api_uses_native_tools():
@@ -559,14 +571,14 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
                     )
                 full_response = _sanitize_agent_response(api_result["text"])
                 native_tool_calls = api_result.get("tool_calls") or []
-                _process_plan_commands(full_response, ctx)
+                _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
                 continue
 
             if _is_likely_truncated(full_response):
                 api_result = await _send_via_api(_build_continue_message(), on_chunk, None, return_result=True)
                 full_response = _sanitize_agent_response(api_result["text"])
                 native_tool_calls = api_result.get("tool_calls") or []
-                _process_plan_commands(full_response, ctx)
+                _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
                 continue
 
             return _fire_stop_hooks(_clean_for_save(full_response).strip(), ctx)
@@ -574,9 +586,9 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
         # Сохраняем исходный индекс каждого call, чтобы пересобрать results
         # в порядке появления в ответе модели (web_search/subagent исполняются
         # отдельными путями, но их результаты должны вернуться на свои места).
-        ws_calls = [(i, c) for i, c in enumerate(calls) if c.tool_name == 'web_search']
+        ws_calls = [(i, c) for i, c in enumerate(calls) if c.tool_name in ('web_search', 'web_fetch')]
         subagent_calls = [(i, c) for i, c in enumerate(calls) if c.tool_name == 'subagent']
-        plain_calls = [(i, c) for i, c in enumerate(calls) if c.tool_name not in ('web_search', 'subagent')]
+        plain_calls = [(i, c) for i, c in enumerate(calls) if c.tool_name not in ('web_search', 'web_fetch', 'subagent')]
 
         indexed_results: list[tuple[int, tools.ToolResult]] = []
         for idx, sa_call in subagent_calls:
@@ -633,7 +645,7 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
             native_tool_calls = api_result.get("tool_calls") or []
         ctx.step_tracker.reset()
         full_response = _sanitize_agent_response(full_response)
-        _process_plan_commands(full_response, ctx)
+        _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
 
     logger.warning("run_agent: MAX_ITERATIONS={} reached", MAX_ITERATIONS)
     return strip_tool_calls(strip_plan_commands(full_response)) + "\n\n[Iteration limit]"
@@ -835,7 +847,10 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
         # Прервали до первого ответа: full_response/last_usage могли не присвоиться.
         return _handle_hard_interrupt(session, "", model, {})
 
-    _process_plan_commands(full_response, ctx, already_processed=plan_processed)
+    _process_plan_commands(
+        full_response, ctx, already_processed=plan_processed,
+        native_tool_calls=native_tool_calls,
+    )
 
     for _iteration in range(MAX_ITERATIONS):
         if _is_api_proxy_error(full_response):
@@ -855,7 +870,10 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             except asyncio.CancelledError:
                 return _handle_hard_interrupt(session, full_response, model, last_usage)
 
-            _process_plan_commands(full_response, ctx, already_processed=plan_processed)
+            _process_plan_commands(
+                full_response, ctx, already_processed=plan_processed,
+                native_tool_calls=native_tool_calls,
+            )
             continue
 
         if ctx.interrupted:
@@ -896,10 +914,13 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                 continue
             remaining_calls.append(c)
 
+        from apis.agent_adapter import current_active_skills
+
+        active_skills = current_active_skills()
         allowed = []
         blocked_results = []
         for c in remaining_calls:
-            if is_tool_allowed(c.tool_name, ctx.mode):
+            if is_tool_allowed(c.tool_name, ctx.mode, active_skills):
                 allowed.append(c)
             else:
                 blocked_results.append(build_blocked_result(c, ctx.mode))
@@ -974,7 +995,10 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                         )
                 except asyncio.CancelledError:
                     return _handle_hard_interrupt(session, full_response, model, last_usage)
-                _process_plan_commands(full_response, ctx, already_processed=plan_processed)
+                _process_plan_commands(
+                    full_response, ctx, already_processed=plan_processed,
+                    native_tool_calls=native_tool_calls,
+                )
                 continue
 
             # Незакрытый план НЕ пинаем: модель закончила ход — завершаем ответ.
@@ -1000,7 +1024,10 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                 except asyncio.CancelledError:
                     return _handle_hard_interrupt(session, full_response, model, last_usage)
 
-                _process_plan_commands(full_response, ctx, already_processed=plan_processed)
+                _process_plan_commands(
+                    full_response, ctx, already_processed=plan_processed,
+                    native_tool_calls=native_tool_calls,
+                )
                 continue
 
             # Перед завершением хода доставляем уведомления о завершившихся
@@ -1031,7 +1058,10 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                         )
                 except asyncio.CancelledError:
                     return _handle_hard_interrupt(session, full_response, model, last_usage)
-                _process_plan_commands(full_response, ctx, already_processed=plan_processed)
+                _process_plan_commands(
+                    full_response, ctx, already_processed=plan_processed,
+                    native_tool_calls=native_tool_calls,
+                )
                 continue
 
             if (
@@ -1124,7 +1154,10 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             except asyncio.CancelledError:
                 return _handle_hard_interrupt(session, full_response, model, last_usage)
 
-        _process_plan_commands(full_response, ctx, already_processed=plan_processed)
+        _process_plan_commands(
+            full_response, ctx, already_processed=plan_processed,
+            native_tool_calls=native_tool_calls,
+        )
 
     final_text = (
         strip_tool_calls(_clean_for_save(full_response)) + "\n\n[Iteration limit]"

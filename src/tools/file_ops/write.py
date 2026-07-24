@@ -50,7 +50,7 @@ def create_file(call: ToolCall) -> ToolResult:
         )
 
     path = _resolve(path_str)
-    encoding = args.get("encoding", "utf-8")
+    encoding = "utf-8"
 
     if "b64" in args:
         try:
@@ -95,11 +95,6 @@ def create_file(call: ToolCall) -> ToolResult:
         action = "Overwritten" if existed else "Created"
         msg = f"✓ {action}: {path_str} ({lines} lines)"
         msg += _check_unbalanced_fences(content)
-        if path.suffix == ".py":
-            from tools.auto_checks import queue_python_auto_check
-            if queue_python_auto_check(path, path_str):
-                msg += "\n↻ auto-check queued: lsp_diagnostics + ruff"
-
         return ToolResult(
             name="create_file",
             status="ok",

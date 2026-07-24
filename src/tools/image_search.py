@@ -1,17 +1,11 @@
-"""Поиск изображений в интернете.
-
-Источники:
-  - DuckDuckGo через ddgs (`DDGS().images()`) — по умолчанию, без ключей.
-  - Unsplash / Pexels — опционально, если в settings.api_keys есть ключ
-    "unsplash" / "pexels". Иначе тихо пропускаются.
+"""Поиск изображений в интернете через DuckDuckGo.
 
 Режимы:
-  - Поиск: {"query": "..."} → список картинок (URL, размеры, источник).
-  - Скачивание: download=true (+ download_indices / download_dir) — качает
-    выбранные картинки, ВАЛИДИРУЕТ их через Pillow (битые/не-картинки
-    отсеиваются) и кладёт пути в ToolResult.image_paths.
+  - Поиск + скачивание: {"queries": ["cats", "dogs"]} → ищет картинки,
+    валидирует их через Pillow (битые/не-картинки отсеиваются) и сохраняет
+    в assets/images. Результаты возвращаются с путями к скачанным файлам.
 
-Лицензию НЕ фильтруем — показываем источник, выбор за пользователем.
+Лицензию НЕ фильтруем — выбор за пользователем.
 """
 
 from __future__ import annotations
@@ -33,8 +27,6 @@ _CACHE_TTL = 1800  # 30 минут
 _CACHE_MAX_ENTRIES = 64
 _DEFAULT_DOWNLOAD_DIR = "assets/images"
 
-_VALID_SOURCES = ("auto", "ddg", "duckduckgo", "unsplash", "pexels")
-
 # Расширения по content-type для именования скачанных файлов.
 _EXT_BY_CT = {
     "image/jpeg": ".jpg",
@@ -47,13 +39,11 @@ _EXT_BY_CT = {
     "image/tiff": ".tiff",
 }
 
-# query|source|max -> (timestamp, results)
+# query|max|size|type -> (timestamp, results)
 _search_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
 
 
-# --------------------------------------------------------------------------- #
-# Кеш результатов поиска (LRU + TTL, как в web_search)                         #
-# --------------------------------------------------------------------------- #
+# Кеш результатов поиска (LRU + TTL)
 def _cache_get(key: str) -> list[dict] | None:
     item = _search_cache.get(key)
     if item is None:
@@ -73,9 +63,7 @@ def _cache_put(key: str, results: list[dict]) -> None:
         _search_cache.popitem(last=False)
 
 
-# --------------------------------------------------------------------------- #
-# Нормализованная форма результата                                            #
-# --------------------------------------------------------------------------- #
+# Нормализованная форма результата
 def _norm(
     *,
     image: str,
@@ -107,9 +95,7 @@ def _norm(
     }
 
 
-# --------------------------------------------------------------------------- #
-# Источники поиска                                                            #
-# --------------------------------------------------------------------------- #
+# Поиск через DuckDuckGo
 def _search_ddg(query: str, max_results: int, args: dict) -> list[dict]:
     try:
         import warnings
@@ -120,15 +106,11 @@ def _search_ddg(query: str, max_results: int, args: dict) -> list[dict]:
     except ImportError:
         raise RuntimeError("ddgs not installed. Run: uv add ddgs")  # noqa: B904
 
-    # ddgs поддерживает фильтры size/type_image/color/layout — пробрасываем
-    # только те, что заданы (и игнорируем, если версия ddgs их не знает).
     kwargs: dict = {"max_results": max_results}
     if args.get("size"):
         kwargs["size"] = args["size"]
     if args.get("type"):
         kwargs["type_image"] = args["type"]
-    if args.get("color"):
-        kwargs["color"] = args["color"]
 
     try:
         raw = DDGS().images(query, **kwargs)
@@ -153,112 +135,7 @@ def _search_ddg(query: str, max_results: int, args: dict) -> list[dict]:
     return out
 
 
-def _get_api_key(name: str) -> str | None:
-    try:
-        from config import settings
-
-        keys = settings.get("api_keys", {}) or {}
-        if isinstance(keys, dict):
-            v = keys.get(name)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-    except Exception as e:
-        logger.debug("image_search: api key lookup failed for {}: {}", name, e)
-    return None
-
-
-def _search_unsplash(query: str, max_results: int, args: dict) -> list[dict]:
-    key = _get_api_key("unsplash")
-    if not key:
-        return []
-    import httpx
-
-    resp = httpx.get(
-        "https://api.unsplash.com/search/photos",
-        params={"query": query, "per_page": min(max_results, 30)},
-        headers={"Authorization": f"Client-ID {key}"},
-        timeout=_DOWNLOAD_TIMEOUT,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    out = []
-    for r in data.get("results", [])[:max_results]:
-        urls = r.get("urls", {}) or {}
-        out.append(
-            _norm(
-                image=urls.get("regular") or urls.get("full") or urls.get("raw", ""),
-                title=r.get("description") or r.get("alt_description") or "",
-                thumbnail=urls.get("thumb", ""),
-                page=(r.get("links", {}) or {}).get("html", ""),
-                width=r.get("width"),
-                height=r.get("height"),
-                source="unsplash.com",
-                provider="unsplash",
-            )
-        )
-    return out
-
-
-def _search_pexels(query: str, max_results: int, args: dict) -> list[dict]:
-    key = _get_api_key("pexels")
-    if not key:
-        return []
-    import httpx
-
-    resp = httpx.get(
-        "https://api.pexels.com/v1/search",
-        params={"query": query, "per_page": min(max_results, 80)},
-        headers={"Authorization": key},
-        timeout=_DOWNLOAD_TIMEOUT,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    out = []
-    for r in data.get("photos", [])[:max_results]:
-        src = r.get("src", {}) or {}
-        out.append(
-            _norm(
-                image=src.get("large") or src.get("original", ""),
-                title=r.get("alt", ""),
-                thumbnail=src.get("tiny") or src.get("small", ""),
-                page=r.get("url", ""),
-                width=r.get("width"),
-                height=r.get("height"),
-                source="pexels.com",
-                provider="pexels",
-            )
-        )
-    return out
-
-
-def _gather_results(query: str, source: str, max_results: int, args: dict) -> list[dict]:
-    """Собирает результаты с учётом выбранного источника.
-
-    auto: сначала ddg; стоки добавляются, только если их ключи заданы.
-    """
-    source = (source or "auto").lower()
-    if source in ("ddg", "duckduckgo"):
-        return _search_ddg(query, max_results, args)
-    if source == "unsplash":
-        return _search_unsplash(query, max_results, args)
-    if source == "pexels":
-        return _search_pexels(query, max_results, args)
-
-    # auto
-    results = _search_ddg(query, max_results, args)
-    for fn in (_search_unsplash, _search_pexels):
-        try:
-            extra = fn(query, max_results, args)
-            if extra:
-                results.extend(extra)
-        except Exception as e:  # noqa: PERF203
-            logger.warning("image_search: stock source failed: {}", e)
-    return results[: max(max_results, 1)]
-
-
-# --------------------------------------------------------------------------- #
-# Скачивание + валидация через Pillow                                         #
-# --------------------------------------------------------------------------- #
+# Скачивание + валидация через Pillow
 def _safe_name(idx: int, url: str, content_type: str) -> str:
     base = f"image_{idx:02d}"
     ext = _EXT_BY_CT.get((content_type or "").split(";")[0].strip().lower())
@@ -338,9 +215,41 @@ def _download_many(items: list[tuple[int, str]], dest_dir: Path) -> list[dict]:
         return list(ex.map(lambda t: _download_one(t[0], t[1], dest_dir), items))
 
 
-# --------------------------------------------------------------------------- #
-# Точка входа                                                                 #
-# --------------------------------------------------------------------------- #
+# Вспомогательная: поиск + скачивание для одного запроса
+def _search_and_download(
+    query: str, max_results: int, args: dict, dest_dir: Path
+) -> tuple[list[dict], list[Path], list[dict]]:
+    """Ищет картинки по query, скачивает все результаты, возвращает (results, image_paths, downloaded)."""
+    size = args.get("size", "")
+    type_ = args.get("type", "")
+    cache_key = f"{max_results}|{size}|{type_}|{query}"
+
+    results = _cache_get(cache_key)
+    if results is None:
+        logger.info("image_search | query={!r} max={}", query, max_results)
+        try:
+            results = _search_ddg(query, max_results, args)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error("image_search failed | query={!r} error={}", query, e)
+            raise RuntimeError(f"Search failed: {e}") from e
+        results = [r for r in results if r.get("image")]
+        _cache_put(cache_key, results)
+    else:
+        logger.debug("image_search cache hit | query={!r}", query)
+
+    if not results:
+        return results, [], []
+
+    # Всегда скачиваем все результаты.
+    sel = [(i, r["image"]) for i, r in enumerate(results)]
+    downloaded = _download_many(sel, dest_dir)
+    image_paths = [d["path"] for d in downloaded if d["ok"] and d["path"]]
+    return results, image_paths, downloaded
+
+
+# Точка входа
 def _err(msg: str, command: str = "image_search") -> ToolResult:
     return ToolResult(
         name="image_search", status="error", output=msg, exit_code=1, command=command,
@@ -349,16 +258,21 @@ def _err(msg: str, command: str = "image_search") -> ToolResult:
 
 def execute_image_search(call: ToolCall) -> ToolResult:
     args = call.args or {}
-    query = (args.get("query") or "").strip() or (call.command or "").strip()
-    if not query:
-        return _err('No query provided. Usage: {"query": "mountain sunset"}')
 
-    source = (args.get("source") or "auto").lower()
-    if source not in _VALID_SOURCES:
+    queries = args.get("queries", None)
+    if not queries or not isinstance(queries, list):
         return _err(
-            f"Unknown source {source!r}. Valid: {', '.join(_VALID_SOURCES)}",
-            command=query,
+            'No queries provided. '
+            'Usage: {"queries": ["mountain sunset", "beach"], "max_results": 10}'
         )
+
+    queries = [str(q).strip() for q in queries if q and str(q).strip()]
+    if not queries:
+        return _err("No non-empty queries provided.")
+
+    if len(queries) > 5:
+        queries = queries[:5]
+        logger.warning("image_search: truncated queries to 5 (got {})", len(args.get("queries", [])))
 
     try:
         max_results = int(args.get("max_results") or _MAX_RESULTS)
@@ -366,92 +280,69 @@ def execute_image_search(call: ToolCall) -> ToolResult:
         max_results = _MAX_RESULTS
     max_results = max(1, min(max_results, 50))
 
-    cache_key = f"{source}|{max_results}|{args.get('size','')}|{args.get('type','')}|{args.get('color','')}|{query}"
-    results = _cache_get(cache_key)
-    if results is None:
-        logger.info("image_search | query={!r} source={} max={}", query, source, max_results)
+    raw_dir = clean_path(_DEFAULT_DOWNLOAD_DIR)
+    dest_dir = resolve_path(raw_dir, extensions=())
+
+    all_lines: list[str] = []
+    all_image_paths: list[Path] = []
+
+    for qidx, query in enumerate(queries):
         try:
-            results = _gather_results(query, source, max_results, args)
-        except RuntimeError as e:  # ddgs не установлен и т.п.
-            return _err(str(e), command=query)
-        except Exception as e:
-            logger.error("image_search failed | query={!r} error={}", query, e)
-            return _err(f"Search failed: {e}", command=query)
-        # отсеиваем результаты без прямого URL картинки
-        results = [r for r in results if r.get("image")]
-        _cache_put(cache_key, results)
-    else:
-        logger.debug("image_search cache hit | query={!r}", query)
+            results, image_paths, downloaded = _search_and_download(query, max_results, args, dest_dir)
+        except RuntimeError as e:
+            all_lines.append(f"[Query {qidx + 1}: {query}]")
+            all_lines.append(f"  Error: {e}")
+            all_lines.append("")
+            continue
 
-    if not results:
-        return ToolResult(
-            name="image_search", status="ok",
-            output="No images found.", exit_code=0, command=query,
-        )
+        all_image_paths.extend(image_paths)
 
-    # --- режим скачивания --------------------------------------------------
-    do_download = bool(args.get("download"))
-    downloaded: list[dict] = []
-    image_paths: list[Path] = []
-    if do_download:
-        raw_dir = clean_path(args.get("download_dir") or _DEFAULT_DOWNLOAD_DIR)
-        dest_dir = resolve_path(raw_dir)
-
-        indices = args.get("download_indices")
-        if isinstance(indices, int):
-            indices = [indices]
-        if indices:
-            sel = [(i, results[i]["image"]) for i in indices if 0 <= i < len(results)]
-        else:
-            sel = [(i, r["image"]) for i, r in enumerate(results)]
-
-        logger.info("image_search download | {} item(s) → {}", len(sel), dest_dir)
-        downloaded = _download_many(sel, dest_dir)
-        image_paths = [d["path"] for d in downloaded if d["ok"] and d["path"]]
-
-    # --- формирование вывода ----------------------------------------------
-    lines = []
-    dl_by_index = {d["index"]: d for d in downloaded}
-    for i, r in enumerate(results):
-        dims = ""
-        if r["width"] and r["height"]:
-            dims = f" {r['width']}x{r['height']}"
-        prov = f" via {r['provider']}" if r.get("provider") else ""
-        lines.append(f"[{i}] {r['title'] or '(no title)'}{dims}")
-        lines.append(f"    image:  {r['image']}")
-        if r["thumbnail"]:
-            lines.append(f"    thumb:  {r['thumbnail']}")
-        if r["page"]:
-            lines.append(f"    page:   {r['page']}")
-        if r["source"] or prov:
-            lines.append(f"    source: {r['source']}{prov}")
-
-        d = dl_by_index.get(i)
-        if d is not None:
-            if d["ok"]:
-                fmt = f" [{d['format']}]" if d.get("format") else ""
-                lines.append(f"    ↓ saved: {d['path']}{fmt}")
-            else:
-                lines.append(f"    ↓ FAILED: {d['error']}")
-        lines.append("")
-
-    if do_download:
         ok_n = sum(1 for d in downloaded if d["ok"])
         fail_n = len(downloaded) - ok_n
         summary = f"Found {len(results)} image(s); downloaded {ok_n}"
         if fail_n:
             summary += f", {fail_n} failed/invalid"
-        lines.insert(0, summary + ".\n")
+        all_lines.append(f"[Query {qidx + 1}: {query}] — {summary}")
+        all_lines.append("")
+
+        dl_by_index = {d["index"]: d for d in downloaded}
+        for i, r in enumerate(results):
+            dims = ""
+            if r["width"] and r["height"]:
+                dims = f" {r['width']}x{r['height']}"
+            prov = f" via {r['provider']}" if r.get("provider") else ""
+            all_lines.append(f"  [{i}] {r['title'] or '(no title)'}{dims}")
+            all_lines.append(f"      image:  {r['image']}")
+            if r["thumbnail"]:
+                all_lines.append(f"      thumb:  {r['thumbnail']}")
+            if r["page"]:
+                all_lines.append(f"      page:   {r['page']}")
+            if r["source"] or prov:
+                all_lines.append(f"      source: {r['source']}{prov}")
+
+            d = dl_by_index.get(i)
+            if d is not None:
+                if d["ok"]:
+                    fmt = f" [{d['format']}]" if d.get("format") else ""
+                    all_lines.append(f"      ↓ saved: {d['path']}{fmt}")
+                else:
+                    all_lines.append(f"      ↓ FAILED: {d['error']}")
+            all_lines.append("")
+
+    if not all_lines:
+        return ToolResult(
+            name="image_search", status="ok",
+            output="No images found.", exit_code=0,
+        )
 
     result = ToolResult(
         name="image_search",
         status="ok",
-        output="\n".join(lines).strip(),
+        output="\n".join(all_lines).strip(),
         exit_code=0,
-        command=query,
     )
-    if image_paths:
-        result.image_paths = image_paths
-        if len(image_paths) == 1:
-            result.image_path = image_paths[0]
+    if all_image_paths:
+        result.image_paths = all_image_paths
+        if len(all_image_paths) == 1:
+            result.image_path = all_image_paths[0]
     return result

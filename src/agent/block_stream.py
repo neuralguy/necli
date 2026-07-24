@@ -22,7 +22,8 @@ import re
 
 from rich.console import Console
 from rich.live import Live
-from rich.markdown import Markdown
+
+from agent.markdown import ResponseMarkdown
 
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _HEADING_RE = re.compile(r"^#{1,6}\s")
@@ -146,14 +147,14 @@ class BlockStreamer:
             from ui.formatting import escape_md_underscores, latex_to_unicode
             txt = escape_md_underscores(latex_to_unicode(txt))
             try:
-                return Markdown(txt, code_theme="monokai", inline_code_theme="monokai")
+                return ResponseMarkdown(txt, code_theme="monokai", inline_code_theme="monokai")
             except Exception:
                 return Text(txt)
 
         if is_first:
             from rich.console import Group
 
-            from agent.stream_render import _inline_md
+            from agent.stream_render import _inline_md, _is_markdown_block
             from config.themes import t
             from ui.formatting import latex_to_unicode
             block_text = latex_to_unicode(block_text)
@@ -161,7 +162,7 @@ class BlockStreamer:
             first_nl = stripped.find("\n")
             first_line = stripped if first_nl < 0 else stripped[:first_nl]
             rest = "" if first_nl < 0 else stripped[first_nl + 1:].lstrip("\n")
-            is_block = bool(re.match(r"^(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|~~~)", first_line))
+            is_block = _is_markdown_block(first_line, rest)
             header = Text()
             header.append("● ", style=f"bold {t('success')}")
             if first_line and not is_block:

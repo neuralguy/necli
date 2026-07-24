@@ -97,20 +97,33 @@ class TestParseLinesRange:
 class TestReadFilesBasic:
     def test_simple_file(self, tmp_workdir):
         (tmp_workdir / "a.py").write_text("print(1)\n")
-        r = read_files(_call(path="a.py"))
+        r = read_files(_call(paths=["a.py"]))
         assert r.status == "ok"
         assert "print(1)" in r.output
         assert r.full_content is True
 
     def test_missing_file(self, tmp_workdir):
-        r = read_files(_call(path="missing.py"))
+        r = read_files(_call(paths=["missing.py"]))
         assert r.status == "error"
 
-    def test_directory_rejected(self, tmp_workdir):
-        (tmp_workdir / "sub").mkdir()
-        r = read_files(_call(path="sub"))
-        assert r.status == "error"
-        assert "not a file" in r.output.lower()
+    def test_reads_existing_file_without_extension(self, tmp_workdir):
+        (tmp_workdir / "a.py").write_text("print(1)\n")
+
+        r = read_files(_call(paths=["a"]))
+
+        assert r.status == "ok"
+        assert "print(1)" in r.output
+
+    def test_directory_lists_entries(self, tmp_workdir):
+        directory = tmp_workdir / "sub"
+        directory.mkdir()
+        (directory / "nested").mkdir()
+        (directory / "file.py").write_text("content")
+        r = read_files(_call(paths=["sub"]))
+        assert r.status == "ok"
+        assert "[sub · directory]" in r.output
+        assert "file.py" in r.output
+        assert "nested/" in r.output
 
     def test_no_path(self, tmp_workdir):
         r = read_files(_call())
@@ -119,7 +132,7 @@ class TestReadFilesBasic:
     def test_truncate_over_1000_lines(self, tmp_workdir):
         big = "\n".join(f"line{i}" for i in range(2000))
         (tmp_workdir / "big.py").write_text(big)
-        r = read_files(_call(path="big.py"))
+        r = read_files(_call(paths=["big.py"]))
         assert r.status == "ok"
         assert "truncat" in r.output.lower()
         assert r.full_content is False
@@ -127,7 +140,7 @@ class TestReadFilesBasic:
     def test_lines_range(self, tmp_workdir):
         content = "\n".join(f"l{i}" for i in range(20))
         (tmp_workdir / "a.py").write_text(content)
-        r = read_files(_call(path="a.py", lines="5-7"))
+        r = read_files(_call(paths=[{"path": "a.py", "lines": "5-7"}]))
         assert r.status == "ok"
         assert "l4" in r.output  # 1-based: строка 5 это индекс 4
         assert "l5" in r.output
@@ -135,13 +148,13 @@ class TestReadFilesBasic:
 
     def test_lines_single(self, tmp_workdir):
         (tmp_workdir / "a.py").write_text("a\nb\nc\n")
-        r = read_files(_call(path="a.py", lines="2"))
+        r = read_files(_call(paths=[{"path": "a.py", "lines": "2"}]))
         assert r.status == "ok"
         assert "b" in r.output
 
     def test_lines_out_of_range(self, tmp_workdir):
         (tmp_workdir / "a.py").write_text("a\nb\n")
-        r = read_files(_call(path="a.py", lines="100-200"))
+        r = read_files(_call(paths=[{"path": "a.py", "lines": "100-200"}]))
         # за пределами → явная ошибка, НЕ молчаливый full read.
         assert r.status == "error"
         assert "out of bounds" in r.output.lower()
@@ -177,40 +190,38 @@ class TestMultiplePaths:
 
 
 class TestReadCache:
-    def test_second_read_returns_not_changed(self, tmp_workdir):
+    def test_second_read_returns_content(self, tmp_workdir):
         (tmp_workdir / "a.py").write_text("hello")
-        r1 = read_files(_call(path="a.py"))
+        r1 = read_files(_call(paths=["a.py"]))
         assert r1.status == "ok"
         assert "hello" in r1.output
 
-        r2 = read_files(_call(path="a.py"))
+        r2 = read_files(_call(paths=["a.py"]))
         assert r2.status == "ok"
-        # Повторное чтение неизменённого файла → короткий маркер NOT CHANGED.
-        assert "NOT CHANGED" in r2.output
+        assert "hello" in r2.output
 
     def test_modification_invalidates(self, tmp_workdir):
         import time
         f = tmp_workdir / "a.py"
         f.write_text("first")
-        read_files(_call(path="a.py"))
+        read_files(_call(paths=["a.py"]))
         time.sleep(0.02)
         f.write_text("second very different content here")
-        r = read_files(_call(path="a.py"))
-        assert "NOT CHANGED" not in r.output
+        r = read_files(_call(paths=["a.py"]))
         assert "second" in r.output
 
     def test_invalidate_cache_explicit(self, tmp_workdir):
         f = tmp_workdir / "a.py"
         f.write_text("hi")
-        read_files(_call(path="a.py"))
+        read_files(_call(paths=["a.py"]))
         invalidate_read_cache(f)
-        r = read_files(_call(path="a.py"))
-        assert "NOT CHANGED" not in r.output
+        r = read_files(_call(paths=["a.py"]))
+        assert "hi" in r.output
 
     def test_clear_all_sessions(self, tmp_workdir):
         f = tmp_workdir / "a.py"
         f.write_text("hi")
-        read_files(_call(path="a.py"))
+        read_files(_call(paths=["a.py"]))
         cleared = clear_read_cache("*")
         assert cleared >= 1
         assert _READ_CACHE == {}
@@ -219,10 +230,10 @@ class TestReadCache:
         content = "\n".join(f"l{i}" for i in range(50))
         (tmp_workdir / "a.py").write_text(content)
         # Первое чтение — полное (1..50)
-        read_files(_call(path="a.py"))
-        # Тот же диапазон уже виден → NOT CHANGED, контент не пересылается.
-        r = read_files(_call(path="a.py"))
-        assert "NOT CHANGED" in r.output
+        read_files(_call(paths=["a.py"]))
+        r = read_files(_call(paths=["a.py"]))
+        assert content in r.output
+
 
 class TestRangeParserDivergence:
     """Регрессии: единый парсер для cache-coverage и вывода, без расхождений."""
@@ -230,7 +241,7 @@ class TestRangeParserDivergence:
     def test_inverted_range_actual_output_is_error(self, tmp_workdir):
         content = "\n".join(f"l{i}" for i in range(20))
         (tmp_workdir / "a.py").write_text(content)
-        r = read_files(_call(path="a.py", lines="15-5"))
+        r = read_files(_call(paths=[{"path": "a.py", "lines": "15-5"}]))
         # Инвертированный диапазон → явная ошибка, НЕ пустой/полный вывод.
         assert r.status == "error"
         assert "Inverted" in r.output
@@ -244,13 +255,13 @@ class TestRangeParserDivergence:
         f = tmp_workdir / "a.py"
         f.write_text(content)
         # Полное чтение: total_lines из splitlines == 5.
-        r1 = read_files(_call(path="a.py"))
+        r1 = read_files(_call(paths=["a.py"]))
         assert r1.status == "ok"
         assert "· 5 lines" in r1.output
-        # Сбрасываем кэш, чтобы проверить фактический вывод диапазона (не NOT CHANGED).
+        # Сбрасываем кэш перед проверкой явного диапазона.
         clear_read_cache("*")
         # Диапазон 1-5 ровно покрывает файл → header согласован.
-        r2 = read_files(_call(path="a.py", lines="1-5"))
+        r2 = read_files(_call(paths=[{"path": "a.py", "lines": "1-5"}]))
         assert r2.status == "ok"
         assert "lines 1-5 of 5" in r2.output
         assert "1: a" in r2.output
@@ -261,7 +272,7 @@ class TestRangeParserDivergence:
     def test_open_ended_range_to_eof(self, tmp_workdir):
         content = "\n".join(f"l{i}" for i in range(10))  # 10 строк: l0..l9
         (tmp_workdir / "a.py").write_text(content)
-        r = read_files(_call(path="a.py", lines="7-"))
+        r = read_files(_call(paths=[{"path": "a.py", "lines": "7-"}]))
         assert r.status == "ok"
         # 'N-' → от строки 7 до конца (строки 7,8,9,10 == l6..l9).
         assert "lines 7-10 of 10" in r.output
@@ -272,9 +283,9 @@ class TestRangeParserDivergence:
     def test_open_ended_cache_coverage_matches_output(self, tmp_workdir):
         content = "\n".join(f"l{i}" for i in range(30))
         (tmp_workdir / "a.py").write_text(content)
-        r1 = read_files(_call(path="a.py", lines="20-"))
+        r1 = read_files(_call(paths=[{"path": "a.py", "lines": "20-"}]))
         assert r1.status == "ok"
         assert "lines 20-30 of 30" in r1.output
-        # Повторный тот же открытый диапазон → cache-coverage совпадает → NOT CHANGED.
-        r2 = read_files(_call(path="a.py", lines="20-"))
-        assert "NOT CHANGED" in r2.output
+        r2 = read_files(_call(paths=[{"path": "a.py", "lines": "20-"}]))
+        assert "20: l19" in r2.output
+        assert "30: l29" in r2.output

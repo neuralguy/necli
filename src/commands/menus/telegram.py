@@ -58,7 +58,7 @@ def telegram_interactive():
         console.print()
 
         def _flag(v: bool) -> str:
-            return f"[green]{_('tg.on')}[/green]" if v else f"[dim]{_('tg.off')}[/dim]"
+            return f"\033[32m{_('tg.on')}\033[0m" if v else f"\033[2m{_('tg.off')}\033[0m"
 
         items = [
             {"label": _("tg.set_token"), "hint": _("tg.set_token_hint")},

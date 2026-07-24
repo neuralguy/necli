@@ -37,3 +37,19 @@ class TestUnavailableReason:
         assert "read_files" in msg
         # причина названа (pyright фигурирует), а не общее «проверь конфиг»
         assert "pyright" in msg
+
+    def test_action_resolves_extensionless_absolute_file(self, tmp_path, monkeypatch):
+        target = tmp_path / "sample.py"
+        target.write_text("x = 1\n")
+        captured = {}
+        manager = LSPManager()
+
+        def capture_path(path):
+            captured["path"] = path
+            return None
+
+        monkeypatch.setattr(manager, "_ensure_server", capture_path)
+        result = manager._run_action(str(target.with_suffix("")), 1, 0, "diagnostics")
+
+        assert result.status == "error"
+        assert captured["path"] == target

@@ -110,7 +110,7 @@ async def build_first_message(
     if dir_context:
         parts.append(dir_context)
     if plan and plan.steps and not plan.is_complete:
-        from prompts import ACTIVE_PLAN_NOTICE
+        from system_prompt import ACTIVE_PLAN_NOTICE
         parts.append("\n" + ACTIVE_PLAN_NOTICE.format(plan=plan.render_for_context()))
     if session_dir:
         try:
@@ -121,7 +121,7 @@ async def build_first_message(
         except Exception:
             logger.debug("session notes load failed", exc_info=True)
     if history:
-        from prompts import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
+        from system_prompt import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
         parts.append("\n" + CONVERSATION_CONTEXT_HEADER)
         for msg in history:
             role = msg["role"].upper()
@@ -174,7 +174,7 @@ def _build_tool_results_payload(results) -> str:
 
 
 def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=None) -> str:
-    """Добавки к результатам раунда: план + project_check + fs-изменения + статистика.
+    """Добавки к результатам раунда: план + проверка TypeScript + fs-изменения + статистика.
 
     Это НЕ часть вывода инструментов — в native режиме отправляется отдельным
     HumanMessage, чтобы не попасть внутрь ToolMessage и не путать модель.
@@ -185,7 +185,7 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
     if plan and plan.steps:
         parts.append(plan.render_for_context())
 
-    # Project-level checker (ruff/mypy/tsc) на изменённых файлах раунда
+    # Проверка TypeScript на изменённых файлах раунда.
     if working_dir and step_tracker and step_tracker.files_changed:
         try:
             from tools.file_ops.project_check import run_project_check
@@ -239,7 +239,7 @@ def _build_result_message(results, plan=None, working_dir=None, step_tracker=Non
 
 
 def build_continue_message() -> str:
-    from prompts import CONTINUE_MESSAGE
+    from system_prompt import CONTINUE_MESSAGE
     return CONTINUE_MESSAGE
 
 

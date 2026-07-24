@@ -771,7 +771,9 @@ def create_docx(call: ToolCall) -> ToolResult:
             exit_code=1, command=call.command,
         )
 
-    out_path = resolve_path(path_str)
+    out_path = resolve_path(path_str, extensions=(".docx",))
+    if not out_path.suffix and not out_path.is_dir():
+        out_path = out_path.with_suffix(".docx")
     if out_path.suffix.lower() != ".docx":
         return ToolResult(
             name="create_docx", status="error",
@@ -868,7 +870,7 @@ def create_docx(call: ToolCall) -> ToolResult:
     elif isinstance(reference_arg, str) and reference_arg.strip().lower() == "none":
         ref_path = None
     else:
-        cand = resolve_path(clean_path(str(reference_arg)))
+        cand = resolve_path(clean_path(str(reference_arg)), extensions=(".docx",))
         if not cand.exists():
             return ToolResult(
                 name="create_docx", status="error",

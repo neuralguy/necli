@@ -92,49 +92,32 @@ class TestAgentMode:
 class TestSkillGating:
     """Гейтящиеся скиллами тулы скрыты, пока скилл не активен."""
 
-    GATED = {"web_search", "image_search", "ssh", "subagent"}  # noqa: RUF012
+    GATED = {"web_search", "web_fetch", "image_search", "subagent"}  # noqa: RUF012
 
-    def test_gated_hidden_by_default(self):
+    def test_native_contract_includes_gated_tools_by_default(self):
         names = set(_names(get_tool_schemas("agent")))
-        assert not (self.GATED & names), f"gated tools leaked: {self.GATED & names}"
-
-    def test_gated_hidden_with_empty_active(self):
-        names = set(_names(get_tool_schemas("agent", set())))
-        assert not (self.GATED & names)
-
-    def test_web_skill_exposes_web_tools(self):
-        names = set(_names(get_tool_schemas("agent", {"web"})))
-        assert "web_search" in names
-        assert "image_search" in names
-        # but not ssh/subagent (different skills)
-        assert "ssh" not in names
-        assert "subagent" not in names
-
-    def test_ssh_skill_exposes_ssh(self):
-        names = set(_names(get_tool_schemas("agent", {"ssh"})))
-        assert "ssh" in names
-        assert "web_search" not in names
-
-    def test_subagents_skill_exposes_orchestration(self):
-        names = set(_names(get_tool_schemas("agent", {"subagents"})))
-        assert "subagent" in names
-
-    def test_all_skills_active_exposes_all_gated(self):
-        names = set(_names(get_tool_schemas("agent", {"web", "ssh", "subagents"})))
         assert names >= self.GATED
+
+    def test_native_contract_stays_stable_with_empty_active(self):
+        names = set(_names(get_tool_schemas("agent", set())))
+        assert names >= self.GATED
+
+    def test_active_skills_do_not_change_native_contract(self):
+        baseline = set(_names(get_tool_schemas("agent", set())))
+        for active in ({"web"}, {"ssh"}, {"subagents"}, {"web", "ssh", "subagents"}):
+            assert set(_names(get_tool_schemas("agent", active))) == baseline
 
     def test_ungated_tools_always_present(self):
         names = set(_names(get_tool_schemas("agent", set())))
         assert "shell" in names
         assert "read_files" in names
+        assert "grep" in names
         assert "skill" in names
 
-    def test_cache_distinguishes_active_skills(self):
-        # разный набор активных скиллов → разные результаты (кэш не путает)
+    def test_cache_is_stable_across_active_skills(self):
         n_none = set(_names(get_tool_schemas("agent", set())))
         n_web = set(_names(get_tool_schemas("agent", {"web"})))
-        assert "web_search" not in n_none
-        assert "web_search" in n_web
+        assert n_none == n_web
 
 
 class TestPlanMode:
@@ -145,7 +128,7 @@ class TestPlanMode:
 
     def test_only_read_only_plus_plan(self):
         names = set(_names(get_tool_schemas("plan")))
-        allowed = set(READ_ONLY_TOOLS) | {"poll", "skill", "web_search", "plan", "think"}
+        allowed = set(READ_ONLY_TOOLS) | {"poll", "skill", "web_search", "web_fetch", "plan", "think"}
         assert names <= allowed, f"unexpected tools in plan mode: {names - allowed}"
 
     def test_includes_all_read_only_tools(self):
@@ -157,7 +140,7 @@ class TestPlanMode:
 
     def test_plan_subset_of_agent(self):
         plan_names = set(_names(get_tool_schemas("plan")))
-        agent_names = set(_names(get_tool_schemas("agent", {"web"})))
+        agent_names = set(_names(get_tool_schemas("agent")))
         # plan может содержать только think/plan вне agent — но они есть и в agent при тех же условиях
         assert (plan_names - {"think"}) <= agent_names
 
@@ -173,31 +156,9 @@ class TestAutonomousMode:
         names = set(_names(get_tool_schemas("autonomous", {"subagents"})))
         assert "subagent" in names
 
-    def test_hides_subagent_without_skill(self):
+    def test_keeps_subagent_in_stable_native_contract(self):
         names = set(_names(get_tool_schemas("autonomous", set())))
-        assert "subagent" not in names
-
-class TestDocxScreenshotSchema:
-    """docx_screenshot должен экспонировать dpi, иначе native-вызовы не задают его."""
-
-    def _props(self):
-        for s in TOOL_SCHEMAS:
-            if s["function"]["name"] == "docx_screenshot":
-                return s["function"]["parameters"]["properties"]
-        pytest.fail("docx_screenshot schema not found")
-
-    def test_dpi_present(self):
-        props = self._props()
-        assert "dpi" in props, "docx_screenshot schema must expose 'dpi'"
-
-    def test_dpi_is_integer(self):
-        assert self._props()["dpi"]["type"] == "integer"
-
-    def test_dpi_range_matches_code_clamp(self):
-        dpi = self._props()["dpi"]
-        assert dpi.get("minimum") == 50
-        assert dpi.get("maximum") == 600
-        assert dpi.get("default") == 200
+        assert "subagent" in names
 
 class TestSchemaValidity:
     def test_all_schemas_json_serializable(self):

@@ -21,6 +21,14 @@ class TestFindReplace:
         assert r.status == "error"
         assert "not found" in r.output.lower()
 
+    def test_updates_existing_file_without_extension(self, tmp_workdir):
+        (tmp_workdir / "a.py").write_text("x = 1\n")
+
+        r = patch_file(_call(path="a", find="x = 1", replace="x = 2"))
+
+        assert r.status == "ok"
+        assert (tmp_workdir / "a.py").read_text() == "x = 2\n"
+
     def test_fuzzy_fallback(self, tmp_workdir):
         (tmp_workdir / "a.py").write_text("x  =   1\n")
         r = patch_file(_call(path="a.py", find="x = 1", replace="x = 2"))
@@ -84,52 +92,6 @@ class TestPatches:
         # patches-аргумент отклоняется целиком; файл не меняется.
         assert r.status == "error"
         assert (tmp_workdir / "a.py").read_text() == "x = 1\n"
-
-
-class TestInsert:
-    def test_insert_after_line(self, tmp_workdir):
-        (tmp_workdir / "a.py").write_text("line1\nline2\nline3\n")
-        r = patch_file(_call(path="a.py", line=1, insert="new_line"))
-        assert r.status == "ok"
-        content = (tmp_workdir / "a.py").read_text()
-        lines = content.split("\n")
-        assert lines[1] == "new_line"
-
-    def test_invalid_line_value(self, tmp_workdir):
-        (tmp_workdir / "a.py").write_text("x\n")
-        r = patch_file(_call(path="a.py", line="abc", insert="y"))
-        assert r.status == "error"
-
-    def test_line_out_of_range(self, tmp_workdir):
-        (tmp_workdir / "a.py").write_text("x\n")
-        r = patch_file(_call(path="a.py", line=999, insert="y"))
-        assert r.status == "error"
-        assert "out of range" in r.output.lower()
-
-
-class TestDeleteLines:
-    def test_range(self, tmp_workdir):
-        (tmp_workdir / "a.py").write_text("a\nb\nc\nd\ne\n")
-        r = patch_file(_call(path="a.py", delete_lines="2-4"))
-        assert r.status == "ok"
-        content = (tmp_workdir / "a.py").read_text()
-        # Удалили строки 2-4 (b, c, d)
-        assert "b" not in content.split("\n")
-        assert "c" not in content.split("\n")
-        assert "a" in content
-        assert "e" in content
-
-    def test_single_line(self, tmp_workdir):
-        (tmp_workdir / "a.py").write_text("a\nb\nc\n")
-        r = patch_file(_call(path="a.py", delete_lines="2"))
-        assert r.status == "ok"
-        content = (tmp_workdir / "a.py").read_text()
-        assert "b" not in content.split("\n")
-
-    def test_invalid_format(self, tmp_workdir):
-        (tmp_workdir / "a.py").write_text("a\n")
-        r = patch_file(_call(path="a.py", delete_lines="abc"))
-        assert r.status == "error"
 
 
 class TestErrors:

@@ -195,18 +195,6 @@ def _execute_single(
         call.tool_name, result.status, result.exit_code, result.elapsed,
     )
 
-    if (result.status == "ok"
-            and call.tool_name in ("create_file", "patch_file")
-            and (call.args or {}).get("path")):
-        try:
-            from config.lsp import get_auto_diagnostics
-            if get_auto_diagnostics():
-                from apis.lsp_client import get_diagnostics_for_path
-                diag = get_diagnostics_for_path(call.args["path"])
-                if diag:
-                    result.output = (result.output + "\n\n" + diag) if result.output else diag
-        except Exception as e:
-            logger.debug("auto lsp diagnostics skipped: {}", e)
 
     final_subtitle = subtitle
     if subtitle_factory is not None:

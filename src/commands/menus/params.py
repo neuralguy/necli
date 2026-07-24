@@ -49,6 +49,10 @@ def _fmt_reasoning_effort(v: str) -> str:
         return _("params.effort_medium")
     elif v == "high":
         return _("params.effort_high")
+    elif v == "xhigh":
+        return _("params.effort_xhigh")
+    elif v == "max":
+        return _("params.effort_max")
     return _("params.default_provider")
 
 
@@ -128,13 +132,15 @@ def params_interactive() -> None:
                 {"label": _("params.effort_low"), "hint": _("params.effort_low_hint")},
                 {"label": _("params.effort_medium"), "hint": _("params.effort_medium_hint")},
                 {"label": _("params.effort_high"), "hint": _("params.effort_high_hint")},
+                {"label": _("params.effort_xhigh"), "hint": _("params.effort_xhigh_hint")},
+                {"label": _("params.effort_max"), "hint": _("params.effort_max_hint")},
                 {"label": "← Back"},
             ]
             sub_choice = select_menu(items_effort, title=_("params.reasoning_effort_title"))
             if sub_choice is None or sub_choice == 4:
                 continue
 
-            vals = ["", "low", "medium", "high"]
+            vals = ["", "low", "medium", "high", "xhigh", "max"]
             new_val = vals[sub_choice]
             config.set_value("reasoning_effort", new_val)
             _invalidate_api_llm()

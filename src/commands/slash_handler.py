@@ -36,10 +36,6 @@ async def handle_slash_result(act: SlashResult, state: InteractiveState) -> bool
         await _handle_compress(state)
         return True
 
-    if act.do_decompress:
-        await _handle_decompress(state)
-        return True
-
     if act.do_commit:
         _handle_commit(act, state)
         return True
@@ -133,9 +129,6 @@ async def _handle_switch_session(act: SlashResult, state: InteractiveState) -> N
     state.save_session()
     state.session = new_session
 
-    if state.session.last_model:
-        state.cur_model = state.session.last_model
-
     from apis.agent_adapter import restore_api_session_history
     restore_api_session_history(state.session)
     state.pending_context = None
@@ -185,7 +178,7 @@ async def _handle_compress(state: InteractiveState) -> None:
         console.print(f"  [dim]{tr('slash.nothing_to_compress')}[/dim]")
         return
 
-    from prompts import COMPRESS_PROMPT
+    from system_prompt import COMPRESS_PROMPT
     compress_prompt = COMPRESS_PROMPT + history_text
 
     from apis.agent_adapter import (
@@ -241,7 +234,7 @@ async def _handle_compress_incremental(state: InteractiveState) -> bool:
     if not history_text.strip():
         return False
 
-    from prompts import COMPRESS_PROMPT
+    from system_prompt import COMPRESS_PROMPT
     compress_prompt = COMPRESS_PROMPT + history_text
 
     from apis.agent_adapter import (
@@ -270,42 +263,6 @@ async def _handle_compress_incremental(state: InteractiveState) -> bool:
     logger.info("incremental compress: {} rounds compressed, tail kept", n)
     return True
 
-
-async def _handle_decompress(state: InteractiveState) -> None:
-    """Restores original history before the last /compress."""
-    sess = state.session
-    pre = getattr(sess, "_pre_compress_messages", None)
-    if not pre:
-        console.print(f"  [dim]{tr('sh.no_backup')}[/dim]")
-        return
-
-    from session.message import Message
-
-    logger.info(
-        "decompress: session={} restoring {} messages",
-        sess.id[:16], len(pre),
-    )
-
-    # Очищаем сжатые сообщения и восстанавливаем оригинал
-    sess.messages = [Message.from_dict(m) for m in pre]
-    sess._pre_compress_messages = None
-    sess._pre_compress_at = None
-    sess._compressed_stats = None
-    sess._cost_cache = None
-
-    storage.save(sess)
-
-    # Пересоздаём API-сессию с восстановленной историей
-    from apis.agent_adapter import api_new_chat, restore_api_session_history
-    await api_new_chat()
-    loaded = restore_api_session_history(sess)
-
-    state.msg_num = sess.message_count
-    state.pending_context = None
-
-    console.print(
-        f"  [green]✓[/green] {tr('sh.history_restored', n=sess.message_count, loaded=loaded)}"
-    )
 
 
 _BG_COMMIT_TASKS: set = set()
@@ -393,7 +350,7 @@ async def _handle_new_chat(state: InteractiveState) -> None:
     from tools.file_ops.read import clear_read_cache
     if old_sid:
         clear_read_cache(old_sid)
-    state.session = Session()
+    state.session = Session(working_dir=state.workdir)
     state.msg_num = 0
     state.pending_context = None
     state.prompt_input.clear_images()
@@ -417,7 +374,7 @@ async def _handle_branch(state: InteractiveState) -> None:
     state.save_session()
     logger.info("branch: from {} ({} msgs)", old.id[:16], len(old.messages))
 
-    new_session = Session()
+    new_session = Session(working_dir=old.working_dir)
     new_session.messages = [Message.from_dict(m.to_dict()) for m in old.messages]
     new_session.title = old.title
     if old.messages:
@@ -460,7 +417,7 @@ async def _handle_toggle_tool_format(state: InteractiveState) -> None:
     """Переключает глобальный force-native флаг для tool calls.
 
     True  → все API-запросы принудительно используют native function calling.
-    False → используется per-provider настройка (default).
+    False → все API-запросы используют fenced text-блоки.
 
     После смены формата ПЕРЕсобираем API-историю из necli-сессии под новый
     формат: restore_api_session_history сериализует assistant/tool-сообщения
@@ -470,7 +427,7 @@ async def _handle_toggle_tool_format(state: InteractiveState) -> None:
     модель продолжала имитировать их, игнорируя свежий системный промт —
     «починить» помогал только перезапуск CLI (пустая история).
     """
-    current = bool(config.get("tool_format_force_native", False))
+    current = bool(config.get("tool_format_force_native", True))
     new_val = not current
     config.set_value("tool_format_force_native", new_val)
     if new_val:
@@ -494,7 +451,7 @@ async def _handle_reflect(state: InteractiveState) -> None:
     )
     console.print()
 
-    from prompts import REFLECT_PROMPT
+    from system_prompt import REFLECT_PROMPT
 
     state.msg_num += 1
     state.session.add_system_message("[/reflect]", model=state.cur_model)

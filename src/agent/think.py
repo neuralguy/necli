@@ -39,6 +39,28 @@ from config.ui import ui
 _THINK_CACHE: tuple[int, bool] | None = None
 
 
+_MD_LINK_RE = re.compile(r"!?\[([^]]*)\]\([^)]*\)")
+_MD_INLINE_RE = re.compile(r"(`+|\*{1,3}|_{1,3}|~~)(.*?)\1")
+_MD_LINE_PREFIX_RE = re.compile(r"^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+|[-*_]{3,}\s*$)")
+_MD_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})[^\n]*$")
+
+
+def _plain_thought(text: str) -> str:
+    """Remove Markdown syntax from model thoughts before displaying or storing them."""
+    lines: list[str] = []
+    in_fence = False
+    for line in (text or "").splitlines():
+        if _MD_FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        line = _MD_LINE_PREFIX_RE.sub("", line)
+        line = re.sub(r"^\s*[-*+]\s+\[[ xX]\]\s+", "", line)
+        line = _MD_LINK_RE.sub(r"\1", line)
+        line = _MD_INLINE_RE.sub(r"\2", line)
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def _settings_version() -> int:
     return getattr(_settings, "_settings_version", 0)
 
@@ -68,7 +90,7 @@ class ThinkLog:
     steps: list[ThoughtStep] = field(default_factory=list)
 
     def add(self, text: str) -> None:
-        text = (text or "").strip()
+        text = _plain_thought(text)
         if not text:
             return
         self.steps.append(ThoughtStep(text=text))
@@ -89,7 +111,7 @@ class ThinkLog:
         номер. streaming=True добавляет курсор и dim-стиль.
         """
         if partial is not None:
-            snippet = partial.replace("\n", " ").strip()
+            snippet = _plain_thought(partial).replace("\n", " ").strip()
             shown_num = self.total + 1
         else:
             cur = self.current
@@ -301,19 +323,25 @@ def render_think_static(log: ThinkLog, streaming: bool = False):
             term_w = 80
         avail = max(20, term_w - 6)  # отступ "      "
 
-        words = full_text.replace("\n", " ").split(" ")
+        # Сохраняем оригинальные \n — каждая строка word-wrap'ится отдельно.
+        paragraphs = full_text.split("\n")
         all_lines: list[str] = []
-        cur = ""
-        for w in words:
-            cand = (cur + " " + w).strip() if cur else w
-            if len(cand) <= avail:
-                cur = cand
-            else:
-                if cur:
-                    all_lines.append(cur)
-                cur = w
-        if cur:
-            all_lines.append(cur)
+        for para in paragraphs:
+            if not para.strip():
+                all_lines.append("")
+                continue
+            words = para.split(" ")
+            cur = ""
+            for w in words:
+                cand = (cur + " " + w).strip() if cur else w
+                if len(cand) <= avail:
+                    cur = cand
+                else:
+                    if cur:
+                        all_lines.append(cur)
+                    cur = w
+            if cur:
+                all_lines.append(cur)
 
         if streaming:
             # Стрим: прокручиваем — показываем небольшой стабильный ХВОСТ.

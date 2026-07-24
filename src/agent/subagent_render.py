@@ -47,6 +47,18 @@ def _fmt_tokens(n: int) -> str:
     return f"{v:.1f}M" if v < 100 else f"{v:.0f}M"
 
 
+_TOOL_HINT_ARG = {
+    "web_fetch": "urls",
+    "web_search": "queries",
+    "skill": "name",
+    "memory_read": "name",
+    "memory_write": "name",
+    "poll": "question",
+    "subagent": "prompt",
+    "expand_tool_result": "id",
+}
+
+
 def _tool_emoji(tool_name: str) -> str:
     try:
         return (ui.tool(tool_name).get("emoji") or "•").strip() or "•"
@@ -128,10 +140,33 @@ class SubagentBuffer:
                 hint = cmd.splitlines()[0] if cmd else ""
             else:
                 path = args.get("path")
+                if path is None:
+                    paths_val = args.get("paths")
+                    if paths_val is not None:
+                        path = paths_val
                 if isinstance(path, (list, tuple)):
-                    hint = f"{len(path)} files" if len(path) != 1 else str(path[0])
+                    names = []
+                    for p in path:
+                        if isinstance(p, str):
+                            names.append(p)
+                        elif isinstance(p, dict):
+                            names.append(str(p.get("path", p)))
+                    hint = ", ".join(names[:3])
+                    if len(names) > 3:
+                        hint += ", …"
                 elif path:
                     hint = str(path)
+                else:
+                    _arg_key = _TOOL_HINT_ARG.get(tool_name)
+                    if _arg_key:
+                        val = args.get(_arg_key)
+                        if isinstance(val, list):
+                            items = [str(v)[:60] for v in val[:3]]
+                            hint = ", ".join(items)
+                            if len(val) > 3:
+                                hint += ", …"
+                        elif val:
+                            hint = str(val)[:80]
         self.tool_events.append(
             ToolEvent(
                 tool_name=tool_name,

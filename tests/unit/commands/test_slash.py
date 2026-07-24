@@ -41,9 +41,6 @@ class TestSimpleFlagCommands:
     def test_reflect_sets_flag(self, session):
         assert call("/reflect", session).do_reflect is True
 
-    def test_decompress_sets_flag(self, session):
-        assert call("/decompress", session).do_decompress is True
-
 class TestBranch:
     def test_branch_empty_session_not_set(self, session):
         session.message_count = 0

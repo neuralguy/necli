@@ -53,12 +53,12 @@ _WRITE_NAMES = {"patch_file", "create_file"}
 # перечитать «тем же» нельзя — только повторный вызов. Применяем C (крупный
 # рано) и D (любой через _HARD_EVICT_ROUNDS), без A/B (нет пути/дедупа).
 _TOOL_EVICT_NAMES = {
-    "shell", "web_search",
-    "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
+    "shell", "web_search", "web_fetch",
+    "lsp_references", "lsp_hover", "lsp_diagnostics",
 }
 _TOOL_CMD_RE = re.compile(
-    r"^\$ (shell|web_search|"
-    r"lsp_definition|lsp_references|lsp_hover|lsp_diagnostics)\b(.*)$"
+    r"^\$ (shell|web_search|web_fetch|"
+    r"lsp_references|lsp_hover|lsp_diagnostics)\b(.*)$"
 )
 
 # Скилл-результаты (вывод инструмента `skill` — тело SKILL.md). Вытесняются по
@@ -589,9 +589,7 @@ def prune_messages(messages: list, age_eviction: bool = True) -> tuple[list, dic
     pruned_blocks += runtime_pruned
     saved += runtime_saved
 
-    # Сброс read-cache для вытесненных путей: тело удалено из истории, поэтому
-    # повторный read_files НЕ должен отвечать NOT CHANGED (иначе модель
-    # останется без контента — и в истории плейсхолдер, и кэш молчит).
+    # Сброс read-cache для вытесненных путей.
     if evicted_paths:
         try:
             from tools.file_ops.read import invalidate_read_cache

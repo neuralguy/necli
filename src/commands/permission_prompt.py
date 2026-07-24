@@ -110,18 +110,21 @@ def _smart_preview(call: tools.ToolCall) -> str:
             return f"{path}  (insert @ line {args.get('line', '?')})"
         return f"{path}  (find/replace)"
 
-    if name in ("read_files", "read_file"):
+    if name in ("read_files", "read_file", "grep"):
         if args.get("pattern"):
             return f"{_clip(args['pattern'], 32)}  in {path_of() or '.'}"
         return path_of() or "."
 
-    if name == "ssh":
-        host = args.get("host") or args.get("alias") or ""
-        cmd = args.get("command") or ""
-        return f"{host}: {_clip(cmd, 44)}" if cmd else _clip(host, 48)
-
     if name == "web_search":
-        return _clip(args.get("query") or args.get("url") or "", 60)
+        qs = args.get("queries", [])
+        if isinstance(qs, str):
+            qs = [qs]
+        return _clip("; ".join(str(q) for q in qs[:3]) if qs else "", 60)
+    if name == "web_fetch":
+        urls = args.get("urls", [])
+        if isinstance(urls, str):
+            urls = [urls]
+        return _clip(", ".join(str(u) for u in urls[:2]) if urls else "", 60)
 
     # Fallback: ключевые аргументы строкой.
     parts = []

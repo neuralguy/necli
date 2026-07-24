@@ -5,6 +5,14 @@ import signal
 import sys
 import time
 
+# termios для сохранения/восстановления состояния терминала после Ctrl+C.
+# Если импорт не удался (Windows) — функции-заглушки отработают без ошибки.
+try:
+    import termios as _termios
+    _HAVE_TERMIOS = True
+except ImportError:
+    _HAVE_TERMIOS = False
+
 from rich.align import Align
 from rich.console import Console, Group
 from rich.markup import escape
@@ -22,6 +30,50 @@ from ui import format_cost, format_tokens
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+# ── Terminal state save/restore ───────────────────────────────────
+
+_SAVED_TERMIOS: list | None = None
+
+
+def _save_termios() -> None:
+    """Сохраняет termios-атрибуты stdin для восстановления после Ctrl+C."""
+    global _SAVED_TERMIOS
+    if not _HAVE_TERMIOS:
+        return
+    try:
+        fd = sys.stdin.fileno()
+        _SAVED_TERMIOS = _termios.tcgetattr(fd)
+    except Exception:
+        _SAVED_TERMIOS = None
+
+
+def _restore_termios() -> None:
+    """Восстанавливает сохранённые termios-атрибуты stdin.
+
+    Fallback: stty sane если _SAVED_TERMIOS невалиден.
+    """
+    global _SAVED_TERMIOS
+    if not _HAVE_TERMIOS:
+        return
+    fd = sys.stdin.fileno()
+    term = _SAVED_TERMIOS
+    # Отцепляем глобальную ссылку — при повторах хендлера сохранится свежий снимок.
+    _SAVED_TERMIOS = None
+
+    if term is not None:
+        try:
+            _termios.tcsetattr(fd, _termios.TCSADRAIN, term)
+            return
+        except Exception:
+            logger.debug("restore_termios: tcsetattr failed", exc_info=True)
+
+    # Fallback: stty sane
+    try:
+        import subprocess as _sp
+        _sp.run(["stty", "sane"], stderr=_sp.DEVNULL, timeout=2)
+    except Exception:
+        pass
 
 
 def _read_version() -> str:
@@ -91,6 +143,7 @@ def _make_interrupt_handler(task_ref, stderr_ref):
         # level >= 3: cancel завис (неотменяемый синхронный код / C-расширение) —
         # аварийный выход всего процесса. Лучше так, чем висеть бесконечно.
         if level >= 3:
+            _restore_termios()
             stderr_ref.write(
                 "\r\033[K  \033[31m■■■\033[0m"
                 " \033[2mForce exit.\033[0m\n"
@@ -99,6 +152,7 @@ def _make_interrupt_handler(task_ref, stderr_ref):
             os._exit(130)
 
         # level == 2: жёсткая отмена задачи прямо сейчас.
+        _restore_termios()
         if ctx:
             ctx.hard_interrupted = True
         stderr_ref.write(
@@ -125,6 +179,7 @@ async def _run_with_interrupt(coro, session, on_cancelled=None):
     t0 = time.monotonic()
     cancelled = False
     task = asyncio.ensure_future(coro)
+    _save_termios()
 
     _task_ref = {"task": task}
     _saved_stderr = sys.stderr
@@ -157,6 +212,7 @@ async def _run_with_interrupt(coro, session, on_cancelled=None):
                     _int_state["_hard_at"] = now
                 elif now - deadline > timeout:
                     try:
+                        _restore_termios()
                         _restore_stderr()
                         sys.stderr.write(
                             "\r\033[K  \033[31m■■\033[0m"
@@ -179,6 +235,7 @@ async def _run_with_interrupt(coro, session, on_cancelled=None):
             signal.signal(signal.SIGINT, original_handler)
             _stop_anim()
             _restore_stderr()
+            _restore_termios()
 
         cancelled = _int_state["level"] > 0
         duration = time.monotonic() - t0
@@ -188,12 +245,14 @@ async def _run_with_interrupt(coro, session, on_cancelled=None):
 
     except (BrokenPipeError, ConnectionError, OSError):
         _restore_stderr()
+        _restore_termios()
         if not cancelled and on_cancelled is None:
             console.print("\n  [red]✗ API connection error[/red]")
         await asyncio.to_thread(storage.save, session)
         raise
     except Exception as e:
         _restore_stderr()
+        _restore_termios()
         logger.exception("agent run failed: %s: %s", type(e).__name__, e)
         if not cancelled:
             console.print(f"\n  [red]✗ {escape(str(e))}[/red]")

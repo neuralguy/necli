@@ -67,6 +67,28 @@ class TestResolvePath:
         result = resolve_path(str(link))
         assert result == link
 
+    def test_resolves_existing_file_without_extension(self, tmp_workdir):
+        target = tmp_workdir / "src" / "app.py"
+        target.parent.mkdir()
+        target.write_text("ok")
+
+        assert resolve_path("src/app") == target
+
+    def test_keeps_existing_directory_before_matching_file(self, tmp_workdir):
+        directory = tmp_workdir / "src"
+        directory.mkdir()
+        (tmp_workdir / "src.py").write_text("ok")
+
+        assert resolve_path("src") == directory
+
+    def test_limits_resolution_to_requested_extensions(self, tmp_workdir):
+        pdf = tmp_workdir / "report.pdf"
+        docx = tmp_workdir / "report.docx"
+        pdf.write_text("pdf")
+        docx.write_text("docx")
+
+        assert resolve_path("report", extensions=(".docx",)) == docx
+
 
 class TestCleanPath:
     def test_strips_whitespace(self):

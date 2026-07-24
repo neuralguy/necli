@@ -234,10 +234,7 @@ def _parse_pages_arg(args: dict, op_id: str) -> list[int]:
         nums.append(pages)
 
     if not nums:
-        try:
-            nums = [int(args.get("page", 1) or 1)]
-        except (TypeError, ValueError):
-            nums = [1]
+        nums = [1]
 
     return nums
 
@@ -246,10 +243,9 @@ def docx_screenshot(call: ToolCall) -> ToolResult:
 
     args:
       path (str, required) — путь к .docx или .pdf
-      page (int, optional, default=1) — номер одной страницы (1-based)
-      pages (str|list, optional) — диапазон/набор страниц:
+      pages (str, optional) — диапазон/набор страниц:
           "2-5", "1,3,7", "2-4,8,10-11", [1,4,9] или "all" (все страницы).
-          Если задан pages — page игнорируется.
+          По умолчанию — страница 1.
     """
     op_id = uuid.uuid4().hex[:8]
     args = call.args or {}
@@ -266,13 +262,9 @@ def docx_screenshot(call: ToolCall) -> ToolResult:
     want_all = isinstance(pages_arg, str) and pages_arg.strip().lower() == "all"
     page_nums = _parse_pages_arg(args, op_id)
 
-    try:
-        dpi = int(args.get("dpi") or _DPI)
-    except (TypeError, ValueError):
-        dpi = _DPI
-    dpi = max(50, min(dpi, 600))
+    dpi = _DPI
 
-    src = resolve_path(path_str)
+    src = resolve_path(path_str, extensions=(".docx", ".pdf"))
     if not src.exists():
         return ToolResult(
             name="docx_screenshot", status="error",

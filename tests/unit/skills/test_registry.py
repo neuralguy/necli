@@ -22,31 +22,27 @@ def test_gated_tools_is_union():
 
 
 def test_web_skill_tools():
-    assert tools_for_skill("web") == {"web_search", "image_search"}
+    assert tools_for_skill("web") == {"web_search", "web_fetch", "image_search"}
 
 
 def test_skill_for_tool():
     assert skill_for_tool("web_search") == "web"
+    assert skill_for_tool("web_fetch") == "web"
     assert skill_for_tool("image_search") == "web"
-    assert skill_for_tool("ssh") == "ssh"
     assert skill_for_tool("subagent") == "subagents"
     assert skill_for_tool("shell") is None
 
 
 def test_visible_gated_tools():
     assert visible_gated_tools(set()) == set()
-    assert visible_gated_tools({"web"}) == {"web_search", "image_search"}
-    assert visible_gated_tools({"web", "ssh"}) == {"web_search", "image_search", "ssh"}
+    assert visible_gated_tools({"web"}) == {"web_search", "web_fetch", "image_search"}
+    assert visible_gated_tools({"web"}) == {"web_search", "web_fetch", "image_search"}
 
 
-def test_is_tool_gated_out():
-    # ungated tool never gated out
-    assert is_tool_gated_out("shell", set()) is False
-    # gated tool hidden when its skill inactive
-    assert is_tool_gated_out("web_search", set()) is True
-    assert is_tool_gated_out("web_search", {"ssh"}) is True
-    # visible when its skill active
-    assert is_tool_gated_out("web_search", {"web"}) is False
+def test_tool_gating_is_disabled():
+    for tool in ("shell", "web_search", "web_fetch", "image_search", "subagent"):
+        assert is_tool_gated_out(tool, set()) is False
+        assert is_tool_gated_out(tool, {"web", "ssh", "subagents"}) is False
 
 
 # ---------------- активность по истории (native-mode) ----------------

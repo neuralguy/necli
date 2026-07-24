@@ -379,10 +379,9 @@ class LSPManager:
     # ── публичные действия ──
 
     def _run_action(self, file_path_str: str, line: int, character: int, action: str) -> ToolResult:
-        path = Path(file_path_str)
-        if not path.is_absolute():
-            from tools._paths import resolve_path
-            path = resolve_path(file_path_str)
+        from tools._paths import resolve_path
+
+        path = resolve_path(file_path_str)
         if not path.exists():
             return ToolResult(name=f"lsp_{action}", status="error",
                               output=f"Файл не найден: {file_path_str}",
@@ -653,50 +652,13 @@ def _exec_action(call: ToolCall, action: str) -> ToolResult:
     return LSPManager.instance()._run_action(path, line, character, action)
 
 
-def execute_lsp_definition(call: ToolCall) -> ToolResult:
-    return _exec_action(call, "definition")
-
-
 def execute_lsp_references(call: ToolCall) -> ToolResult:
     return _exec_action(call, "references")
-
-
-def execute_lsp_hover(call: ToolCall) -> ToolResult:
-    return _exec_action(call, "hover")
 
 
 def execute_lsp_diagnostics(call: ToolCall) -> ToolResult:
     return _exec_action(call, "diagnostics")
 
-
-def get_diagnostics_for_path(path: str) -> str | None:
-    """Внутренняя обёртка для авто-диагностики после write/patch.
-
-    Возвращает строку с диагностикой если есть проблемы, иначе None.
-    Не поднимает исключений — в случае любой ошибки тихо возвращает None.
-    """
-    try:
-        from pathlib import Path as _P  # noqa: N814
-        p = _P(path)
-        if not p.is_absolute():
-            from tools._paths import resolve_path
-            p = resolve_path(path)
-        if not p.exists():
-            return None
-        mgr = LSPManager.instance()
-        if not mgr._configs:
-            return None
-        server = mgr._ensure_server(p)
-        if server is None:
-            return None
-        text = mgr._submit(mgr._action_async(server, p, 1, 0, "diagnostics"), timeout=6.0)
-        # Возвращаем только если есть реальные проблемы
-        if text and "Всё корректно" not in text:
-            return text
-        return None
-    except Exception as e:
-        logger.debug("auto diagnostics failed: {}", e)
-        return None
 
 
 # ── публичный API ──────────────────────────────────────────────

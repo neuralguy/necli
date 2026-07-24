@@ -360,10 +360,12 @@ def add_model_to_provider(
     output_price: float = 0.0,
 ) -> bool:
     """Добавляет модель в список моделей провайдера."""
+    from models import normalize_model_name
+
     store = _get_store()
     entry = {
         "id": model_id,
-        "display_name": display_name or model_id,
+        "display_name": display_name or normalize_model_name(model_id),
         "context_window": context_window,
         "input_price": input_price,
         "output_price": output_price,

@@ -1,6 +1,6 @@
 """agent/display.py — формат строки времени инструмента (_format_elapsed)."""
 
-from agent.display import _format_elapsed
+from agent.display import _format_elapsed, _format_tool_tokens
 
 
 class TestFormatElapsed:
@@ -26,6 +26,23 @@ class TestFormatElapsed:
 
     def test_none_safe(self):
         assert _format_elapsed(None) == ""
+
+
+class TestToolTokens:
+    def test_shell_has_both_directions(self):
+        import tools
+
+        call = tools.ToolCall(command="pwd", tool_name="shell", args={"command": "pwd"})
+        result = tools.ToolResult(name="shell", status="ok", output="/tmp")
+        assert _format_tool_tokens(call, result).startswith(" ↓")
+        assert " ↑" in _format_tool_tokens(call, result)
+
+    def test_read_has_only_up(self):
+        import tools
+
+        call = tools.ToolCall(command="", tool_name="read_files")
+        result = tools.ToolResult(name="read_files", status="ok", output="content")
+        assert _format_tool_tokens(call, result).startswith(" ↑")
 
 
 class TestShellPreviewTailOnFailure:

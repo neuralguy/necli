@@ -25,6 +25,15 @@ class TestCreateFile:
         assert (tmp_workdir / "a.py").read_text() == "new"
         assert "overwrit" in r.output.lower()
 
+    def test_overwrites_existing_file_without_extension(self, tmp_workdir):
+        (tmp_workdir / "a.py").write_text("old")
+
+        r = create_file(_call("create_file", path="a", content="new"))
+
+        assert r.status == "ok"
+        assert (tmp_workdir / "a.py").read_text() == "new"
+        assert not (tmp_workdir / "a").exists()
+
     def test_creates_parent_dirs(self, tmp_workdir):
         r = create_file(_call("create_file", path="sub/dir/a.py", content="x"))
         assert r.status == "ok"

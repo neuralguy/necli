@@ -15,10 +15,10 @@ from .json_repair import robust_json_loads as _robust_json_loads
 from .models import ToolCall
 
 NAMED_TOOLS = frozenset({
-    "read_files", "read_file", "patch_file",
-    "create_file", "poll", "skill", "shell", "web_search",
-    "ssh", "subagent", "create_docx", "docx_screenshot", "expand_tool_result",
-    "lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
+    "read_files", "read_file", "grep", "patch_file",
+    "create_file", "poll", "skill", "shell", "web_search", "web_fetch",
+    "subagent", "create_docx", "docx_screenshot", "expand_tool_result",
+    "lsp_references", "lsp_diagnostics",
     "memory_write", "memory_list", "memory_read",
 })
 
@@ -78,6 +78,17 @@ _BOOL_ATTRS = frozenset({
     "all", "force", "ignore_case", "literal", "long", "fetch",
     "background",
 })
+
+_TOOL_DISPLAY_ARG = {
+    "web_fetch": "urls",
+    "web_search": "queries",
+    "skill": "name",
+    "memory_read": "name",
+    "memory_write": "name",
+    "poll": "question",
+    "subagent": "prompt",
+    "expand_tool_result": "id",
+}
 
 def _coerce_attr(key, val):
     if key in _INT_ATTRS:
@@ -395,6 +406,26 @@ def parse_call_block(tool_name, attrs_header, body, raw):
                 args["command"] = cmd_val
         if "path" in args:
             display = f"{tool_name} {args['path']}"
+        elif "paths" in args:
+            pv = args["paths"]
+            if isinstance(pv, list):
+                names = [str(p) if isinstance(p, str) else str(p.get("path", p)) for p in pv[:5]]
+                ps = ", ".join(names)
+                if len(pv) > 5:
+                    ps += ", …"
+                display = f"{tool_name} [{ps}]"
+            else:
+                display = f"{tool_name} {pv}"
+        elif _tool_arg_key := _TOOL_DISPLAY_ARG.get(tool_name):
+            val = args.get(_tool_arg_key)
+            if isinstance(val, list):
+                items = [str(v)[:60] for v in val[:3]]
+                s = ", ".join(items)
+                if len(val) > 3:
+                    s += ", …"
+                display = f"{tool_name}({s})"
+            elif val:
+                display = f"{tool_name}({str(val)[:80]})"
         elif tool_name == "shell":
             cmd_field = args.get("command")
             if isinstance(cmd_field, str):

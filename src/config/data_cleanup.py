@@ -73,7 +73,6 @@ def run_cleanup() -> int:
 def _clean_root_junk() -> int:
     freed = 0
     for name in (
-        "history",
         "_git_stats.py",
         "api_providers.json",
         "diff_target.txt",

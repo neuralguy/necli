@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import time
 import uuid
 from pathlib import Path
@@ -25,7 +24,6 @@ from typing import Any
 from apis._retry import stream_with_throttle_retry, with_throttle_retry
 from apis.base import BaseProvider
 from apis.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from apis.opus48_debug import has_transcript_hint, log_event
 from apis.registry import get_provider
 from logger import logger
 from tools._html_unescape import maybe_unescape as _unescape_html_entities
@@ -120,7 +118,6 @@ def _debug_message_summary(messages: list, limit: int = 6) -> list[dict]:
         out.append({
             "role": role,
             "len": len(text),
-            "transcript": has_transcript_hint(text),
             "preview": text[:300].replace("\n", "\\n"),
         })
     return out
@@ -162,14 +159,14 @@ class ApiSession:
     @property
     def use_native_tools(self) -> bool:
         # ЕДИНЫЙ глобальный переключатель native/fenced для ВСЕХ провайдеров.
-        # True → native function calling; False (default) → fenced :::call.
+        # True (default) → native function calling; False → fenced :::call.
         # Управляется командой /tool_format.
         try:
             from config.settings import get as _settings_get
-            return bool(_settings_get("tool_format_force_native", False))
+            return bool(_settings_get("tool_format_force_native", True))
         except Exception:
             logger.debug("tool_format_force_native lookup failed", exc_info=True)
-            return False
+            return True
 
     @property
     def llm(self) -> BaseProvider:
@@ -262,35 +259,6 @@ def create_api_session(provider_id: str, model_id: str) -> ApiSession:
     set_api_session(session)
     return session
 
-
-def _tool_calls_to_text_blocks(tool_calls):
-    """Конвертирует нативные tool_calls в :::call ... call::: блоки для UI/парсера.
-
-    Асимметричные маркеры :::call / call::: не встречаются в реальном коде,
-    поэтому body может содержать что угодно — тройные backticks, тильды, HTML, код.
-    """
-    parts = []
-    for tc in tool_calls:
-        name = tc.get("name") or "shell"
-        args = tc.get("args") or {}
-        # create_file — контент в теле, path в шапке
-        if name == "create_file" and isinstance(args, dict) and "content" in args:
-            path = args.get("path", "")
-            content = args.get("content", "")
-            encoding = args.get("encoding")
-            header = f'{name} path="{path}"'
-            if encoding:
-                header += f' encoding="{encoding}"'
-            parts.append("\n:::call " + header + "\n" + content + "\ncall:::\n")
-            continue
-        # shell — команда в JSON
-        if name == "shell" and isinstance(args, dict):
-            cmd = args.get("command", "")
-            body = json.dumps({"command": cmd}, ensure_ascii=False) if cmd else json.dumps(args, ensure_ascii=False)
-        else:
-            body = json.dumps(args, ensure_ascii=False)
-        parts.append("\n:::call " + name + "\n" + body + "\ncall:::\n")
-    return "".join(parts)
 
 def _ensure_tool_call_ids(tool_calls):
     out = []
@@ -458,7 +426,7 @@ def _extract_usage(obj) -> dict:
     return out
 
 
-async def api_send_message(text, system_prompt="", on_chunk=None, model=None, tools=None, images=None, on_reasoning_chunk=None, tool_results=None, extras=None):
+async def api_send_message(text, system_prompt="", on_chunk=None, model=None, tools=None, images=None, on_reasoning_chunk=None, on_tool_chunk=None, tool_results=None, extras=None):
     """Отправляет сообщение провайдеру.
 
     tool_results — структурные результаты раунда (list[dict] из
@@ -497,17 +465,6 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         except Exception as e:
             logger.warning("bind_tools failed: " + str(e))
             use_tools = False
-
-    log_event(
-        "api_send_start",
-        provider=session.provider_id,
-        model=session.model_id,
-        native=session.use_native_tools,
-        use_tools=use_tools,
-        input_len=len(str(text or "")),
-        input_has_transcript=has_transcript_hint(str(text or "")),
-        input_preview=str(text or "")[:2000],
-    )
 
     # ponytail: keep the full immutable transcript for exact prefix caching;
     # add explicit whole-session compression when provider context limits require it.
@@ -582,14 +539,6 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
                 content=str(extras), additional_kwargs={"synthetic": True},
             )
             messages.append(extras_message)
-        log_event(
-            "native_tool_results_as_tool_messages",
-            pending=len(pending_tool_calls),
-            emitted=len(tool_result_messages),
-            results=len(tool_results or []),
-            images=len(images or []),
-            extras_len=len(str(extras or "")),
-        )
     elif tool_results is not None:
         # Гибрид: провайдер native, но в прошлом ответе модель использовала
         # текстовые :::call блоки (а не native function-calling) → pending
@@ -619,13 +568,6 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
                     "API send: %d tool image(s) attached as multimodal HumanMessage (hybrid)",
                     sum(1 for p in img_content if p.get("type") == "image_url"),
                 )
-        log_event(
-            "native_tool_results_fallback_text",
-            results=len(tool_results),
-            extras_len=len(str(extras or "")),
-            payload_len=len(payload),
-            images=len(images or []),
-        )
     elif images:
         mm_content_cached = _build_multimodal_content(text, images)
         has_images = any(p.get("type") == "image_url" for p in mm_content_cached)
@@ -642,12 +584,6 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
     # и модель видит его в следующем раунде. Раньше запись делалась
     # после llm.astream/ainvoke — при cancel в середине стрима терялась,
     # а necli Session уже содержала вопрос → рассинхрон истории.
-    log_event(
-        "request_messages_ready",
-        count=len(messages),
-        tail=_debug_message_summary(messages),
-    )
-
     if tool_result_messages:
         session.messages.extend(tool_result_messages)
         if images_message is not None:
@@ -667,32 +603,13 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         if images_message is not None:
             session.messages.append(images_message)
 
-    log_event(
-        "api_session_after_user",
-        count=len(session.messages),
-        tail=_debug_message_summary(session.messages),
-    )
-
     t0 = time.monotonic()
     raw_text = ""
     tool_calls = []
     reasoning_content = ""
     usage_info: dict = {}
-    _debug_stream_seen = {"transcript": False}
-    _streamed_text = {"last": ""}
 
     def _debug_on_chunk(full_text: str) -> None:
-        if full_text:
-            _streamed_text["last"] = full_text
-        if has_transcript_hint(full_text) and not _debug_stream_seen["transcript"]:
-            _debug_stream_seen["transcript"] = True
-            log_event(
-                "stream_transcript_seen",
-                provider=session.provider_id,
-                model=session.model_id,
-                len=len(full_text),
-                preview=full_text,
-            )
         if on_chunk is not None:
             on_chunk(full_text)
 
@@ -716,25 +633,13 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
             final_chunk = await stream_with_throttle_retry(
                 lambda: llm.astream(messages),
                 _debug_on_chunk,
-                on_tool_chunk=lambda c: None,
+                on_tool_chunk=on_tool_chunk,
                 on_reasoning_chunk=on_reasoning_chunk,
             )
             raw_text = _content_to_text(getattr(final_chunk, "content", ""))
             tool_calls = list(getattr(final_chunk, "tool_calls", []) or [])
             reasoning_content = _extract_reasoning(final_chunk)
             usage_info = _extract_usage(final_chunk)
-
-            # ── Прокси-баг (OnlySQ для Claude): при наличии tool_calls в
-            # финальном чанке .content приходит пустым, хотя текст реально
-            # стримился в on_chunk. Без этого восстановления текст модели
-            # (reasoning перед вызовом) теряется: не сохраняется в историю,
-            # не возвращается наверх — для пользователя ответ «обрывается».
-            if not raw_text and _streamed_text["last"]:
-                raw_text = _content_to_text(_streamed_text["last"])
-                logger.info(
-                    "API recovered raw_text from stream buffer: "
-                    + str(len(raw_text)) + " chars (final_chunk.content was empty)"
-                )
 
             # Раньше здесь был фолбэк: при пустых args в tool_calls после
             # стрима повторяли запрос через ainvoke БЕЗ стрима. Это удваивало
@@ -749,22 +654,9 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
                     + str(len(tool_calls))
                     + " calls"
                 )
-                log_event(
-                    "native_tool_calls_received",
-                    raw_len=len(raw_text),
-                    calls=len(tool_calls),
-                )
         else:
             result = await with_throttle_retry(lambda: llm.ainvoke(messages))
             raw_text = _content_to_text(getattr(result, "content", result))
-            if has_transcript_hint(raw_text):
-                log_event(
-                    "nonstream_raw_transcript_seen",
-                    provider=session.provider_id,
-                    model=session.model_id,
-                    len=len(raw_text),
-                    preview=raw_text,
-                )
             tool_calls = list(getattr(result, "tool_calls", []) or [])
             tool_calls = _ensure_tool_call_ids(tool_calls)
             reasoning_content = _extract_reasoning(result)
@@ -780,8 +672,7 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         # ругаться или модель теряет контекст диалога).
         try:
             from agent.sanitizer import sanitize_response as _sanitize
-            partial_blocks = _tool_calls_to_text_blocks(tool_calls) if tool_calls else ""
-            partial = _sanitize(raw_text or "") + partial_blocks
+            partial = _sanitize(raw_text or "")
             if partial.strip():
                 session.add_assistant(partial, reasoning_content=reasoning_content)
             else:
@@ -809,8 +700,7 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         # чтобы пара user/assistant была сбалансирована для следующих запросов.
         try:
             from agent.sanitizer import sanitize_response as _sanitize
-            partial_blocks = _tool_calls_to_text_blocks(tool_calls) if tool_calls else ""
-            partial = _sanitize(raw_text or "") + partial_blocks
+            partial = _sanitize(raw_text or "")
             if partial.strip():
                 session.add_assistant(partial, reasoning_content=reasoning_content)
             else:
@@ -851,37 +741,15 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
             len(raw_text), len(clean_raw_text),
         )
 
-    blocks = _tool_calls_to_text_blocks(tool_calls) if tool_calls else ""
-    assistant_saved_content = clean_raw_text if (tool_calls and session.use_native_tools) else clean_raw_text + blocks
-    log_event(
-        "api_response_final",
-        provider=session.provider_id,
-        model=session.model_id,
-        raw_len=len(raw_text),
-        clean_len=len(clean_raw_text),
-        raw_has_transcript=has_transcript_hint(raw_text),
-        saved_has_transcript=has_transcript_hint(assistant_saved_content),
-        blocks_len=len(blocks),
-        calls=len(tool_calls),
-        raw_preview=raw_text,
-    )
     session.add_assistant(
-        assistant_saved_content,
+        clean_raw_text,
         tool_calls=tool_calls if (tool_calls and session.use_native_tools) else None,
         reasoning_content=reasoning_content,
-    )
-    log_event(
-        "api_session_after_assistant",
-        count=len(session.messages),
-        saved_len=len(assistant_saved_content),
-        saved_has_transcript=has_transcript_hint(assistant_saved_content),
-        saved_tool_calls=len(tool_calls) if (tool_calls and session.use_native_tools) else 0,
-        tail=_debug_message_summary(session.messages),
     )
     if reasoning_content:
         logger.info("API reasoning_content captured: " + str(len(reasoning_content)) + " chars")
     return {
-        "text": raw_text + blocks,
+        "text": raw_text,
         "raw_text": raw_text,
         "tool_calls": tool_calls,
         "reasoning_content": reasoning_content,
