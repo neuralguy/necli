@@ -65,16 +65,15 @@ def _api_uses_native_tools() -> bool:
 MAX_ITERATIONS = 500
 
 
-def _format_history_block(history, *, leading_newline: bool = False) -> str:
+def _format_history_block(history) -> str:
     """Форматирует список {role,content} в блок CONVERSATION CONTEXT.
 
     Длинные сообщения (>2000) урезаются: первые 1000 + ...(truncated)... + последние 500.
-    leading_newline=True добавляет '\\n' перед заголовком (для конкатенации к system_prompt).
     """
     if not history:
         return ""
     from system_prompt import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
-    header = ("\n" if leading_newline else "") + CONVERSATION_CONTEXT_HEADER
+    header = CONVERSATION_CONTEXT_HEADER
     parts = [header]
     for h_msg in history:
         role = h_msg["role"].upper()
@@ -172,12 +171,6 @@ def _wrap_with_telegram(handler):
         return handler
 
 _current_ctx: AgentContext | None = None
-
-
-def get_current_plan():
-    if _current_ctx:
-        return _current_ctx.plan
-    return None
 
 
 def get_current_ctx() -> AgentContext | None:
@@ -410,11 +403,6 @@ def _process_plan_commands(
                 save_plan_file(ctx.plan, ctx.effective_plan_dir)
 
 
-def _show_plan_between_iterations(ctx: AgentContext):
-    # План больше не печатается между итерациями. Просмотр — через /plan.
-    pass
-
-
 def _run_user_prompt_hooks(user_message: str, ctx: AgentContext) -> str | None:
     """UserPromptSubmit hooks.
 
@@ -496,7 +484,6 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
             ctx.last_fs_snapshot = take_snapshot_throttled(ctx.working_dir)
         except Exception:
             logger.debug("initial fs snapshot failed", exc_info=True)
-    ctx.original_message = user_message
 
     # UserPromptSubmit hooks: могут заблокировать отправку или подмешать контекст.
     extra_context = _run_user_prompt_hooks(user_message, ctx)
@@ -504,7 +491,6 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
         return ""  # заблокировано hook'ом
     if extra_context:
         user_message = f"{user_message}\n\n[hook context]\n{extra_context}"
-        ctx.original_message = user_message
 
     loaded_plan = load_plan_file(ctx.effective_plan_dir)
     if loaded_plan and not loaded_plan.is_complete:
@@ -605,7 +591,6 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
                 indexed_results.append((idx, r))
 
         results = [r for _, r in sorted(indexed_results, key=lambda x: x[0])]
-        _show_plan_between_iterations(ctx)
         result_images = _collect_image_paths(results)
         bg_notice = _format_background_notice(drain_finished_results())
         if _api_uses_native_tools():
@@ -805,9 +790,6 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
     # is_continuation здесь означает «в сессии уже была история» (msg_num>1),
     # а НЕ продолжение того же хода, поэтому turn_start_time обновляем всегда.
     ctx.turn_start_time = time.monotonic()
-    if not is_continuation:
-        ctx.original_message = user_message
-
     if not is_continuation and ctx.plan is None:
         loaded_plan = load_plan_file(ctx.effective_plan_dir)
         if loaded_plan and not loaded_plan.is_complete:
@@ -940,7 +922,6 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
         if remaining_calls:
             results = await execute_and_show_async(remaining_calls, event_handler=ctx.event_handler)
             inline_results.extend(results)
-            _show_plan_between_iterations(ctx)
             fatal = next((r for r in results if r.fatal), None)
             if fatal:
                 if session:

@@ -1,15 +1,14 @@
 import asyncio
 import subprocess
+from contextlib import contextmanager
 
 from rich.console import Console
-from rich.rule import Rule
 
 import agent as gsagent
 import config
 import session.storage as storage
 from commands.helpers import (
     _print_response_separator,
-    _print_session_switch,
     _run_with_interrupt,
 )
 from commands.interactive_state import InteractiveState
@@ -21,6 +20,36 @@ from skills import reset_active_skills
 from tools._paths import set_working_dir as _set_wd
 
 console = Console()
+
+
+@contextmanager
+def _busy(label: str):
+    """Спиннер «идёт работа» в динамической зоне Shell.
+
+    `console.status` — это `rich.live.Live`: он двигал бы курсор в терминале,
+    которым владеет Application, и рвал бы рамку. Динамическая зона
+    перерисовывается самим Application, а Rich-спиннер анимируется от его
+    тикера. Без Shell (headless) остаётся прежний путь.
+    """
+    from ui.shell import get_shell
+    shell = get_shell()
+    if shell is None:
+        with console.status(f"[bold cyan]{label}[/bold cyan]", spinner="dots"):
+            yield
+        return
+    from rich.spinner import Spinner
+    spinner = Spinner("dots", text=label, style="bold cyan")
+
+    def _busy_provider():
+        # Callable-обёртка, чтобы shell считал зону «анимируемой» и крутил
+        # тайкер сам (иначе кадры идут только от ввода с клавиатуры).
+        return spinner
+
+    shell.set_dynamic("busy", _busy_provider)
+    try:
+        yield
+    finally:
+        shell.clear_dynamic("busy")
 
 
 async def handle_slash_result(act: SlashResult, state: InteractiveState) -> bool:
@@ -38,10 +67,6 @@ async def handle_slash_result(act: SlashResult, state: InteractiveState) -> bool
 
     if act.do_commit:
         _handle_commit(act, state)
-        return True
-
-    if act.undo_n is not None:
-        _handle_undo(act, state)
         return True
 
     if act.do_new:
@@ -84,16 +109,13 @@ async def _handle_tg_toggle(enable: bool, state: InteractiveState) -> None:
         token = config.get_telegram_bot_token()
         chat_id = config.get_telegram_chat_id()
         if not token or not chat_id:
-            console.print(f"  [dim]{tr('boot.telegram_enabled_not_configured')}[/dim]")
             return
         try:
-            ok, info = await bridge.start(token, int(chat_id))
+            ok = (await bridge.start(token, int(chat_id)))[0]
         except Exception as e:
             logger.error("tg toggle start failed: %s", e, exc_info=True)
-            console.print(f"  [yellow]⚠ Telegram: {e}[/yellow]")
             return
         if ok:
-            console.print(f"  [green]✓[/green] Telegram: [dim]{info}[/dim]")
             from agent.tg_menu import _build_reply_keyboard, register_tg_menu
             register_tg_menu(state)
             bridge.send(
@@ -102,18 +124,14 @@ async def _handle_tg_toggle(enable: bool, state: InteractiveState) -> None:
                 f"Controls: /menu",
                 reply_markup=_build_reply_keyboard(),
             )
-        else:
-            console.print(f"  [yellow]⚠ Telegram: {info}[/yellow]")
     else:
         if not bridge.is_running:
             return
         try:
             bridge.send("🔴 <b>necli-api</b> bridge disabled")
             await bridge.stop()
-            console.print(f"  [dim]{tr('tg.bridge_disabled')}[/dim]")
         except Exception as e:
             logger.error("tg toggle stop failed: %s", e, exc_info=True)
-            console.print(f"  [yellow]⚠ Telegram: {e}[/yellow]")
 
 
 async def _handle_switch_session(act: SlashResult, state: InteractiveState) -> None:
@@ -122,8 +140,6 @@ async def _handle_switch_session(act: SlashResult, state: InteractiveState) -> N
     new_session = storage.load(sid)
     if not new_session:
         logger.warning("switch_session: not found {}", sid)
-        console.print(f"  [red]{tr('sh.session_not_found', name=sid)}[/red]")
-        console.print(f"  [dim]{tr('sh.see_sessions')}[/dim]")
         return
 
     state.save_session()
@@ -133,7 +149,6 @@ async def _handle_switch_session(act: SlashResult, state: InteractiveState) -> N
     restore_api_session_history(state.session)
     state.pending_context = None
     state.msg_num = state.session.message_count
-    _print_session_switch(state.session)
     try:
         from agent.render_replay import print_session_history
         print_session_history(state.session, max_messages=20)
@@ -165,7 +180,6 @@ def _handle_change_dir(act: SlashResult, state: InteractiveState) -> None:
         + "\n\n".join(_cd_parts)
     )
     state.pending_context = [{"role": "system", "content": _cd_context}]
-    console.print(f"  [dim]{tr('sh.dir_context_loaded')}[/dim]")
 
 
 async def _handle_compress(state: InteractiveState) -> None:
@@ -175,7 +189,6 @@ async def _handle_compress(state: InteractiveState) -> None:
     )
     history_text = state.session.build_compress_text()
     if not history_text.strip():
-        console.print(f"  [dim]{tr('slash.nothing_to_compress')}[/dim]")
         return
 
     from system_prompt import COMPRESS_PROMPT
@@ -187,12 +200,11 @@ async def _handle_compress(state: InteractiveState) -> None:
         get_api_session,
     )
     try:
-        with console.status(f"[bold cyan]{tr('sh.compressing')}[/bold cyan]", spinner="dots"):
+        with _busy(tr('sh.compressing')):
             compressed = await api_compress_history(compress_prompt)
 
         compressed = compressed.strip()
         if not compressed:
-            console.print(f"  [red]✗ {tr('sh.compress_empty')}[/red]")
             return
 
         state.session.compress_reset(compressed, model=state.cur_model)
@@ -208,11 +220,8 @@ async def _handle_compress(state: InteractiveState) -> None:
 
         state.pending_context = None
         state.msg_num = 0
-
-        console.print(f"  [green]✓[/green] {tr('sh.history_compressed')}")
-        console.print()
     except Exception as e:
-        console.print(f"\n  [red]✗ {tr('sh.compress_error', error=e)}[/red]")
+        logger.error("compress failed: {}", e, exc_info=True)
 
 
 _KEEP_RECENT_ROUNDS = 4
@@ -242,7 +251,7 @@ async def _handle_compress_incremental(state: InteractiveState) -> bool:
         api_new_chat,
         restore_api_session_history,
     )
-    with console.status(f"[bold cyan]{tr('sh.compressing')}[/bold cyan]", spinner="dots"):
+    with _busy(tr('sh.compressing')):
         compressed = await api_compress_history(compress_prompt)
     compressed = compressed.strip()
     if not compressed:
@@ -274,7 +283,6 @@ def _handle_commit(act: SlashResult, state: InteractiveState) -> None:
     api_id = config.get_active_api()
     model_id = config.get_active_api_model() or ""
     if not api_id:
-        console.print(f"  [red]{tr('slash.api_not_configured')}[/red]")
         return
 
     workdir = state.workdir
@@ -297,45 +305,10 @@ def _handle_commit(act: SlashResult, state: InteractiveState) -> None:
             return
         except Exception as e:
             logger.error("commit-agent failed: %s", e, exc_info=True)
-            console.print(f"  [red]✗ {tr('sh.commit_failed', error=e)}[/red]")
             return
         logger.info("commit-agent done: %s", text.replace("\n", " ")[:200])
 
     task.add_done_callback(_done)
-    console.print(f"  [cyan]⟳[/cyan] [dim]{tr('sh.commit_started')}[/dim]")
-
-
-def _handle_undo(act: SlashResult, state: InteractiveState) -> None:
-    """Откат файловых изменений из N последних раундов через undo-снапшоты."""
-    from agent.undo_store import undo_rounds
-
-    n = act.undo_n or 1
-    logger.info("undo: requested {} round(s) in {}", n, state.workdir)
-    try:
-        ok, reverted, changed = undo_rounds(state.workdir, n)
-    except Exception as e:
-        logger.exception("undo failed")
-        console.print(f"  [red]✗ {tr('sh.undo_error', error=e)}[/red]")
-        return
-
-    if not ok:
-        console.print(f"  [dim]{tr('sh.no_undo_store')}[/dim]")
-        return
-    if reverted == 0 or not changed:
-        console.print(f"  [dim]{tr('sh.undo_none')}[/dim]")
-        return
-
-    from tools.file_ops.read import clear_read_cache
-    clear_read_cache()
-
-    preview = ", ".join(changed[:5]) + ("…" if len(changed) > 5 else "")
-    if reverted > 0:
-        msg = tr('sh.undo_done', n=reverted, files=len(changed))
-        arrow = "↶"
-    else:
-        msg = tr('sh.redo_done', n=-reverted, files=len(changed))
-        arrow = "↷"
-    console.print(f"  [yellow]{arrow}[/yellow] {msg} [dim]{preview}[/dim]")
 
 
 async def _handle_new_chat(state: InteractiveState) -> None:
@@ -359,7 +332,6 @@ async def _handle_new_chat(state: InteractiveState) -> None:
         set_session_terminal_title(state.session)
     except Exception:
         logger.debug("new chat terminal title update failed", exc_info=True)
-    console.print(f"  [yellow]↻[/yellow] {tr('sh.new_chat')} [dim]{state.session.id}[/dim]")
 
 
 async def _handle_branch(state: InteractiveState) -> None:
@@ -394,12 +366,7 @@ async def _handle_branch(state: InteractiveState) -> None:
 
     from apis.agent_adapter import api_new_chat, restore_api_session_history
     await api_new_chat()
-    loaded = restore_api_session_history(new_session)
-
-    console.print(
-        f"  [yellow]⑃[/yellow] {tr('sh.branched', src=old.id[:16])}"
-        f" [dim]{new_session.id} ({loaded} msgs)[/dim]"
-    )
+    restore_api_session_history(new_session)
 
 
 def _handle_toggle_think(state: InteractiveState) -> None:
@@ -407,10 +374,6 @@ def _handle_toggle_think(state: InteractiveState) -> None:
     state.think_enabled = not state.think_enabled
     state.think_changed = True
     config.set_value("think_enabled", state.think_enabled)
-    if state.think_enabled:
-        console.print(f"  [magenta]💭[/magenta] [bold magenta]{tr('sh.think_on')}[/bold magenta]")
-    else:
-        console.print(f"  [dim]💭 {tr('sh.think_off')}[/dim]")
 
 
 async def _handle_toggle_tool_format(state: InteractiveState) -> None:
@@ -430,10 +393,6 @@ async def _handle_toggle_tool_format(state: InteractiveState) -> None:
     current = bool(config.get("tool_format_force_native", True))
     new_val = not current
     config.set_value("tool_format_force_native", new_val)
-    if new_val:
-        console.print(f"  [cyan]⚙[/cyan] [bold cyan]{tr('sh.tool_format_native')}[/bold cyan]")
-    else:
-        console.print(f"  [dim]⚙ {tr('sh.tool_format_default')}[/dim]")
 
     from apis.agent_adapter import get_api_session, restore_api_session_history
     if get_api_session() is not None:
@@ -443,14 +402,6 @@ async def _handle_toggle_tool_format(state: InteractiveState) -> None:
 
 
 async def _handle_reflect(state: InteractiveState) -> None:
-    console.print()
-    console.print(Rule(characters="═", style="magenta"))
-    console.print(
-        f"  [magenta bold]{tr('sh.reflect')}[/magenta bold]"
-        f" [dim]{tr('sh.reflect_hint')}[/dim]"
-    )
-    console.print()
-
     from system_prompt import REFLECT_PROMPT
 
     state.msg_num += 1
@@ -462,9 +413,8 @@ async def _handle_reflect(state: InteractiveState) -> None:
             is_continuation=(state.msg_num > 1), session=state.session, mode=state.mode_state["mode"],
         )
         state.last_elapsed, _ = await _run_with_interrupt(coro, state.session)
-    except Exception as e:
+    except Exception:
         logger.exception("/reflect failed")
-        console.print(f"  [red]✗ /reflect: {e}[/red]")
 
     _print_response_separator()
 
@@ -473,7 +423,6 @@ async def _handle_switch_api(act: SlashResult, state: InteractiveState) -> None:
     logger.info("switch_api: → {!r} model={!r}", act.switch_api, act.switch_api_model)
     from apis.agent_adapter import create_api_session, restore_api_session_history
     if act.switch_api == "":
-        console.print("  [yellow]Browser mode unavailable in API-only build.[/yellow]")
         return
     create_api_session(act.switch_api, act.switch_api_model or "")
     from apis.registry import get_definition
@@ -484,10 +433,6 @@ async def _handle_switch_api(act: SlashResult, state: InteractiveState) -> None:
     elif act.switch_api_model:
         state.cur_model = act.switch_api_model
 
-    loaded = restore_api_session_history(state.session)
+    restore_api_session_history(state.session)
     state.pending_context = None
     state.msg_num = state.session.message_count
-    if loaded:
-        console.print(
-            f"  [dim]{tr('sh.provider_switched', n=loaded)}[/dim]"
-        )

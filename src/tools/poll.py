@@ -1,5 +1,5 @@
 from tools.models import ToolCall, ToolResult
-from ui.poll import run_poll
+from ui.poll import run_poll_sync
 
 
 def execute_poll(call: ToolCall) -> ToolResult:
@@ -22,7 +22,9 @@ def execute_poll(call: ToolCall) -> ToolResult:
             command="poll",
         )
 
-    results = run_poll(steps[:10])
+    # Реестр инструментов зовёт обработчики синхронно, а виджет опроса живёт в
+    # event loop'е Application — отсюда мост run_poll_sync, а не прямой вызов.
+    results = run_poll_sync(steps[:10])
 
     lines = []
     for r in results:

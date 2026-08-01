@@ -204,28 +204,6 @@ def list_providers() -> list[dict]:
     return result
 
 
-def list_api_models() -> list[dict]:
-    """Плоский список всех моделей всех активных провайдеров."""
-    load_all()
-    result = []
-    for defn in _definitions.values():
-        if not defn.enabled:
-            continue
-        has_key = bool(get_api_key(defn.id))
-        for m in defn.models:
-            result.append({  # noqa: PERF401
-                "provider_id": defn.id,
-                "provider_name": defn.name,
-                "model_id": m.id,
-                "display_name": m.display_name,
-                "context_window": m.context_window,
-                "input_price": m.input_price,
-                "output_price": m.output_price,
-                "has_key": has_key,
-            })
-    return result
-
-
 def resolve_api_model(query: str) -> tuple[str, str] | None:
     """Находит (provider_id, model_id) по имени модели.
 

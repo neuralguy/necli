@@ -231,11 +231,3 @@ def count_tokens(text: str, model: str = "") -> int:
         result = _fallback_estimate(text)
     return _apply_multiplier(model, result)
 
-
-def estimate_tokens(text: str) -> int:
-    """
-    Обратно-совместимая функция (без модели).
-    Использует o200k_base или fallback.
-    """
-    return count_tokens(text, model="")
-

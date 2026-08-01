@@ -24,17 +24,15 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from rich.panel import Panel
 from rich.text import Text
 
-from agent.display import _w
 from config import settings as _settings
 from config.themes import t as _theme
 from config.ui import ui
 
 # Кэш для _think_enabled: значение читается на каждом chunk LiveStream
-# (parse_partial_thought + strip_think_blocks + has_think_blocks + parse_think_blocks),
-# что давало 4+ обращения к settings на тик. Инвалидируется при изменении
+# (parse_partial_thought + strip_think_blocks + parse_think_blocks),
+# что давало 3+ обращения к settings на тик. Инвалидируется при изменении
 # settings (settings.set вызывает invalidate_caches → _SETTINGS_VERSION++).
 _THINK_CACHE: tuple[int, bool] | None = None
 
@@ -82,6 +80,7 @@ def _think_enabled() -> bool:
 @dataclass
 class ThoughtStep:
     text: str
+    raw_text: str = ""
     created_at: float = field(default_factory=time.time)
 
 
@@ -90,10 +89,11 @@ class ThinkLog:
     steps: list[ThoughtStep] = field(default_factory=list)
 
     def add(self, text: str) -> None:
-        text = _plain_thought(text)
+        raw_text = text or ""
+        text = _plain_thought(raw_text)
         if not text:
             return
-        self.steps.append(ThoughtStep(text=text))
+        self.steps.append(ThoughtStep(text=text, raw_text=raw_text))
 
     @property
     def total(self) -> int:
@@ -102,39 +102,6 @@ class ThinkLog:
     @property
     def current(self) -> ThoughtStep | None:
         return self.steps[-1] if self.steps else None
-
-    def render_line(self, partial: str | None = None, streaming: bool = False) -> Text:
-        """Компактная одна строка: '💭 N текст…'.
-
-        partial — частичный текст текущей (ещё не закрытой) мысли. Если задан,
-        отображается вместо последней закрытой и счётчик показывает следующий
-        номер. streaming=True добавляет курсор и dim-стиль.
-        """
-        if partial is not None:
-            snippet = _plain_thought(partial).replace("\n", " ").strip()
-            shown_num = self.total + 1
-        else:
-            cur = self.current
-            if not cur:
-                return Text()
-            snippet = cur.text.replace("\n", " ").strip()
-            shown_num = self.total
-        max_len = int(ui.get("limits.think_snippet_max_len", 140))
-        if len(snippet) > max_len:
-            snippet = snippet[: max_len - 1] + ui.get("symbols.ellipsis", "…")
-        emoji = ui.get("symbols.thinking_emoji", "💭")
-        accent = _theme("purple")
-        muted = _theme("dim_text")
-        t = Text()
-        t.append(f"  {emoji} ", style=f"bold {accent}")
-        t.append(f"{shown_num}", style=f"bold {accent}")
-        t.append("  ", style=muted)
-        style = f"italic dim {muted}" if streaming else f"italic {muted}"
-        t.append(snippet, style=style)
-        if streaming:
-            t.append(ui.get("symbols.cursor", "▌"), style=accent)
-        return t
-
 
 _THINK_BLOCK_RE = re.compile(
     r':{2,3}call[ \t]+think[^\n]*\n'
@@ -282,12 +249,6 @@ def strip_partial_think_block(text: str) -> str:
     return text[: tail_start + om.start()]
 
 
-def has_think_blocks(text: str) -> bool:
-    if not text or not _think_enabled():
-        return False
-    return bool(_THINK_BLOCK_RE.search(text))
-
-
 def render_think_static(log: ThinkLog, streaming: bool = False):
     """Список мыслей.
 
@@ -370,24 +331,3 @@ def render_think_static(log: ThinkLog, streaming: bool = False):
         if hidden > 0:
             out.append(Text("        " + _i18n("compact.think_expand", n=hidden), style="dim italic"))
         return RGroup(*out)
-
-    full = "\n".join(step.text.strip() for step in log.steps)
-    if streaming:
-        # Стрим (non-compact): небольшой стабильный хвост (не высота терминала)
-        # — иначе transient-Live с кадром ≈ высоте окна не стирается и плодит
-        # пустые строки в scrollback.
-        lines = full.split("\n")
-        max_lines = int(ui.get("limits.think_stream_lines", 6))
-        if len(lines) > max_lines:
-            full = "\n".join(lines[-max_lines:])
-    body = Text(full, style=f"italic {muted}")
-
-    title = f"[bold magenta]{emoji} {label}[/bold magenta]"
-    return Panel(
-        body,
-        title=title,
-        title_align="left",
-        border_style="magenta",
-        padding=tuple(ui.get("paddings.think_panel", [0, 2])),
-        width=_w(),
-    )

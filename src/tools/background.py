@@ -86,13 +86,6 @@ def has_pending_finished() -> bool:
         )
 
 
-def publish_background_result(result: ToolResult) -> None:
-    """Публикует готовый background ToolResult из несhell-фоновых задач."""
-    with _lock:
-        _external_results.append(result)
-    _signal_finish()
-
-
 def _run_job(job: _Job, cwd: str, env: dict) -> None:
     run_kwargs = {
         "capture_output": True, "text": True,

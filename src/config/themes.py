@@ -193,7 +193,7 @@ def get_theme() -> dict[str, str]:
 def t(role: str) -> str:
     """Быстрый доступ к цвету по роли. Основной API."""
     theme = get_theme()
-    return theme.get(role, "#ffffff")
+    return theme.get(role, "#E8E8E8")
 
 
 def set_theme(name: str) -> None:

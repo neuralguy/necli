@@ -19,7 +19,6 @@ class AgentContext:
     working_dir: str = field(default_factory=os.getcwd)
     plan_dir: str = ""
     event_handler: Optional["AgentEventHandler"] = None
-    original_message: str = ""
     interrupted: bool = False
     hard_interrupted: bool = False
     mode: str = "agent"
@@ -29,9 +28,6 @@ class AgentContext:
     silent_console: bool = False
     render_store: RenderStore = field(default_factory=RenderStore)
     turn_start_time: float = field(default_factory=time.monotonic)
-    last_status_text: str = ""
-    # Callback пересчёта status-строки из текущего state для Ctrl+O reprint.
-    rebuild_status: object | None = None
     prompt_input: object | None = None
 
     @property

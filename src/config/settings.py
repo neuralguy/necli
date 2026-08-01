@@ -43,6 +43,19 @@ _DEFAULT_CONFIG: dict[str, object] = {
     # (с опциональным user:pass@). Пустая строка = без прокси.
     # Используется, если у конкретного провайдера не задан свой proxy.
     "proxy": "",
+    # Autoprune — режим управления контекстом для провайдеров БЕЗ prompt
+    # caching. Активируется автоматически когда у активного провайдера
+    # выключен prompt cache (cache-off). Включает: прунинг старых read/tool
+    # выводов, дедуп чтений файлов по диапазонам, сворачивание tool-выводов
+    # старше N раундов, авто-сжатие истории каждые N раундов / при 200k токенов.
+    # Каждый пункт можно вкл/выкл отдельно через /autoprune.
+    "autoprune_file_dedup": True,
+    "autoprune_tool_folding": True,
+    "autoprune_round_compression": True,
+    "autoprune_safety_compress": True,
+    "autoprune_compress_every_rounds": 10,
+    "autoprune_compress_at_tokens": 200_000,
+    "autoprune_tool_fold_rounds": 5,
 }
 
 _config_cache: dict | None = None
@@ -126,11 +139,3 @@ def set_value(key: str, value: object) -> None:
     cfg[key] = value
     _save_config(cfg)
     logger.debug("config set: %s", key)
-
-
-def get_all() -> dict:
-    return dict(_load_config())
-
-
-def reset() -> None:
-    _save_config(dict(_DEFAULT_CONFIG))

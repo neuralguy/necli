@@ -1,4 +1,4 @@
-"""read_files — чтение одного или нескольких файлов.
+"""read — чтение одного или нескольких файлов.
 
 Поддерживает текстовые форматы, CSV/TSV, Excel, DOCX, PDF, изображения.
 """
@@ -61,15 +61,6 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
         else:
             merged.append((s, e))
     return merged
-
-
-def _range_covered(ranges: list[tuple[int, int]], start: int, end: int) -> bool:
-    """True, если [start, end] полностью покрыт уже виденными диапазонами."""
-    return any(s <= start and end <= e for s, e in ranges)
-
-
-def _format_seen_ranges(ranges: list[tuple[int, int]]) -> str:
-    return ", ".join(f"{s}-{e}" if s != e else str(s) for s, e in ranges)
 
 
 def _cache_get_valid(path: Path, key: str) -> dict | None:
@@ -217,24 +208,24 @@ def _read_binary_cached(
         _cache_record(path, cache_key, 1, 1, binary=True)
         filtered = _apply_lines_filter(content, lines_range, path_str)
         if filtered != content:
-            return ToolResult(name="read_files", status="ok", output=filtered, exit_code=0, command=command)
-        return ToolResult(name="read_files", status="ok", output=f"{info}\n{content}", exit_code=0, command=command)
+            return ToolResult(name="read", status="ok", output=filtered, exit_code=0, command=command)
+        return ToolResult(name="read", status="ok", output=f"{info}\n{content}", exit_code=0, command=command)
     except Exception as e:
         return ToolResult(
-            name="read_files", status="error",
+            name="read", status="error",
             output=f"Error reading {fmt}: {e}",
             exit_code=1, command=command,
         )
 
 
 def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str = "", command: str = "") -> ToolResult:
-    """Читает один файл. Вызывается из read_files для каждого пути."""
+    """Читает один файл. Вызывается из read для каждого пути."""
     path = _resolve(path_str)
 
     if not path.exists():
         logger.debug("read_single_file: not found {}", path_str)
         return ToolResult(
-            name="read_files",
+            name="read",
             status="error",
             output=f"File not found: {path}",
             exit_code=1,
@@ -246,21 +237,21 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
             entries = sorted(path.iterdir(), key=lambda entry: entry.name.casefold())
         except OSError as e:
             return ToolResult(
-                name="read_files", status="error", output=f"Read error: {e}",
+                name="read", status="error", output=f"Read error: {e}",
                 exit_code=1, command=command,
             )
         listing = "\n".join(
             f"{entry.name}/" if entry.is_dir() else entry.name for entry in entries
         )
         return ToolResult(
-            name="read_files", status="ok",
+            name="read", status="ok",
             output=f"[{path_str} · directory]\n{listing}",
             exit_code=0, command=command,
         )
 
     if not path.is_file():
         return ToolResult(
-            name="read_files",
+            name="read",
             status="error",
             output=f"Not a file: {path}",
             exit_code=1,
@@ -272,7 +263,7 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
     if path.suffix.lower() in _IMAGE_EXTENSIONS:
         _cache_record(path, cache_key, 1, 1, binary=True)
         return ToolResult(
-            name="read_files",
+            name="read",
             status="ok",
             output=(
                 f"[image: {path_str} · {path.suffix.lower()} — will be sent as image]"
@@ -316,7 +307,7 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
     try:
         content = _safe_read(path, encoding)
     except Exception as e:
-        return ToolResult(name="read_files", status="error", output=f"Read error: {e}", exit_code=1, command=command)
+        return ToolResult(name="read", status="error", output=f"Read error: {e}", exit_code=1, command=command)
 
     MAX_LINES = 1000  # noqa: N806
     all_file_lines = content.splitlines()
@@ -325,7 +316,7 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
     requested = _parse_lines_range(lines_range, total_lines) if lines_range else None
     if isinstance(requested, str):
         return ToolResult(
-            name="read_files", status="error",
+            name="read", status="error",
             output=f"[{path_str} · {total_lines} lines]\n{requested}",
             exit_code=1, command=command,
         )
@@ -337,7 +328,7 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
             f"Use {{\"path\": \"{path_str}\", \"lines\": \"{MAX_LINES + 1}-{total_lines}\"}} to read the rest."
         )
         _cache_record(path, cache_key, 1, MAX_LINES)
-        return ToolResult(name="read_files", status="ok", output=f"{info}\n{content_out}{note}", exit_code=0, command=command, full_content=False)
+        return ToolResult(name="read", status="ok", output=f"{info}\n{content_out}{note}", exit_code=0, command=command, full_content=False)
 
     # ── Явный диапазон ── (через единый парсер, тот же splitlines-массив)
     if lines_range and requested is not None:
@@ -348,13 +339,13 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
             f"{i}: {line}" for i, line in enumerate(selected, start=start)
         )
         _cache_record(path, cache_key, start, end)
-        return ToolResult(name="read_files", status="ok", output=f"{header}\n{body}", exit_code=0, command=command, full_content=False)
+        return ToolResult(name="read", status="ok", output=f"{header}\n{body}", exit_code=0, command=command, full_content=False)
 
     # ── Полное чтение без truncate ──
     info = f"[{path_str} · {total_lines} lines]"
     if total_lines > 0:
         _cache_record(path, cache_key, 1, total_lines)
-    return ToolResult(name="read_files", status="ok", output=f"{info}\n{content}", exit_code=0, command=command, full_content=not lines_range)
+    return ToolResult(name="read", status="ok", output=f"{info}\n{content}", exit_code=0, command=command, full_content=not lines_range)
 
 
 def _apply_lines_filter(content: str, lines_range: str, path_str: str) -> str:
@@ -374,94 +365,55 @@ def _apply_lines_filter(content: str, lines_range: str, path_str: str) -> str:
     )
 
 
-def read_files(call: ToolCall) -> ToolResult:
+def read(call: ToolCall) -> ToolResult:
     """
-    Читает один или несколько файлов (до 20).
+    Read a single file with simple params: path, limit (default 1000), offset (default 1).
 
     Принимает:
-      {"paths": ["a.py", "b.py", ...]}             — несколько файлов
-      {"paths": [{"path": "a.py", "lines": "1-10"}, {"path": "b.py"}]}  — с индивидуальными параметрами
+      {"path": "/path/to/file"}
+      {"path": "/path/to/file", "limit": 50}
+      {"path": "/path/to/file", "limit": 50, "offset": 10}
+
+    Для текстовых файлов читает строки [offset, offset+limit) с номерами строк.
+    Для директорий листит содержимое. Для бинарных (изображения, CSV, Excel, PDF, DOCX)
+    показывает содержимое целиком.
     """
     args = call.args
-
-    file_specs: list[dict] = []
-
-    # path может быть list — трактуем как paths для совместимости.
-    paths_arg = args.get("paths")
-    if paths_arg is None and isinstance(args.get("path"), list):
-        paths_arg = args.get("path")
-    _dropped_paths: list[str] = []
-    if paths_arg and isinstance(paths_arg, list):
-        if len(paths_arg) > MAX_READ_FILES:
-            for skipped in paths_arg[MAX_READ_FILES:]:
-                if isinstance(skipped, str):
-                    _dropped_paths.append(skipped)
-                elif isinstance(skipped, dict):
-                    _dropped_paths.append(str(skipped.get("path", "<unknown>")))
-        for item in paths_arg[:MAX_READ_FILES]:
-            if isinstance(item, str):
-                file_specs.append({"path": item})
-            elif isinstance(item, dict):
-                file_specs.append(item)
-    if not file_specs:
+    path = clean_path(args.get("path", ""))
+    if not path:
         return ToolResult(
-            name="read_files",
+            name="read",
             status="error",
-            output="No files to read specified (path or paths)",
+            output="No path specified. Usage: {\"path\": \"/path/to/file\"}",
             exit_code=1,
             command=call.command,
         )
 
-    results: list[ToolResult] = []
-    first_image_path: Path | None = None
+    limit = args.get("limit", 1000)
+    if not isinstance(limit, int):
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 1000
+    if limit < 1:
+        limit = 1000
 
-    for spec in file_specs:
-        p = clean_path(spec.get("path", "") if isinstance(spec, dict) else str(spec))
-        if not p:
-            results.append(ToolResult(
-                name="read_files", status="error",
-                output="Empty path in paths", exit_code=1, command=call.command,
-            ))
-            continue
-        lr = str(spec.get("lines", "")) if isinstance(spec, dict) else ""
-        r = _read_single_file(p, encoding="utf-8", lines_range=lr, command=call.command)
-        results.append(r)
-        if r.image_path and not first_image_path:
-            first_image_path = r.image_path
+    offset = args.get("offset", 1)
+    if not isinstance(offset, int):
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            offset = 1
+    if offset < 1:
+        offset = 1
 
-    if len(results) == 1:
-        return results[0]
+    lines_range = f"{offset}-{offset + limit - 1}"
 
-    parts: list[str] = []
-    has_error = False
-    for r in results:
-        if r.status == "error":
-            has_error = True
-        parts.append(r.output)
+    result = _read_single_file(path, encoding="utf-8", lines_range=lines_range, command=call.command)
+    result.name = "read"
 
-    combined = "\n---\n".join(parts)
-    status = "ok" if not has_error else "error"
+    # If the result has image_path, also set name on the image result
+    if result.image_path and hasattr(result, 'image_path'):
+        pass  # name already set
 
-    # Фикс 1.6: если paths был обрезан до MAX_READ_FILES — сообщаем модели,
-    # что часть файлов НЕ прочитана, чтобы она могла попросить их следующим вызовом.
-    if _dropped_paths:
-        notice = (
-            f"\n\n[NOTE] read_files принимает максимум {MAX_READ_FILES} файлов за вызов. "
-            f"Не прочитано {len(_dropped_paths)}: "
-            + ", ".join(_dropped_paths[:10])
-            + (" …" if len(_dropped_paths) > 10 else "")
-            + ". Повтори вызов с оставшимися путями."
-        )
-        combined = combined + notice
-
-    all_full = all(r.full_content for r in results) and not _dropped_paths
-
-    return ToolResult(
-        name="read_files",
-        status=status,
-        output=combined,
-        exit_code=0 if not has_error else 1,
-        command=call.command,
-        image_path=first_image_path,
-        full_content=all_full,
-    )
+    return result

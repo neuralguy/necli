@@ -1,33 +1,40 @@
 """Отображение субагентов.
 
 SubagentBuffer — буфер событий одного субагента с рендерингом.
-SubagentTracker — лёгкий Rich Live без захвата stdin.
+SubagentTracker — панель прогона в динамической зоне Shell (раньше — rich Live).
+SwarmOverlay — та же панель в нижней зоне, но с навигацией.
 
 Единый framed-рендер (стиль Claude Code) используется всегда. Слева панель
 «Phases» со списком фаз и прогрессом done/total (активная фаза помечена «›»),
-справа панель с агентами активной фазы: строка
+справа панель с агентами показанной фазы: строка
 «<глиф> <label>  <модель>   <Ntok · Mt · Ns>». Если фаз нет, создаётся
 синтетическая фаза «Agents», чтобы внешний вид не переключался.
-Сверху хедер «Subagents … N/M agents · общее_время».
+Сверху хедер «Subagents · имя … N/M agents · общее_время».
+
+Один и тот же render_view обслуживает обе зоны, поэтому таблица, открытая
+Enter'ом со строки под рамкой, выглядит ровно как та, что тикает над рамкой:
+курсор, окно строк и панель деталей — единственное, что добавляется.
 """
 
 import asyncio
+import itertools
 import logging
 import shutil
 import time
 from dataclasses import dataclass
 
-from rich.console import Console, Group
-from rich.live import Live
+from rich.console import Group
 from rich.panel import Panel
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
+from config.i18n import t as tr
 from config.themes import t
 from config.ui import ui
+from ui.shell import Overlay, RowGroup, get_shell, print_static, visible_width
 
 logger = logging.getLogger(__name__)
-console = Console()
 
 
 def _w() -> int:
@@ -96,7 +103,10 @@ class SubagentBuffer:
         self.streaming_text = ""
         self.tool_events: list[ToolEvent] = []
         self.iteration = 0
-        self.status = "starting"
+        # Стартовое состояние — "queued", а не "starting": задача, которая ещё
+        # ждёт своей волны или слота семафора (max_concurrency), НЕ инициализируется.
+        # При 56 задачах и лимите 12 сорок четыре строки показывали "starting" и врали.
+        self.status = "queued"
         self.error: str | None = None
         self.activity_start_time: float | None = None
         self.activity_end_time: float | None = None
@@ -124,6 +134,15 @@ class SubagentBuffer:
             return 0.0
         end = self.activity_end_time or time.monotonic()
         return end - self.activity_start_time
+
+    def on_queued(self):
+        """Задача ждёт слот семафора. Часы НЕ запускаем: работа ещё не началась."""
+        self.status = "queued"
+
+    def on_start(self):
+        """Слот получен — с этой секунды агент действительно инициализируется."""
+        self._mark_activity()
+        self.status = "starting"
 
     def on_chunk(self, text: str):
         self._mark_activity()
@@ -295,6 +314,9 @@ class SubagentBuffer:
         Приоритет: бегущий инструмент → последний завершённый (✓/✗) →
         «streaming…» только когда инструментов ещё не было вовсе. Иначе между
         вызовами status==streaming затирал бы инструменты голым «streaming…»."""
+        if self.status == "queued":
+            # Единственное, что честно можно сказать про ждущего слот: он ждёт.
+            return tr("subagent.queued")
         if self.status in ("done", "error", "starting"):
             return ""
         last = self.tool_events[-1] if self.tool_events else None
@@ -341,6 +363,8 @@ class SubagentBuffer:
                 txt.append(cmd, style="dim")
             else:
                 txt.append(f"iter {self.iteration + 1}", style="dim")
+        elif self.status == "queued":
+            txt.append(tr("subagent.queued"), style="dim")
         else:
             txt.append("starting", style="dim")
         return txt
@@ -427,7 +451,10 @@ class SubagentBuffer:
             if avail_action >= 4:
                 if len(action) > avail_action:
                     action = action[: avail_action - 1] + "\u2026"
-                left.append(f"  {action}", style=t("magenta"))
+                # queued \u2014 \u043d\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435, \u0430 \u0435\u0433\u043e \u043e\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0438\u0435: \u043f\u0438\u0448\u0435\u043c \u0442\u0443\u0441\u043a\u043b\u043e, \u0447\u0442\u043e\u0431\u044b
+                # \u0441\u0442\u0440\u043e\u043a\u0430 \u043d\u0435 \u0447\u0438\u0442\u0430\u043b\u0430\u0441\u044c \u043a\u0430\u043a \u0440\u0430\u0431\u043e\u0442\u0430\u044e\u0449\u0430\u044f.
+                left.append(f"  {action}",
+                            style="dim" if self.status == "queued" else t("magenta"))
 
         # Собираем с выравниванием метрик вправо.
         gap = width - len(left.plain) - len(metrics.plain)
@@ -440,25 +467,6 @@ class SubagentBuffer:
         left.append_text(metrics)
         left.truncate(width, overflow="ellipsis")
         return left
-
-    def render_compact(self, width: int) -> Text:
-        """Однострочный вид (когда субагентов много / для финального лога)."""
-        head = self._head_left()
-        action = self._action_line()
-        head.append(" \u2014 ", style="dim")
-        head.append_text(action)
-        timer = f" \u00b7 {self.elapsed:.0f}s"
-        head.append(timer, style="dim")
-        trail = self._emoji_trail(width - len(head.plain) - 2)
-        if trail.plain:
-            gap = width - len(head.plain) - len(trail.plain) - 2
-            if gap < 1:
-                gap = 1
-            head.append(" " * gap)
-            head.append_text(trail)
-        head.truncate(width, overflow="ellipsis")
-        return head
-
 
 def _wrap_words(text: str, width: int) -> list[str]:
     """Простой перенос по словам. Очень длинные слова режутся жёстко."""
@@ -487,38 +495,226 @@ def _wrap_words(text: str, width: int) -> list[str]:
     return lines or [""]
 
 
-class SubagentTracker:
-    """Лёгкий мультистрочный Live без захвата stdin.
+_RUN_SEQ = itertools.count(1)
 
-    transient=False — после stop() финальные строки остаются в скроллбэке.
+# Живые прогоны. Нужны по двум причинам: "swarm" — канонический ключ
+# динамической зоны (см. SHELL_API.md), и второй одновременный прогон не должен
+# затирать кадр первого; плюс вертикаль экрана делится между всеми кадрами.
+_LIVE_TRACKERS: list["SubagentTracker"] = []
+
+# Прогоны с открытой таблицей: пока она открыта, кадры из динамической зоны
+# убраны — их содержимое показывает оверлей, и дублировать его незачем.
+_OPEN_TABLES: set[int] = set()
+
+#: Строки кадра помимо агентов: хедер, рамка кадра, рамка панели, индикатор.
+_PANEL_CHROME = 6
+#: Строки вне динамической зоны: статус, ввод, нижняя линия, пустая + запас.
+_OUTSIDE_ROWS = 6
+#: Панель деталей выбранного агента: шапка, задача (2), действие + рамка.
+_DETAIL_ROWS = 6
+#: Сколько строк стрима/инструментов показывать в раскрытых деталях.
+_EXPAND_LINES = 8
+
+
+def _term_rows() -> int:
+    return shutil.get_terminal_size((80, 24)).lines
+
+
+def _panel_budget(shown: int, below: int) -> int | None:
+    """Сколько строк агентов помещается в ОДИН кадр динамической зоны.
+
+    None — кадр не влезает вовсе, остаётся только строка под рамкой (для этого
+    она и есть). Иначе prompt_toolkit пишет «Window too small...»: именно это и
+    происходило, когда два одновременных прогона рисовали по 20 строк каждый.
+    """
+    if shown <= 0:
+        return None
+    per = (_term_rows() - _OUTSIDE_ROWS - below) // shown
+    return per - _PANEL_CHROME if per >= _PANEL_CHROME + 2 else None
+
+
+def _short(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _viewport(total: int, budget: int, anchor: int) -> tuple[int, int]:
+    """Окно строк [start, end). budget включает строку-индикатор; 0 = без окна.
+
+    Пока панель жила в Live, она рисовала все строки фазы: Live сам обрезал
+    кадр по высоте консоли. В динамической зоне обрезать некому — 56 строк
+    выдавили бы рамку ввода за край экрана, поэтому окно считаем сами.
+    """
+    if budget <= 0 or total <= budget:
+        return 0, total
+    usable = max(1, budget - 1)
+    start = max(0, min(anchor - usable // 2, total - usable))
+    return start, start + usable
+
+
+def _derive_run_name(buffers: list[SubagentBuffer]) -> str:
+    """Короткое имя прогона, когда вызывающая сторона его не передала.
+
+    Схема инструмента несёт optional name/goal, но панель конструируется
+    отдельно от разбора args, поэтому имя доходит не всегда. Тогда берём
+    единственную фазу (её заполняет именем прогона _fill_default_phase) либо
+    первые слова первой задачи: без идентичности строка под рамкой и шапка
+    выглядели бы одинаково у всех прогонов.
+    """
+    phases: list[str] = []
+    for b in buffers:
+        if b.phase and b.phase not in phases:
+            phases.append(b.phase)
+    if len(phases) == 1:
+        return _short(phases[0], 28)
+    head = ""
+    if buffers:
+        lines = (buffers[0].prompt or "").strip().splitlines()
+        head = lines[0].lstrip("#*-— ").strip() if lines else ""
+    words = head.split()
+    return _short(" ".join(words[:4]), 28) if words else "subagents"
+
+
+class SubagentTracker:
+    """Панель субагентов: живой кадр в динамической зоне Shell + строка под рамкой.
+
+    Раньше кадры двигал rich Live — он лез в терминал курсором и дрался с
+    prompt_toolkit за одни и те же строки. Теперь ровно тот же callable, что
+    уходил в get_renderable, отдаётся Shell'у: его ticker вызывает его сам
+    ~10 fps, поэтому вид панели не изменился ни на символ.
+
+    Интерактив: под панелью ввода живёт строка-сводка прогона (стрелка вниз →
+    Enter), она открывает ту же таблицу оверлеем, где можно ходить по агентам и
+    фазам. Пока таблица открыта, кадр из динамической зоны убран — иначе одно и
+    то же рисовалось бы дважды.
     """
 
-    def __init__(self, buffers: list[SubagentBuffer]):
+    def __init__(self, buffers: list[SubagentBuffer], name: str = ""):
         self._buffers = buffers
-        self._live: Live | None = None
+        self._seq = next(_RUN_SEQ)
+        self._name = (name or "").strip() or _derive_run_name(buffers)
+        # Ключ строки уникален всегда: прогонов может идти несколько сразу.
+        self._row_key = f"swarm-{self._seq}"
+        self._dyn_key = "swarm"
+        self._shell = None
+        self._running = False
+        self._stopped = False
+        self._overlay_task: asyncio.Task | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    # ── жизненный цикл ───────────────────────────────────────────────────────
 
     def start(self):
-        self._live = Live(
-            console=console,
-            refresh_per_second=int(ui.get("live_stream.refresh_per_second", 8)),
-            transient=False,
-            get_renderable=self._render,
-        )
-        self._live.start()
+        self._running = True
+        sh = get_shell()
+        if sh is None:
+            # Headless / не-TTY: Application нет, анимировать нечего —
+            # финальный кадр напечатаем один раз в stop().
+            return
+        self._shell = sh
+        if any(live._dyn_key == self._dyn_key for live in _LIVE_TRACKERS):
+            self._dyn_key = f"swarm#{self._seq}"
+        _LIVE_TRACKERS.append(self)
+        sh.set_dynamic(self._dyn_key, self._render)
+        sh.attach_rows(self._row_key, RowGroup(self.row_label, self.open_table))
 
     def stop(self):
-        if self._live:
-            try:
-                self._live.update(self._render())
-                self._live.stop()
-            except Exception:
-                logger.debug("Live.stop() failed in tracker", exc_info=True)
-            self._live = None
+        # Идемпотентность обязательна: agent/loop.py на пути исключения зовёт
+        # stop() и в except, и в finally.
+        if self._stopped:
+            return
+        self._stopped = True
+        self._running = False
+        sh, self._shell = self._shell, None
+        try:
+            frame = self._render_final()
+        except Exception:
+            logger.debug("subagent tracker: final render failed", exc_info=True)
+            return
+        if sh is None:
+            # Трекер стартовал без Application. print_static сам решит, куда
+            # писать: если Shell успел появиться — через run_in_terminal, иначе
+            # прямо в stdout. Прямой Console.print сломал бы кадр Application.
+            print_static(frame)
+            return
+        if self in _LIVE_TRACKERS:
+            _LIVE_TRACKERS.remove(self)
+        _OPEN_TABLES.discard(self._seq)
+        sh.clear_dynamic(self._dyn_key)
+        sh.detach_rows(self._row_key)
+        # transient=False у Live оставлял финальный кадр в скроллбэке — сохраняем.
+        sh.print_static(frame)
 
     async def wait_all_done(self):
         while not all(b.status in ("done", "error") for b in self._buffers):  # noqa: ASYNC110
             await asyncio.sleep(0.2)
         await asyncio.sleep(0.3)
+
+    # ── строка под рамкой ────────────────────────────────────────────────────
+
+    def row_label(self) -> str:
+        """Компактная сводка прогона для строки под панелью ввода."""
+        emoji = str(ui.get("subagent.header_emoji", "\U0001f916"))
+        total = len(self._buffers)
+        done = sum(1 for b in self._buffers if b.status in ("done", "error"))
+        parts = [f"{emoji} {self._name}",
+                 tr("subagent.agents_n", done=done, total=total)]
+        phases = self._seen_phases()
+        if phases:
+            active = self.active_phase()
+            idx = phases.index(active) + 1 if active in phases else 1
+            parts.append(tr("subagent.phase_n", i=idx, n=len(phases)))
+        failed = sum(1 for b in self._buffers if b.status == "error")
+        if failed:
+            parts.append(f"✗{failed}")
+        queued = sum(1 for b in self._buffers if b.status == "queued")
+        if queued:
+            parts.append(tr("subagent.queued_n", n=queued))
+        line = " · ".join(parts)
+        # Строка печатается без переноса (wrap_lines=False) — режем сами.
+        limit = max(12, _w() - 4)
+        while visible_width(line) > limit and len(line) > 4:
+            line = line[:-2] + "…"
+        return line
+
+    def open_table(self) -> None:
+        """Enter на строке. RowGroup.open синхронный, а run_overlay — корутина,
+        поэтому запускаем задачей: мы внутри обработчика клавиш, loop крутится."""
+        sh = self._shell
+        if sh is None:
+            return
+        if self._overlay_task is not None and not self._overlay_task.done():
+            return
+        try:
+            self._overlay_task = asyncio.create_task(self._show_table(sh))
+        except RuntimeError:
+            logger.debug("subagent tracker: no running loop for overlay", exc_info=True)
+
+    async def _show_table(self, sh) -> None:
+        overlay = SwarmOverlay(self)
+        # Кадры «сворачиваются» на всё время таблицы: её содержимое — то же
+        # самое, а вертикали экрана на два кадра сразу не хватает.
+        _OPEN_TABLES.add(self._seq)
+        sh.clear_dynamic(self._dyn_key)
+        ticker = asyncio.create_task(_overlay_ticker(sh))
+        try:
+            await sh.run_overlay(overlay)
+        except Exception:
+            logger.warning("subagent overlay failed", exc_info=True)
+        finally:
+            ticker.cancel()
+            _OPEN_TABLES.discard(self._seq)
+            if self._running:
+                sh.set_dynamic(self._dyn_key, self._render)
+
+    # ── фазы ─────────────────────────────────────────────────────────────────
 
     def _seen_phases(self) -> list[str]:
         """Фазы в порядке первого появления."""
@@ -527,6 +723,25 @@ class SubagentTracker:
             if b.phase and b.phase not in seen:
                 seen.append(b.phase)
         return seen
+
+    def phase_names(self) -> list[str]:
+        """Фазы для показа. Без фаз — одна синтетическая, чтобы вид не менялся."""
+        return self._seen_phases() or ["Agents"]
+
+    def phase_buffers(self, phase: str) -> list[SubagentBuffer]:
+        if self._seen_phases():
+            return [b for b in self._buffers if b.phase == phase]
+        return list(self._buffers)
+
+    def active_phase(self) -> str:
+        """Первая незавершённая фаза, иначе последняя."""
+        phases = self.phase_names()
+        for ph in phases:
+            if not all(b.status in ("done", "error") for b in self.phase_buffers(ph)):
+                return ph
+        return phases[-1]
+
+    # ── время ────────────────────────────────────────────────────────────────
 
     def _total_elapsed(self) -> float:
         """Стенные часы всего запуска: от первой активности до сейчас/последней."""
@@ -553,57 +768,118 @@ class SubagentTracker:
         h, m = divmod(m, 60)
         return f"{h}h{m:02d}m{s:02d}s"
 
-    def _render(self) -> Group:
-        return self._render_panels()
+    # ── рендер ───────────────────────────────────────────────────────────────
 
-    def _render_panels(self) -> Group:
-        width = _w()
-        n = len(self._buffers)
+    def _render(self) -> Group | None:
+        """Кадр динамической зоны — тот же, что раньше отдавался Live.
+
+        None — зоне нечего показывать (открыта таблица либо кадр не влезает в
+        экран); Shell в этом случае даёт зоне нулевую высоту, а сводка остаётся
+        в строке под рамкой.
+        """
+        if _OPEN_TABLES:
+            return None
+        live = max(1, len(_LIVE_TRACKERS))
+        budget = _panel_budget(live, live)
+        if budget is None:
+            return None
+        return self.render_view(rows_budget=budget)
+
+    def _render_final(self) -> Group:
+        """Кадр в скроллбэк: без окна — статику по высоте обрезать нечем."""
+        return self.render_view()
+
+    def render_view(
+        self,
+        width: int = 0,
+        *,
+        phase: str | None = None,
+        selected: int | None = None,
+        rows_budget: int = 0,
+        detail: bool = False,
+        expanded: bool = False,
+    ) -> Group:
+        """Двухпанельный кадр: слева фазы, справа агенты показанной фазы.
+
+        Один рендер на две зоны, поэтому вид гарантированно совпадает.
+        `selected is None` — режим динамической зоны: курсора нет вообще, кадр
+        побайтово прежний. `phase` даёт смотреть любую фазу, а не только
+        активную; `rows_budget` — высота окна строк (0 = без окна).
+        """
+        width = min(width, _w()) if width > 0 else _w()
+        total = len(self._buffers)
         done = sum(1 for b in self._buffers if b.status in ("done", "error"))
-        real_phases = self._seen_phases()
-        phases = real_phases or ["Agents"]
+        phases = self.phase_names()
+        active = self.active_phase()
+        shown = phase if phase in phases else active
 
-        def phase_buffers(phase: str) -> list[SubagentBuffer]:
-            if real_phases:
-                return [b for b in self._buffers if b.phase == phase]
-            return self._buffers
-
-        # Активная фаза — первая незавершённая, иначе последняя.
-        active = phases[-1]
-        for ph in phases:
-            ph_bufs = phase_buffers(ph)
-            if not all(b.status in ("done", "error") for b in ph_bufs):
-                active = ph
-                break
-
-        # Хедер: N/M agents · общее время (прижато вправо).
+        # Хедер: Subagents · имя … N/M agents · общее время (прижато вправо).
         header = Text("  ")
         header.append("Subagents", style=f"bold {t('magenta')}")
-        right = f"{done}/{n} agents · {self._fmt_clock(self._total_elapsed())}"
+        if self._name:
+            header.append(f" · {self._name}", style=t("accent"))
+        right = f"{done}/{total} agents · {self._fmt_clock(self._total_elapsed())}"
         gap = width - len(header.plain) - len(right)
         if gap < 1:
             gap = 1
         header.append(" " * gap)
         header.append(right, style="dim")
 
-        # Левая панель: список фаз. Каждая фаза — ровно одна строка:
-        # "<маркер><номер> <имя…>   done/total" — имя усекается под ширину.
         frame_width = max(40, width - 4)
         left_w = max(18, int(frame_width * 0.22))
+        left_panel = self._phase_panel(
+            phases, active, shown, left_w, cursor=selected is not None,
+            rows_budget=rows_budget,
+        )
+
+        shown_bufs = self.phase_buffers(shown)
+        right_w = max(28, frame_width - left_w - 3)
+        right_panel = self._agents_panel(
+            shown, shown_bufs, right_w, selected=selected, rows_budget=rows_budget,
+        )
+
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column()
+        grid.add_column()
+        grid.add_row(left_panel, right_panel)
+
+        frame = Panel(
+            grid,
+            border_style=t("accent"),
+            padding=(0, 0),
+            width=width,
+        )
+
+        parts: list = [header, frame]
+        if detail and shown_bufs:
+            sel = min(max(0, selected or 0), len(shown_bufs) - 1)
+            parts.append(self._detail_panel(shown_bufs[sel], width, expanded))
+        return Group(*parts)
+
+    def _phase_panel(self, phases: list[str], active: str, shown: str,
+                     left_w: int, cursor: bool, rows_budget: int = 0) -> Panel:
+        """Левая панель со списком фаз. Каждая фаза — ровно одна строка:
+        «<маркер><номер> <имя…>   done/total» — имя усекается под ширину."""
         inner = left_w - 4  # минус рамка(2) и padding(2)
+        # Фаз обычно единицы, но конвейер на двадцать стадий не должен растянуть
+        # кадр выше экрана — окно то же, что у списка агентов.
+        p_start, p_end = _viewport(
+            len(phases), rows_budget, phases.index(shown) if shown in phases else 0,
+        )
         phase_lines: list[Text] = []
-        for i, ph in enumerate(phases):
-            ph_bufs = phase_buffers(ph)
+        for i in range(p_start, p_end):
+            ph = phases[i]
+            ph_bufs = self.phase_buffers(ph)
             ph_done = sum(1 for b in ph_bufs if b.status in ("done", "error"))
             # Состояние фазы: пройденная (все агенты завершены и фаза не активна) →
             # зелёная галочка; активная → «›»; будущая → пробел.
             is_done = bool(ph_bufs) and ph_done == len(ph_bufs) and ph != active
             if is_done:
-                marker = "\u2713 "
+                marker = "✓ "
                 mstyle = f"bold {t('success')}"
                 name_style = t("success")
             elif ph == active:
-                marker = "\u203a "
+                marker = "› "
                 mstyle = f"bold {t('accent')}"
                 name_style = f"bold {t('accent')}"
             else:
@@ -622,8 +898,18 @@ class SubagentTracker:
             row.append(name, style=name_style)
             row.append(" " * gap)
             row.append(count, style="dim")
+            # ✓/› остаются признаком СОСТОЯНИЯ фазы, фон — признаком курсора:
+            # смотреть можно любую фазу, не только активную.
+            if cursor and ph == shown:
+                row.style = Style(bgcolor=t("bg_select"))
             phase_lines.append(row)
-        left_panel = Panel(
+        if p_end - p_start < len(phases):
+            phase_lines.append(Text(
+                tr("subagent.page_range", start=p_start + 1, end=p_end,
+                   total=len(phases)),
+                style="dim",
+            ))
+        return Panel(
             Group(*phase_lines),
             title="Phases",
             title_align="left",
@@ -632,32 +918,202 @@ class SubagentTracker:
             width=left_w,
         )
 
-        # Правая панель: агенты активной фазы.
-        active_bufs = phase_buffers(active)
-        active_done = sum(1 for b in active_bufs if b.status in ("done", "error"))
-        right_w = max(28, frame_width - left_w - 3)
-        agent_lines = [b.render_agent_row(max(20, right_w - 4)) for b in active_bufs]
+    def _agents_panel(self, shown: str, shown_bufs: list[SubagentBuffer], right_w: int,
+                      *, selected: int | None, rows_budget: int) -> Panel:
+        """Правая панель: агенты показанной фазы, окном по доступной высоте."""
+        shown_done = sum(1 for b in shown_bufs if b.status in ("done", "error"))
+        row_w = max(20, right_w - 4)
+        anchor = selected if selected is not None else _follow_anchor(shown_bufs)
+        start, end = _viewport(len(shown_bufs), rows_budget, anchor)
+        agent_lines: list[Text] = []
+        for i in range(start, end):
+            row = shown_bufs[i].render_agent_row(row_w)
+            if selected is not None and i == selected:
+                # Курсор — фоном на всю строку: так подсвечивает выбранное всё
+                # остальное меню проекта, и колонки не съезжают.
+                row.pad_right(max(0, row_w - len(row.plain)))
+                row.style = Style(bgcolor=t("bg_select"))
+            agent_lines.append(row)
         if not agent_lines:
             agent_lines = [Text("(no agents)", style="dim")]
-        right_panel = Panel(
+        elif end - start < len(shown_bufs):
+            agent_lines.append(Text(
+                tr("subagent.page_range", start=start + 1, end=end,
+                   total=len(shown_bufs)),
+                style="dim",
+            ))
+        return Panel(
             Group(*agent_lines),
-            title=f"{active} {active_done}/{len(active_bufs)}",
+            title=f"{shown} {shown_done}/{len(shown_bufs)}",
             title_align="left",
             border_style=t("accent"),
             padding=(0, 1),
             width=right_w,
         )
 
-        grid = Table.grid(padding=(0, 1))
-        grid.add_column()
-        grid.add_column()
-        grid.add_row(left_panel, right_panel)
+    def _detail_panel(self, b: SubagentBuffer, width: int, expanded: bool) -> Panel:
+        """Детали выбранного агента — в существующем стиле панели субагента."""
+        pad = tuple(ui.get("paddings.subagent_panel", [0, 1]))
+        h_pad = pad[1] if len(pad) > 1 else 1
+        # −2 клетки запаса: render_block выравнивает шапку по len(), а 🤖/⏱
+        # занимают по две клетки — без запаса строка переносится и панель растёт.
+        inner = max(20, width - 4 - 2 * h_pad)
+        lines: list[Text] = list(b.render_block(inner))
+        if expanded:
+            lines.extend(_detail_tail(b, inner))
+        border = (
+            "red" if b.status == "error"
+            else t("success") if b.status == "done"
+            else t("magenta")
+        )
+        return Panel(Group(*lines), border_style=border, padding=pad, width=width)
 
-        frame = Panel(
-            grid,
-            border_style=t("accent"),
-            padding=(0, 0),
-            width=width,
+
+def _follow_anchor(bufs: list[SubagentBuffer]) -> int:
+    """Куда смотреть окну без курсора: на первого незавершённого — окно само
+    уползает за прогрессом, как это делал хвост Live."""
+    for i, b in enumerate(bufs):
+        if b.status not in ("done", "error"):
+            return i
+    return max(0, len(bufs) - 1)
+
+
+def _detail_tail(b: SubagentBuffer, inner: int, limit: int = _EXPAND_LINES) -> list[Text]:
+    """Хвост работы агента: ошибка, последние строки стрима либо инструменты."""
+    if b.error:
+        return [
+            Text(f"  {ln}", style="red")
+            for ln in _wrap_words(b.error.strip(), max(8, inner - 2))[:limit]
+        ]
+    body = [ln for ln in (b.streaming_text or "").splitlines() if ln.strip()]
+    if body:
+        return [Text(f"  {ln[: inner - 2]}", style="dim") for ln in body[-limit:]]
+    out: list[Text] = []
+    for ev in b.tool_events[-limit:]:
+        if ev.status == "done":
+            mark, style = "✓", t("success")
+        elif ev.status == "error":
+            mark, style = "✗", "red"
+        else:
+            mark, style = "◯", "dim"
+        cmd = f" {ev.command.strip()}" if ev.command else ""
+        out.append(Text(f"  {mark}{ev.emoji} {ev.tool_name}{cmd}"[:inner], style=style))
+    return out or [Text(f"  {tr('subagent.no_output')}", style="dim")]
+
+
+async def _overlay_ticker(sh) -> None:
+    """Пока таблица открыта, кадры двигаем сами: ticker Shell'а просыпается
+    только когда динамическая зона непуста, а мы её на это время свернули."""
+    while True:
+        await asyncio.sleep(0.1)
+        sh.invalidate()
+
+
+class SwarmOverlay(Overlay):
+    """Таблица субагентов в нижней зоне: навигация по агентам и фазам.
+
+    Вид — тот же двухпанельный кадр, что и в динамической зоне (один и тот же
+    render_view). Добавлены только курсор, листание и панель деталей выбранного
+    агента: заказчик просил интерактив, а не новый дизайн.
+    """
+
+    def __init__(self, tracker: SubagentTracker) -> None:
+        super().__init__()
+        self._tracker = tracker
+        phases = tracker.phase_names()
+        active = tracker.active_phase()
+        self._phase_idx = phases.index(active) if active in phases else 0
+        self._sel = 0
+        self._expanded = False
+        self._page = 1  # размер окна с последнего кадра — для pageup/pagedown
+
+    # ── что показываем ──
+    def _phase(self) -> str:
+        phases = self._tracker.phase_names()
+        self._phase_idx = max(0, min(self._phase_idx, len(phases) - 1))
+        return phases[self._phase_idx]
+
+    def _visible(self) -> list[SubagentBuffer]:
+        return self._tracker.phase_buffers(self._phase())
+
+    def _layout(self) -> tuple[int, bool]:
+        """(окно строк, показывать ли детали) под фактическую высоту экрана.
+
+        Снаружи: статус, нижняя линия, подсказка, пустая + запас; внутри: хедер,
+        рамки, индикатор и панель деталей. На низком терминале деталями
+        приходится жертвовать — иначе prompt_toolkit скажет «Window too small».
+        """
+        base = _OUTSIDE_ROWS + 1 + _PANEL_CHROME
+        budget = _term_rows() - base - _DETAIL_ROWS - self._expand_rows()
+        if budget >= 3:
+            return budget, True
+        return max(2, _term_rows() - base), False
+
+    def _expand_rows(self) -> int:
+        """Сколько строк реально займёт раскрытый хвост. Считаем по факту, а не
+        по максимуму: иначе одна строка ошибки съедала бы место под 8 агентов."""
+        if not self._expanded:
+            return 0
+        bufs = self._visible()
+        if not bufs:
+            return 0
+        b = bufs[min(self._sel, len(bufs) - 1)]
+        return len(_detail_tail(b, max(20, _w() - 6)))
+
+    def render(self, width: int):
+        bufs = self._visible()
+        if bufs:
+            self._sel = max(0, min(self._sel, len(bufs) - 1))
+        budget, detail = self._layout()
+        self._page = max(1, budget - 1)
+        return self._tracker.render_view(
+            width,
+            phase=self._phase(),
+            selected=self._sel,
+            rows_budget=budget,
+            detail=detail,
+            expanded=self._expanded,
         )
 
-        return Group(header, frame)
+    def hint(self) -> str:
+        tail = "" if self._tracker.running else f" · {tr('subagent.finished')}"
+        # Подсказка печатается без переноса, поэтому на узком терминале
+        # оставляем только главное — иначе она обрезалась бы посреди слова.
+        if _w() < 84:
+            return tr("subagent.hint_narrow") + tail
+        return tr("subagent.hint") + tail
+
+    # ── клавиши ──
+    def handle_key(self, key: str, event) -> bool:
+        total = len(self._visible())
+        if key in ("escape", "c-c", "q", "Q"):
+            self.finish(None)
+        elif key in ("up", "k", "c-p"):
+            if total:
+                self._sel = (self._sel - 1) % total
+        elif key in ("down", "j", "c-n"):
+            if total:
+                self._sel = (self._sel + 1) % total
+        elif key in ("left", "h"):
+            self._switch_phase(-1)
+        elif key in ("right", "l", "tab"):
+            self._switch_phase(1)
+        elif key == "pageup":
+            self._sel = max(0, self._sel - self._page)
+        elif key == "pagedown":
+            self._sel = min(max(0, total - 1), self._sel + self._page)
+        elif key == "home":
+            self._sel = 0
+        elif key == "end":
+            self._sel = max(0, total - 1)
+        elif key == "enter":
+            self._expanded = not self._expanded
+        return True
+
+    def _switch_phase(self, delta: int) -> None:
+        """Переход между фазами. Смотреть можно любую — активная тут ни при чём."""
+        phases = self._tracker.phase_names()
+        if not phases:
+            return
+        self._phase_idx = (self._phase_idx + delta) % len(phases)
+        self._sel = 0

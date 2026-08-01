@@ -4,12 +4,13 @@ import logging
 import time
 from itertools import cycle
 
-from rich.console import Console
-from rich.live import Live
+from rich.console import Console, Group
+from rich.text import Text
 
 import tools
 from agent.block_stream import BlockStreamer
 from agent.context import AgentContext
+from agent.display import print_static
 from agent.sanitizer import sanitize_response
 from agent.stream_parser import (
     _clean_display_text,
@@ -37,9 +38,18 @@ from planner import (
 from session.tokens import count_tokens
 from tools.parser import MAX_TOOL_CALLS_PER_MESSAGE
 from ui.formatting import format_cost, format_tokens
+from ui.shell import ensure_static_blank, get_shell
 
 logger = logging.getLogger(__name__)
+
+#: Консоль нужна BlockStreamer'у для capture/ширины; печатает в scrollback
+#: только print_static (единый канал вывода, см. agent/display.py).
 console = Console()
+
+#: Ключ динамической зоны Shell под кадр стрима: спиннер thinking, индикатор
+#: writing, превью частичного вызова, панели reasoning/think, индикатор
+#: прерывания. Раньше этот кадр держал rich Live с transient=True.
+_STREAM_ZONE = "stream"
 
 
 def print_worked_footer(ctx, fallback_elapsed: float = 0.0) -> None:
@@ -56,7 +66,9 @@ def print_worked_footer(ctx, fallback_elapsed: float = 0.0) -> None:
         label = _i18n("stream.worked_sec", n=max(1, round(secs)))
     else:
         label = _i18n("stream.worked_min", n=round(secs / 60))
-    console.print(f"[grey50]⏱ {label}[/grey50]")
+    ensure_static_blank()
+    print_static(f"[grey50]⏱ {label}[/grey50]")
+    ensure_static_blank()
     try:
         if getattr(ctx, "render_store", None) is not None:
             ctx.render_store.add("worked", {"label": label})
@@ -74,7 +86,7 @@ def _tool_subtitle(model: str, write_time: float, raw_input: str, output_text: s
     """Subtitle для tool-блока: суммарные tokens (вход + выход) и cost (input+output).
 
     raw_input — тело fenced-блока (аргументы вызова), считаем как input-токены.
-    output_text — содержимое результата инструмента (read_files/shell/ls/...),
+    output_text — содержимое результата инструмента (read/shell/ls/...),
                   считаем как output-токены. Может быть пустым в момент превью
                   до выполнения — тогда отображается только input.
     """
@@ -111,6 +123,7 @@ class LiveStream:
         self.buffer = ""
         self.reasoning_buffer = ""
         self._reasoning_printed = False
+        self._reasoning_store_item = None
         self.start_time = time.monotonic()
         self._first_chunk_time: float | None = None
         self._plan_processed_count = 0
@@ -120,7 +133,9 @@ class LiveStream:
         self.inline_results: list[tools.ToolResult] = []
         self.inline_call_keys: list[tuple[str, str]] = []
         self._executed_tool_count = 0
-        self._live: Live | None = None
+        #: Занята ли динамическая зона _STREAM_ZONE нашим кадром. Раньше здесь
+        #: лежал объект Live; наличие кадра проверяется в тех же местах.
+        self._dyn = False
         self._current_text_start = 0
         self._printed_text_end = 0
         self._tcycle = cycle(THINKING_FRAMES)
@@ -133,8 +148,8 @@ class LiveStream:
         self._early_abort: bool = False
         self._finalizing: bool = False
         # Compact-режим: поблочный markdown-стример (Claude Code-style).
-        # Активен только когда is_compact()==True. Управляет своим Live
-        # для последнего блока, остальные блоки уходят в scrollback.
+        # Активен только когда is_compact()==True. Держит последний блок в
+        # своей динамической зоне, остальные блоки уходят в scrollback.
         self._block_streamer = BlockStreamer(
             console, refresh_per_second=int(ui.get("live_stream.refresh_per_second", 8)),
         )
@@ -151,7 +166,7 @@ class LiveStream:
         """
         if getattr(self.ctx, "silent_console", False):
             return
-        console.print()
+        print_static(Text(""))
 
     def _ts(self):
         self._tick_spinners()
@@ -219,9 +234,9 @@ class LiveStream:
     def _render_live(self):
         ct_full = self._get_current_text()
         # Текст ответа уже выведен поблочно в scrollback через BlockStreamer —
-        # общий Live его НЕ должен дублировать.
+        # кадр стрима его НЕ должен дублировать.
         ct = ""
-        hp, pb, pt, pa = self._get_partial_tool_info()
+        hp, _pb, pt, _pa = self._get_partial_tool_info()
         live_reasoning = "" if self._reasoning_printed else self.reasoning_buffer
         reasoning_done = bool(ct_full and ct_full.strip())
         live_think = None if getattr(self, "_think_static_printed", False) else self.think_log
@@ -230,41 +245,51 @@ class LiveStream:
             time.monotonic() - self._last_block_end_time if hp else 0.0
         )
         group = render_live_group(
-            ct, hp, pb, pt, self._ts(), self._ws(), self.model,
+            ct, hp, pt, self._ts(), self._ws(), self.model,
             message_num=self.message_num,
             reasoning_text=live_reasoning,
             reasoning_done=reasoning_done or self._finalizing,
             think_log=live_think,
             partial_thought=partial_thought,
-            partial_attrs=pa,
             response_streaming=not self._finalizing,
             partial_elapsed=partial_elapsed,
         )
         if self.ctx.interrupted:
-            from rich.console import Group
             group = Group(group, make_interrupt_indicator(self._interrupt_dots()))
-        # Ведущая пустая строка: общий Live (initial thinking / partial-tool
+        # Ведущая пустая строка: кадр стрима (initial thinking / partial-tool
         # превью) всегда отделяется одной пустой от того, что выше — и от
         # введённого prompt'а (первый кадр), и от напечатанных блоков.
-        from rich.console import Group
-        from rich.text import Text
         return Group(Text(""), group)
 
     def _start_live(self):
+        """Показать кадр стрима в динамической зоне Shell.
+
+        Раньше это был rich Live с get_renderable=self._render_live. Shell
+        принимает тот же самый callable и вызывает его на каждом кадре своего
+        ticker'а (~10 fps), поэтому спиннер тикает сам и вид не изменился ни на
+        символ. Разница только в том, кто владеет строками экрана: теперь
+        prompt_toolkit, и он же их стирает — дублей в scrollback быть не может.
+        """
         if getattr(self.ctx, "silent_console", False):
             return
-        # Общий Live включается в двух случаях:
+        sh = get_shell()
+        if sh is None:
+            # Headless / не-TTY / -p: Application нет, анимировать негде. Кадр
+            # был transient и в scrollback ничего не оставлял, поэтому пропуск
+            # анимации ничего не теряет — финальные панели печатает stop().
+            return
+        # Кадр стрима включается в двух случаях:
         #   1) initial thinking — модель ещё ничего не написала и нет
         #      ни одного активного/закрытого блока текста;
         #   2) partial-tool превью — модель пишет fence :::call ...
-        # Если BlockStreamer уже держит свой Live — общий не запускаем
-        # (нельзя два Live одновременно).
+        # Если BlockStreamer уже держит кадр активного блока — свой не
+        # поднимаем: иначе над ответом крутился бы ещё и thinking-спиннер.
         if self._block_streamer.has_active:
             return
         hp, _, _, _ = self._get_partial_tool_info()
         has_any_text = bool(self.buffer.strip())
         # Незакрытый :::call think (мысль ещё пишется) — особый partial:
-        # он исключён из _scan_partial_tool (hp=False), но Live для него нужен,
+        # он исключён из _scan_partial_tool (hp=False), но кадр для него нужен,
         # чтобы стримить мысль через render_live_group(partial_thought=...).
         has_partial_thought = (
             not self._native_tools
@@ -272,29 +297,38 @@ class LiveStream:
             and bool(parse_partial_thought(self.buffer))
         )
         if not hp and has_any_text and not has_partial_thought:
-            # Текст уже идёт/закончился, partial-tool нет — общий Live
+            # Текст уже идёт/закончился, partial-tool нет — кадр стрима
             # не нужен (иначе крутил бы thinking между блоками).
             return
-        self._live = Live(
-            console=console, refresh_per_second=int(ui.get("live_stream.refresh_per_second", 8)),
-            transient=True, get_renderable=self._render_live,
-        )
-        self._live.start()
+        sh.set_dynamic(_STREAM_ZONE, self._render_live)
+        self._dyn = True
 
     def _stop_live(self):
-        if self._live:
-            try:
-                self._live.stop()
-            except Exception:
-                logger.debug("Live.stop() failed", exc_info=True)
-            self._live = None
+        """Убрать кадр из динамической зоны — прямая замена Live.stop().
+
+        transient=True означало: кадр исчезает и в scrollback не остаётся.
+        clear_dynamic делает ровно это; готовое содержимое печатают вызывающие
+        через print_static, как и раньше печатал console.print после stop().
+        """
+        if not self._dyn:
+            return
+        self._dyn = False
+        sh = get_shell()
+        if sh is not None:
+            sh.clear_dynamic(_STREAM_ZONE)
 
     def _update_live(self):
-        if self._live:
-            try:
-                self._live.refresh()
-            except Exception:
-                logger.debug("Live.refresh() failed", exc_info=True)
+        """Немедленно перерисовать кадр.
+
+        Ручного refresh больше нет и не нужно: в зоне лежит callable, Shell
+        пересчитывает его сам. Просим лишь не ждать очередного такта ticker'а,
+        чтобы новый чанк появлялся без задержки, как при Live.refresh().
+        """
+        if not self._dyn:
+            return
+        sh = get_shell()
+        if sh is not None:
+            sh.invalidate()
 
     def _flush_reasoning_static(self):
         if self._reasoning_printed:
@@ -303,27 +337,48 @@ class LiveStream:
         if not rb:
             self._reasoning_printed = True
             return
+        # Normal streaming stores every cumulative delta, but the final flush
+        # is also a safety net for providers that only expose reasoning at EOF.
+        self._store_reasoning_raw()
         if getattr(self.ctx, "silent_console", False):
             self._reasoning_printed = True
             return
         from agent.stream_render import render_reasoning_panel
         try:
-            self._lead_blank()
-            console.print(render_reasoning_panel(rb, streaming=False))
+            # Пустая строка и панель — одним print_static: раздельно они дали бы
+            # два run_in_terminal, между которыми рамка успевает перерисоваться.
+            print_static(Group(Text(""), render_reasoning_panel(rb, streaming=False)))
         except Exception:
             logger.debug("render_reasoning_panel failed", exc_info=True)
         self._reasoning_printed = True
 
+    def _store_reasoning_raw(self) -> None:
+        """Keep native reasoning_content available for Ctrl+O replay."""
+        raw = self.reasoning_buffer or ""
+        if not raw.strip():
+            return
+        try:
+            store = getattr(self.ctx, "render_store", None)
+            if store is None:
+                return
+            item = self._reasoning_store_item
+            if item is None:
+                self._reasoning_store_item = store.add_reasoning(raw)
+            else:
+                store.update_reasoning(item, raw)
+        except Exception:
+            logger.debug("store reasoning failed", exc_info=True)
+
     def _advance_past_think_blocks(self):
-        """Move scan cursor past ```call think``` blocks WITHOUT breaking Live.
+        """Move scan cursor past ```call think``` blocks WITHOUT dropping the frame.
 
         Раньше тут печатался текст до think-блока отдельной Response-панелью —
         это приводило к «морганию»: текст «застывал» в панели, а static
         thinking-panel прятала live-строку с мыслями. Теперь просто двигаем
         курсоры за конец
-        последнего закрытого блока БЕЗ печати и БЕЗ остановки Live. Сам
+        последнего закрытого блока БЕЗ печати и БЕЗ гашения кадра. Сам
         think-блок выкидывается из отображения через strip_think_blocks в
-        _clean_display_text, поэтому Live плавно перерисует единую Response.
+        _clean_display_text, поэтому кадр плавно перерисует единую Response.
         """
         scan_from = self._current_text_start
         last_end = scan_from
@@ -338,6 +393,23 @@ class LiveStream:
         if self._printed_text_end < last_end:
             self._printed_text_end = last_end
 
+    def _store_think_raw_steps(self) -> None:
+        """Сохраняет исходные тексты всех мыслей для Ctrl+O replay."""
+        try:
+            from agent.loop import get_current_ctx
+            ctx = get_current_ctx()
+            store = getattr(ctx, "render_store", None) if ctx else None
+            if store is None:
+                return
+            raw_steps = [s.raw_text or s.text for s in self.think_log.steps]
+            item = getattr(self, "_think_store_item", None)
+            if item is None:
+                self._think_store_item = store.add_think(raw_steps)
+            else:
+                store.update_think(item, raw_steps)
+        except Exception:
+            logger.debug("store think failed", exc_info=True)
+
     def _print_think_static_once(self):
         """Печатает статичную панель think один раз, когда нужно перейти к тексту/инструменту."""
         if getattr(self, "_think_static_printed", False):
@@ -349,17 +421,9 @@ class LiveStream:
             return
         from agent.think import render_think_static
         self._flush_reasoning_static()
-        self._lead_blank()
-        console.print(render_think_static(self.think_log))
+        print_static(Group(Text(""), render_think_static(self.think_log)))
         self._think_static_printed = True
-        try:
-            from agent.loop import get_current_ctx
-            ctx = get_current_ctx()
-            store = getattr(ctx, "render_store", None) if ctx else None
-            if store is not None:
-                store.add_think([s.text for s in self.think_log.steps])
-        except Exception:
-            logger.debug("store think failed", exc_info=True)
+        self._store_think_raw_steps()
 
     def _advance_past_plan_blocks(self):
         """Move cursor past plan blocks. Plan does NOT render to UI.
@@ -404,6 +468,7 @@ class LiveStream:
         self.buffer = ""
         self.reasoning_buffer = ""
         self._reasoning_printed = False
+        self._reasoning_store_item = None
         self.inline_results = []
         self.inline_call_keys = []
         self.ctx.step_tracker.reset()
@@ -412,6 +477,7 @@ class LiveStream:
         self._think_processed_count = 0
         self.think_log = ThinkLog()
         self._think_static_printed = False
+        self._think_store_item = None
         self._executed_tool_count = 0
         self._current_text_start = 0
         self._printed_text_end = 0
@@ -432,6 +498,7 @@ class LiveStream:
         if text == self.reasoning_buffer:
             return
         self.reasoning_buffer = text
+        self._store_reasoning_raw()
         eh = getattr(self.ctx, "event_handler", None)
         if eh is not None and hasattr(eh, "emit_stream_chunk"):
             try:
@@ -462,7 +529,7 @@ class LiveStream:
                 current["args"] += json.dumps(args, ensure_ascii=False)
         if self._native_tool_chunks:
             self._block_streamer.finalize()
-            if self._live is None:
+            if not self._dyn:
                 self._start_live()
             else:
                 self._update_live()
@@ -484,10 +551,10 @@ class LiveStream:
         tb = parse_think_blocks(self.buffer)
         if len(tb) > self._think_processed_count:
             # Текст ДО think-блока шёл через BlockStreamer (его активный
-            # блок держится в transient-Live). Если не финализировать его
-            # сейчас, think-static напечатается console.print'ом НАД живым
-            # кадром → think всплывёт ВЫШЕ уже написанного ответа. Догоняем
-            # и финализируем текст до think, потом печатаем think под ним.
+            # блок держится в динамической зоне). Если не финализировать его
+            # сейчас, think-static уйдёт в scrollback НАД живым кадром →
+            # think всплывёт ВЫШЕ уже написанного ответа. Догоняем и
+            # финализируем текст до think, потом печатаем think под ним.
             if self._block_streamer.has_active:
                 self._compact_feed_blocks()
                 self._block_streamer.finalize()
@@ -496,12 +563,13 @@ class LiveStream:
             new_thoughts = tb[self._think_processed_count:]
             for thought in new_thoughts:
                 self.think_log.add(thought)
+            self._store_think_raw_steps()
             self._think_processed_count = len(tb)
             self._advance_past_think_blocks()
             # Печатаем static-панель think СРАЗУ при закрытии блока (до текста
-            # ответа). Иначе Live с мыслью стирается, печатается текст, а
+            # ответа). Иначе кадр с мыслью стирается, печатается текст, а
             # static think всплывает в конце снизу — выглядит как мигание и
-            # неправильный порядок. Живой Live (partial-мысль) уже стёрт
+            # неправильный порядок. Живой кадр (partial-мысль) уже снят
             # _advance_past_think_blocks; здесь фиксируем мысль в scrollback.
             is_cli_eh_now = (
                 eh is None
@@ -615,7 +683,7 @@ class LiveStream:
                 # был обнаружен ранее), text_before — это просто открывающая
                 # строка `:::call <tool> ...` без полезного контента.
                 # _clean_display_text её отфильтрует, но
-                # явная проверка дешевле и снимает лишний console.print().
+                # явная проверка дешевле и снимает лишний print_static().
                 cleaned_before = self._clean(text_before)
                 if cleaned_before:
                     self._compact_feed_blocks()
@@ -636,11 +704,11 @@ class LiveStream:
             # Новая «страница» текста после tool-блока — сбрасываем.
             self._block_streamer.reset()
             self._last_block_end_time = time.monotonic()
-            self._live = None
+            self._dyn = False
             self._start_live()
 
         # Живой стрим частичной мысли (незакрытый :::call think). think
-        # исключён из _scan_partial_tool, поэтому Live для него надо поднять
+        # исключён из _scan_partial_tool, поэтому кадр для него надо поднять
         # отдельно: пока мысль пишется, рисуем её через _render_live
         # (render_live_group рисует partial_thought). Без этого think
         # появляется только целиком в конце через static-панель.
@@ -648,12 +716,11 @@ class LiveStream:
             partial_thought = parse_partial_thought(self.buffer)
             if partial_thought:
                 # Мысль начала писаться ПОСЛЕ текста ответа: BlockStreamer
-                # держит активный блок этого текста и блокирует общий Live
-                # (нельзя два Live разом) → think не стримился. Финализируем
-                # текст до think в scrollback, сдвигаем курсоры на начало
-                # think-блока (чтобы _compact_feed_blocks не перечитал тот же
-                # текст в свежий BlockStreamer = дубль), затем поднимаем общий
-                # Live для стриминга мысли.
+                # держит кадр активного блока и блокирует кадр стрима → think
+                # не стримился. Финализируем текст до think в scrollback,
+                # сдвигаем курсоры на начало think-блока (чтобы
+                # _compact_feed_blocks не перечитал тот же текст в свежий
+                # BlockStreamer = дубль), затем поднимаем кадр стрима.
                 if self._block_streamer.has_active:
                     think_start = self._scan_tool_start(
                         self.buffer, self._current_text_start,
@@ -668,7 +735,7 @@ class LiveStream:
                         self._printed_text_end = max(
                             self._printed_text_end, think_start,
                         )
-                if self._live is None:
+                if not self._dyn:
                     self._start_live()
                 else:
                     self._update_live()
@@ -714,11 +781,10 @@ class LiveStream:
         cleaned = self._clean(raw)
         if not cleaned:
             return
-        # Появился текст — общий Live (initial thinking) больше не нужен.
-        # Останавливаем его ДО запуска BlockStreamer'а, иначе будет
-        # «two live displays» (общий и блочный одновременно).
-        if self._live is not None:
-            self._stop_live()
+        # Появился текст — кадр стрима (initial thinking) больше не нужен.
+        # Гасим его ДО запуска BlockStreamer'а, иначе в динамической зоне
+        # оказались бы сразу два кадра: спиннер и активный блок.
+        self._stop_live()
         # Reasoning (реальные мысли модели) ДОЛЖЕН быть напечатан ДО первого
         # блока текста ответа. Иначе он флашится только в stop() — уже ПОСЛЕ
         # всего ответа, и в scrollback мысли оказываются ниже текста.
@@ -747,10 +813,6 @@ class LiveStream:
 
         self._mirror_to_telegram(cancelled=cancelled)
         self.buffer = sanitize_response(self.buffer)
-
-    @property
-    def elapsed(self) -> float:
-        return time.monotonic() - self.start_time
 
     def _start_tg_thinking(self) -> None:
         """Запускает typing-индикатор в TG (без текстового thinking-плейсхолдера).

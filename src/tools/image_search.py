@@ -217,9 +217,12 @@ def _download_many(items: list[tuple[int, str]], dest_dir: Path) -> list[dict]:
 
 # Вспомогательная: поиск + скачивание для одного запроса
 def _search_and_download(
-    query: str, max_results: int, args: dict, dest_dir: Path
+    query: str, max_results: int, args: dict, dest_dir: Path, offset: int = 0
 ) -> tuple[list[dict], list[Path], list[dict]]:
-    """Ищет картинки по query, скачивает все результаты, возвращает (results, image_paths, downloaded)."""
+    """Ищет картинки по query, скачивает все результаты, возвращает (results, image_paths, downloaded).
+
+    offset — сдвиг индекса для _safe_name, чтобы файлы из разных запросов не перезаписывали друг друга.
+    """
     size = args.get("size", "")
     type_ = args.get("type", "")
     cache_key = f"{max_results}|{size}|{type_}|{query}"
@@ -243,7 +246,7 @@ def _search_and_download(
         return results, [], []
 
     # Всегда скачиваем все результаты.
-    sel = [(i, r["image"]) for i, r in enumerate(results)]
+    sel = [(offset + i, r["image"]) for i, r in enumerate(results)]
     downloaded = _download_many(sel, dest_dir)
     image_paths = [d["path"] for d in downloaded if d["ok"] and d["path"]]
     return results, image_paths, downloaded
@@ -285,10 +288,13 @@ def execute_image_search(call: ToolCall) -> ToolResult:
 
     all_lines: list[str] = []
     all_image_paths: list[Path] = []
+    total_downloaded = 0  # счётчик скачанных для сдвига индексов в _safe_name
 
     for qidx, query in enumerate(queries):
         try:
-            results, image_paths, downloaded = _search_and_download(query, max_results, args, dest_dir)
+            results, image_paths, downloaded = _search_and_download(
+                query, max_results, args, dest_dir, offset=total_downloaded,
+            )
         except RuntimeError as e:
             all_lines.append(f"[Query {qidx + 1}: {query}]")
             all_lines.append(f"  Error: {e}")
@@ -296,6 +302,7 @@ def execute_image_search(call: ToolCall) -> ToolResult:
             continue
 
         all_image_paths.extend(image_paths)
+        total_downloaded += len(downloaded)
 
         ok_n = sum(1 for d in downloaded if d["ok"])
         fail_n = len(downloaded) - ok_n
@@ -341,8 +348,6 @@ def execute_image_search(call: ToolCall) -> ToolResult:
         output="\n".join(all_lines).strip(),
         exit_code=0,
     )
-    if all_image_paths:
-        result.image_paths = all_image_paths
-        if len(all_image_paths) == 1:
-            result.image_path = all_image_paths[0]
+    # Не выставляем image_paths — картинки только сохраняются на диск,
+    # не отправляются модели как мультимодальный контент.
     return result

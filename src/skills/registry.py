@@ -28,8 +28,6 @@ SKILL_TOOLS: dict[str, set[str]] = {
     "subagents": {"subagent"},
 }
 
-# Все инструменты, которые вообще гейтятся скиллами.
-GATED_TOOLS: set[str] = {tool for tools in SKILL_TOOLS.values() for tool in tools}
 
 # Окно активности скилла в раундах (раунд = сообщение пользователя). Должно
 # совпадать с порогом pruning в _context_pruner._SKILL_EVICT_ROUNDS, чтобы
@@ -54,33 +52,6 @@ def is_real_user_message(msg) -> bool:
     if not isinstance(msg, HumanMessage):
         return False
     return not (getattr(msg, "additional_kwargs", None) or {}).get("synthetic")
-
-
-def tools_for_skill(name: str) -> set[str]:
-    """Инструменты, открываемые скиллом (пустое множество, если скилл негейтящий)."""
-    return set(SKILL_TOOLS.get(name, ()))
-
-
-def skill_for_tool(tool: str) -> str | None:
-    """Скилл, гейтящий данный инструмент, либо None если инструмент не гейтится."""
-    for skill, tools in SKILL_TOOLS.items():
-        if tool in tools:
-            return skill
-    return None
-
-
-def visible_gated_tools(active_skills: set[str] | None) -> set[str]:
-    """Какие из гейтящихся инструментов доступны при данном наборе активных скиллов."""
-    active = active_skills or set()
-    visible: set[str] = set()
-    for skill in active:
-        visible |= SKILL_TOOLS.get(skill, set())
-    return visible
-
-
-def is_tool_gated_out(tool: str, active_skills: set[str] | None) -> bool:
-    """Инструменты всегда доступны; скиллы добавляют только инструкции."""
-    return False
 
 
 def _skill_loads_by_round(messages: list) -> dict[str, int]:

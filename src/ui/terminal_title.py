@@ -51,7 +51,8 @@ def reset_terminal_title() -> None:
 def session_title(session, status: str | None = None) -> str:
     title = (getattr(session, "title", "") or "").strip()
     sid = (getattr(session, "id", "") or "").strip()
-    return f"{activity_emoji(status)} necli — {title or sid or 'session'}"
+    cwd = os.path.basename(os.getcwd()) or os.getcwd()
+    return f"{activity_emoji(status)} {cwd} — {title or sid or 'session'}"
 
 
 def set_session_terminal_title(session, status: str | None = None) -> None:

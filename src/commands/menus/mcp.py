@@ -1,16 +1,34 @@
-import sys
+"""Меню /mcp: серверы MCP, их состояние и карточка сервера.
 
-from rich.console import Console
-from rich.markup import escape
+Спиннер подключения живёт в динамической зоне Shell (`with_spinner` из
+`_style`), карточка сервера — внутри виджета, а события подключения,
+добавления, удаления и ошибок — в динамическом notice.
+"""
 
+from commands.menus._style import (
+    card_menu,
+    confirm_delete,
+    facts_line,
+    with_spinner,
+)
 from config.i18n import t as _
 from config.mcp import add_server, get_server, list_servers, remove_server, set_enabled
-from ui.menu import select_menu
-
-console = Console()
+from ui import overlays
 
 
-def mcp_interactive():
+def _status_of(cfg: dict, info: dict) -> tuple[str, str, str]:
+    """(глиф, роль цвета, текст статуса) для строки списка."""
+    if not cfg.get("enabled", True):
+        return "○", "muted", _("mcp.status_off")
+    status = info.get("status", "disconnected")
+    if status == "connected":
+        return "●", "success", _("mcp.status_tools", n=info.get("tool_count", 0))
+    if status == "error":
+        return "✗", "error", _("mcp.status_error", msg=info.get("error", "")[:40])
+    return "·", "dim", status
+
+
+async def mcp_interactive():
     while True:
         servers = list_servers()
         from apis.mcp_client import MCPManager
@@ -19,53 +37,36 @@ def mcp_interactive():
         items = []
         for cfg in servers:
             sid = cfg.get("id", "?")
-            enabled = cfg.get("enabled", True)
-            info = mgr_servers.get(sid, {})
-            status = info.get("status", "disconnected")
-            tool_count = info.get("tool_count", 0)
-            if not enabled:
-                icon = "○"
-                status_str = _("mcp.status_off")
-            elif status == "connected":
-                icon = "●"
-                status_str = _("mcp.status_tools", n=tool_count)
-            elif status == "error":
-                icon = "✗"
-                status_str = _("mcp.status_error", msg=info.get('error', '')[:40])
-            else:
-                icon = "·"
-                status_str = status
-            cmd = cfg.get("command", "")
+            icon, role, status_str = _status_of(cfg, mgr_servers.get(sid, {}))
             args = " ".join(cfg.get("args", []))
             items.append({
-                "label": f"{icon} {sid}",
-                "hint": f"{cmd} {args} · {status_str}",
+                "icon": icon,
+                "icon_style": role,
+                "label": sid,
+                "hint": f"{cfg.get('command', '')} {args}".strip(),
+                "badge": status_str,
+                "badge_style": role,
             })
         items.append({"label": _("mcp.add_server"), "hint": _("mcp.add_hint")})
         items.append({"label": _("mcp.reconnect_all"), "hint": ""})
 
-        if not servers:
-            console.print()
-            console.print(f"  [dim]{_('mcp.no_servers')}[/dim]")
-            console.print(f"  [dim]{_('mcp.examples')}[/dim]")
+        facts = [f"{len(servers)} server(s)"] if servers else [
+            _("mcp.no_servers"), _("mcp.examples")]
 
-        choice = select_menu(items, title=_("mcp.title"))
+        choice = await card_menu(items, title=_("mcp.title"), facts=facts)
         if choice is None:
             return
         if choice == len(servers):
-            _add_interactive()
+            await _add_interactive()
             continue
         if choice == len(servers) + 1:
-            _reconnect_all()
+            await _reconnect_all()
             continue
 
-        sid = servers[choice].get("id")
-        action = _detail(sid)
-        if action == "back":
-            continue
+        await _detail(servers[choice].get("id"))
 
 
-def _detail(sid: str):
+async def _detail(sid: str):
     while True:
         cfg = get_server(sid)
         if not cfg:
@@ -74,109 +75,89 @@ def _detail(sid: str):
         info_map = {s["id"]: s for s in MCPManager.instance().list_servers_info()}
         info = info_map.get(sid, {})
 
-        sys.stdout.write("\x1b7")
-        sys.stdout.flush()
-
         enabled = cfg.get("enabled", True)
         status = info.get("status", "disconnected") if enabled else "off"
         tools = info.get("tools", [])
-        cmd = cfg.get("command", "")
-        args = cfg.get("args", [])
         env = cfg.get("env") or {}
 
-        console.print()
-        console.print(f"  [bold yellow]{escape(sid)}[/bold yellow]  [dim]({status})[/dim]")
-        console.print(f"  [dim]{_('mcp.command_label')}[/dim] {escape(cmd)} {escape(' '.join(args))}")
+        facts = [facts_line(cfg.get("command", ""), " ".join(cfg.get("args", [])))]
         if env:
-            console.print(f"  [dim]{_('mcp.env_keys_label')}[/dim] {escape(', '.join(env.keys()))}")
+            facts.append(f"{_('mcp.env_keys_label')} {', '.join(env.keys())}")
         if info.get("error"):
-            console.print(f"  [red]{_('mcp.error_label')}[/red] {escape(info['error'])}")
+            facts.append(f"{_('mcp.error_label')} {info['error']}")
         if tools:
-            console.print(f"  [dim]{_('mcp.tools_label')} ({len(tools)}):[/dim] {escape(', '.join(tools[:12]))}{' …' if len(tools) > 12 else ''}")
-        console.print()
+            facts.append(f"{_('mcp.tools_label')} ({len(tools)}): "
+                         f"{', '.join(tools[:12])}{' …' if len(tools) > 12 else ''}")
 
         actions = [
-            {"label": _("mcp.reconnect"), "hint": _("mcp.reconnect_hint")},
-            {"label": _("mcp.enable") if not enabled else _("mcp.disable")},
-            {"label": _("api.delete"), "hint": _("api.delete_permanent")},
-            {"label": _("common.back")},
+            {"label": _("mcp.reconnect"), "hint": _("mcp.reconnect_hint"), "icon": "↻",
+             "icon_style": "accent"},
+            {"label": _("mcp.enable") if not enabled else _("mcp.disable"),
+             "icon": "●" if not enabled else "○",
+             "icon_style": "success" if not enabled else "warning"},
+            {"label": _("api.delete"), "hint": _("api.delete_permanent"), "icon": "✗",
+             "icon_style": "error"},
+            {"label": _("common.back"), "icon": " "},
         ]
-        choice = select_menu(actions)
-
-        sys.stdout.write("\x1b8")
-        sys.stdout.write("\x1b[J")
-        sys.stdout.flush()
+        choice = await card_menu(
+            actions, title=sid, status=status,
+            status_style="success" if status == "connected" else "muted",
+            facts=facts,
+        )
 
         if choice is None or choice == 3:
             return "back"
 
         if choice == 0:
-            _reconnect_one(sid)
+            await _reconnect_one(sid)
             continue
         if choice == 1:
             set_enabled(sid, not enabled)
-            _reconnect_all(silent=True)
+            await _reconnect_all(silent=True)
             continue
-        if choice == 2:
-            confirm = select_menu(
-                [{"label": _("common.yes_delete")}, {"label": _("common.cancel")}],
-                title=_("mcp.delete_q", name=sid),
-            )
-            if confirm == 0:
-                from apis.mcp_client import MCPManager
-                from tools.registry import TOOL_REGISTRY
-                MCPManager.instance().disconnect(sid)
-                for k in list(TOOL_REGISTRY.keys()):
-                    if k.startswith(f"mcp__{sid}__"):
-                        TOOL_REGISTRY.pop(k, None)
-                remove_server(sid)
-                console.print(f"  [green]✓[/green] {_('mcp.server_removed', name=sid)}")
-                return "back"
+        if choice == 2 and await confirm_delete(_("mcp.delete_q", name=sid)):
+            from apis.mcp_client import MCPManager
+            from tools.registry import TOOL_REGISTRY
+            MCPManager.instance().disconnect(sid)
+            for k in list(TOOL_REGISTRY.keys()):
+                if k.startswith(f"mcp__{sid}__"):
+                    TOOL_REGISTRY.pop(k, None)
+            remove_server(sid)
+            return "back"
 
 
-def _add_interactive():
-    console.print()
-    console.print(f"  [dim]{_('mcp.add_example')}[/dim]")
-    try:
-        sid = console.input(f"  [bold]{_('mcp.field_server_id')}:[/bold] ").strip()
-        if not sid:
-            return
-        if get_server(sid):
-            console.print(f"  [red]{_('mcp.already_exists', name=sid)}[/red]")
-            return
-        command = console.input(f"  [bold]{_('mcp.field_command')}:[/bold] ").strip()
-        if not command:
-            return
-        args_raw = console.input(f"  [bold]{_('mcp.field_args')}[/bold] [dim]({_('mcp.field_args_hint')}):[/dim] ").strip()
-        args = args_raw.split() if args_raw else []
-        env_raw = console.input(f"  [bold]{_('mcp.field_env')}[/bold] [dim]({_('mcp.field_env_hint')}):[/dim] ").strip()
-        env: dict[str, str] = {}
-        for token in env_raw.split():
-            if "=" in token:
-                k, v = token.split("=", 1)
-                env[k] = v
-        cfg = {
-            "id": sid,
-            "command": command,
-            "args": args,
-            "env": env,
-            "transport": "stdio",
-            "enabled": True,
-        }
-        add_server(cfg)
-        console.print(f"  [green]✓[/green] {_('mcp.added_connecting', name=sid)}")
-        _reconnect_all(silent=True)
-        from apis.mcp_client import MCPManager
-        info = {s["id"]: s for s in MCPManager.instance().list_servers_info()}.get(sid, {})
-        if info.get("status") == "connected":
-            console.print(f"  [green]✓[/green] {_('mcp.connected', n=info.get('tool_count', 0))}")
-        else:
-            console.print(f"  [red]✗[/red] {info.get('error', _('mcp.failed_to_connect'))}")
-    except (KeyboardInterrupt, EOFError):
-        console.print()
+async def _add_interactive():
+    sid = await overlays.ask_text(f"{_('mcp.field_server_id')} ({_('mcp.add_example')}):")
+    if not sid:
+        return
+    if get_server(sid):
+        return
+    command = await overlays.ask_text(f"{_('mcp.field_command')}:")
+    if not command:
+        return
+    args_raw = await overlays.ask_text(f"{_('mcp.field_args')} ({_('mcp.field_args_hint')}):")
+    if args_raw is None:
+        return  # esc в любом поле отменяет добавление, как прежний Ctrl+C
+    env_raw = await overlays.ask_text(f"{_('mcp.field_env')} ({_('mcp.field_env_hint')}):")
+    if env_raw is None:
+        return
+    env: dict[str, str] = {}
+    for token in env_raw.split():
+        if "=" in token:
+            k, v = token.split("=", 1)
+            env[k] = v
+    add_server({
+        "id": sid,
+        "command": command,
+        "args": args_raw.split() if args_raw else [],
+        "env": env,
+        "transport": "stdio",
+        "enabled": True,
+    })
+    await _reconnect_all(silent=True)
 
 
-def _reconnect_one(sid: str):
+async def _reconnect_one(sid: str):
     from apis.mcp_client import MCPManager, _register_in_tool_registry
     from tools.registry import TOOL_REGISTRY
     mgr = MCPManager.instance()
@@ -187,27 +168,22 @@ def _reconnect_one(sid: str):
     cfg = get_server(sid)
     if not cfg or not cfg.get("enabled", True):
         return
-    with console.status(f"[cyan]{_('mcp.connecting_one', name=sid)}[/cyan]", spinner="dots"):
-        srv = mgr.connect(cfg)
+    srv = await with_spinner(_("mcp.connecting_one", name=sid), mgr.connect, cfg)
     if srv.status == "connected":
         _register_in_tool_registry()
-        console.print(f"  [green]✓[/green] {_('mcp.connected_one', name=sid, n=len(srv.tools))}")
-    else:
-        console.print(f"  [red]✗[/red] {escape(sid)}: {escape(srv.error or '')}")
 
 
-def _reconnect_all(silent: bool = False):
+async def _reconnect_all(silent: bool = False):
+    import asyncio
+
     from apis.mcp_client import reconnect_mcp
     if silent:
         try:
-            reconnect_mcp()
-        except Exception as e:
-            console.print(f"  [red]✗[/red] {escape(str(e))}")
+            await asyncio.to_thread(reconnect_mcp)
+        except Exception:
+            pass
         return
-    with console.status(f"[cyan]{_('mcp.reconnecting')}[/cyan]", spinner="dots"):
-        try:
-            n = reconnect_mcp()
-        except Exception as e:
-            console.print(f"  [red]✗[/red] {escape(str(e))}")
-            return
-    console.print(f"  [green]✓[/green] {_('mcp.servers_connected', n=n)}")
+    try:
+        await with_spinner(_("mcp.reconnecting"), reconnect_mcp)
+    except Exception:
+        return

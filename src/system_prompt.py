@@ -42,6 +42,33 @@ COMPRESS_PROMPT = (
     "DIALOG HISTORY:"
 )
 
+# Промт для автоматического round-compression (autoprune режим). Отдельный от
+# COMPRESS_PROMPT: обязан ПОЛНОСТЬЮ сохранить read-контент файлов и выводы grep
+# (агент продолжает работать по ним после сжатия), а все прочие tool-вызовы
+# свернуть компактно, показав что они были. В результате сжатия должно получиться
+# одно связное сообщение-контекст, на которое сразу же «ложится» следующий user-раунд.
+ROUND_COMPRESS_PROMPT = (
+    "Compress the following dialog history between a user and an AI assistant (coding agent).\n"
+    "\n"
+    "This summary becomes the ONLY context for the next user request, so the agent must continue "
+    "working without re-reading anything. Compression rules:\n"
+    "- Preserve the user's GOALS and intents verbatim in meaning, the current task, and unfinished work\n"
+    "- Preserve EXACTLY what the agent already did: list every file changed with the precise changes "
+    " (create/patch/write) as concrete diff-style notes, in order\n"
+    "- PRESERVE ALL FILE CONTENTS that were read via the `read` tool — keep the actual code/data text "
+    " (or at minimum full structure + key snippets) so the agent does not need to re-read\n"
+    "- PRESERVE ALL `grep`/`lsp` search OUTPUTS (the matches), they are cheap and needed later\n"
+    "- For every OTHER tool call (shell/web/lsp/skill/runtime results) keep ONLY a one-line compact note "
+    " that it happened: 'shell: make test → exit 0', 'web_search: topic → N results'. Do not paste their output\n"
+    "- Remove: repetitions, intermediate reasoning, planner noise, boilerplate\n"
+    "- Preserve the original language of the user\n"
+    "- Output a structured summary, NOT a chat\n"
+    "- Be compact, but NEVER drop file contents, grep results, or user intentions\n"
+    "\n"
+    "DIALOG HISTORY:"
+)
+
+
 REFLECT_PROMPT = (
     "TASK: Reflection on the current session.\n"
     "\n"
@@ -61,7 +88,7 @@ REFLECT_PROMPT = (
     "\n"
     "If there was nothing important in the session for future work — just say so and do NOT modify AGENTS.md. Do not add for the sake of adding.\n"
     "\n"
-    "If there is something to add — first read the current AGENTS.md via read_files, then append the new knowledge AT THE END of the file in a separate section. If a suitable section already exists — extend it. Use patch_file for appending, do not overwrite the whole file.\n"
+    "If there is something to add — first read the current AGENTS.md via read, then append the new knowledge AT THE END of the file in a separate section. If a suitable section already exists — extend it. Use patch_file for appending, do not overwrite the whole file.\n"
     "\n"
     "WRITING STYLE — NO FLUFF:\n"
     "- Write as compactly as possible. One item = one point. No intros, preambles, \"it's important to note\", \"worth considering\"\n"
@@ -92,9 +119,9 @@ MODE_SWITCH_TO_AGENT = (
     "[SYSTEM: Switched to AGENT mode — all tools available again. "
     "See the AGENT MODE section in the system prompt]"
 )
-MODE_SWITCH_TO_AUTONOMOUS = (
-    "[SYSTEM: Switched to AUTONOMOUS mode — orchestrator-only long-running mode. "
-    "Delegate implementation/debugging/testing/verification to subagents; see the AUTONOMOUS MODE section]"
+MODE_SWITCH_TO_SWARM = (
+    "[SYSTEM: Switched to SWARM mode — orchestrator-only long-running mode. "
+    "Delegate implementation/debugging/testing/verification to subagents; see the SWARM MODE section]"
 )
 
 
@@ -272,8 +299,8 @@ def build_system_prompt(
     # Conditional sections
     if mode == "planning":
         parts.append(mod.MODE_PLANNING)
-    elif mode == "autonomous":
-        parts.append(mod.MODE_AUTONOMOUS)
+    elif mode == "swarm":
+        parts.append(mod.MODE_SWARM)
 
     if think_enabled:
         parts.append(mod.THINK)
@@ -302,6 +329,7 @@ def build_system_prompt(
 
 def build_tool_results(results: list[dict]) -> str:
     from html import escape
+
     from tools._html_unescape import maybe_unescape
 
     parts = []

@@ -53,14 +53,14 @@ async def gather_dir_context(working_dir: str) -> str:
 
     AGENTS.md больше НЕ инжектится автоматически — он раздут (10k+ токенов) и
     нужен не каждую сессию. Файл виден в дереве; агент читает его через
-    read_files, когда задача того требует. Возвращаем лишь короткое
+    read, когда задача того требует. Возвращаем лишь короткое
     напоминание о его наличии, если файл есть.
     """
     agents_path = os.path.join(working_dir, "AGENTS.md")
     if os.path.isfile(agents_path):  # noqa: ASYNC240
         return (
             "Note: AGENTS.md exists in the working dir (project-specific rules, "
-            "pitfalls, conventions). Read it via read_files when a task touches "
+            "pitfalls, conventions). Read it via read when a task touches "
             "areas it covers — do NOT assume its contents."
         )
     return ""

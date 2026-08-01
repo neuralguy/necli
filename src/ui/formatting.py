@@ -122,17 +122,6 @@ def escape_md_underscores(text: str) -> str:
     return protected
 
 
-def format_elapsed(seconds: float | None) -> str:
-    if seconds is None:
-        return "\u2014"
-    if seconds < 1:
-        return f"{seconds * 1000:.0f}ms"
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    m, s = divmod(int(seconds), 60)
-    return f"{m}m {s}s"
-
-
 def format_size(size: int) -> str:
     if size < 1024:
         return f"{size}B"

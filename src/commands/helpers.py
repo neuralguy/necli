@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import signal
 import sys
 import time
 
@@ -17,7 +16,6 @@ from rich.align import Align
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.panel import Panel
-from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -26,7 +24,7 @@ import session.storage as storage
 from config.i18n import t as _
 from config.themes import t
 from session import Session
-from ui import format_cost, format_tokens
+from ui import format_tokens
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -120,81 +118,159 @@ def _read_version() -> str:
 _APP_VERSION = _read_version()
 
 
-def _make_interrupt_handler(task_ref, stderr_ref):
-    state: dict[str, float] = {"level": 0}
+def _notice(markup: str) -> None:
+    """Служебное сообщение в scrollback над рамкой.
 
-    def handler(sig, frame):
-        from agent import get_current_ctx
-        ctx = get_current_ctx()
-        state["level"] += 1
-        level = state["level"]
+    Раньше такие строки писались прямо в stderr с `\\r\\033[K`: тогда курсором
+    владел код агента. Теперь экраном владеет Application, и любая прямая
+    запись рвала бы рамку — печатаем через единственную легальную дверь.
+    """
+    from ui.shell import print_static
+    print_static(markup)
 
-        if level == 1:
-            # Мягкое прерывание: цикл доделает текущую итерацию и остановится.
-            if ctx:
-                ctx.interrupted = True
-            stderr_ref.write(
-                "\r\033[K  \033[33m■\033[0m"
-                " \033[2mStopping after current step… (Ctrl+C again = hard stop)\033[0m\n"
-            )
-            stderr_ref.flush()
+
+class InterruptController:
+    """Три уровня Ctrl+C, управляемые событием из Shell, а не сигналом SIGINT.
+
+    prompt_toolkit держит терминал в raw-режиме, поэтому Ctrl+C приходит в
+    Application **клавишей**, а ядро SIGINT не посылает — прежний
+    `signal.signal(SIGINT, …)` не сработал бы ни разу. Эскалацию двигает
+    главный цикл, получив из `shell.submissions` событие SUBMIT_INTERRUPT.
+    Смысл уровней сохранён один в один:
+
+      1 — `ctx.interrupted`: цикл агента доделывает текущий шаг и встаёт;
+      2 — `ctx.hard_interrupted` + `cancel()` задачи хода;
+      3 — `os._exit(130)`: отмена зависла в неотменяемом коде.
+
+    Счётчик обнуляется на каждом новом ходе (`begin`) — иначе второй Ctrl+C
+    в следующем ходе сразу давал бы жёсткую отмену.
+    """
+
+    def __init__(self) -> None:
+        self.level: int = 0
+        self.task: asyncio.Task | None = None
+        self.hard_at: float | None = None
+        self._saved_stderr = None
+
+    # ── жизненный цикл хода ──
+    def begin(self, task: asyncio.Task) -> None:
+        self.task = task
+        self.level = 0
+        self.hard_at = None
+
+    def end(self, task: asyncio.Task) -> None:
+        if self.task is task:
+            self.task = None
+        self.restore_stderr()
+
+    @property
+    def active(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    # ── подавление трейсбеков на жёсткой отмене ──
+    def silence_stderr(self) -> None:
+        """На level 2 отмена рвёт стек в самых разных местах; их трейсбеки
+        пользователю не нужны и порвали бы рамку."""
+        if self._saved_stderr is not None:
             return
-
-        # level >= 3: cancel завис (неотменяемый синхронный код / C-расширение) —
-        # аварийный выход всего процесса. Лучше так, чем висеть бесконечно.
-        if level >= 3:
-            _restore_termios()
-            stderr_ref.write(
-                "\r\033[K  \033[31m■■■\033[0m"
-                " \033[2mForce exit.\033[0m\n"
-            )
-            stderr_ref.flush()
-            os._exit(130)
-
-        # level == 2: жёсткая отмена задачи прямо сейчас.
-        _restore_termios()
-        if ctx:
-            ctx.hard_interrupted = True
-        stderr_ref.write(
-            "\r\033[K  \033[31m■■\033[0m"
-            " \033[2mEmergency stop…\033[0m\n"
-        )
-        stderr_ref.flush()
         try:
-            import sys as _sys
-            _sys.stderr = open(os.devnull, "w")  # noqa: SIM115
+            self._saved_stderr = sys.stderr
+            sys.stderr = open(os.devnull, "w")  # noqa: SIM115
         except Exception:
+            self._saved_stderr = None
             logger.debug("stderr redirect to devnull failed", exc_info=True)
-        t_ = task_ref.get("task")
-        if t_ and not t_.done():
-            t_.cancel()
 
-    def stop_animation():
-        pass
-
-    return handler, state, stop_animation
-
-
-async def _run_with_interrupt(coro, session, on_cancelled=None):
-    t0 = time.monotonic()
-    cancelled = False
-    task = asyncio.ensure_future(coro)
-    _save_termios()
-
-    _task_ref = {"task": task}
-    _saved_stderr = sys.stderr
-    _int_handler, _int_state, _stop_anim = _make_interrupt_handler(_task_ref, _saved_stderr)
-
-    original_handler = signal.getsignal(signal.SIGINT)
-    signal.signal(signal.SIGINT, _int_handler)
-
-    def _restore_stderr():
-        if sys.stderr is not _saved_stderr:
+    def restore_stderr(self) -> None:
+        saved = self._saved_stderr
+        if saved is None:
+            return
+        self._saved_stderr = None
+        if sys.stderr is not saved:
             try:
                 sys.stderr.close()
             except Exception:
                 logger.debug("stderr devnull close failed", exc_info=True)
-            sys.stderr = _saved_stderr
+        sys.stderr = saved
+
+    # ── собственно эскалация ──
+    def escalate(self) -> int:
+        """Обработать очередной Ctrl+C. Возвращает достигнутый уровень.
+
+        Вне хода (0) ничего не делает: на простое Ctrl+C только чистит ввод —
+        это делает сам Shell, и убивать процесс тут нельзя.
+        """
+        if not self.active:
+            return 0
+        from agent import get_current_ctx
+        ctx = get_current_ctx()
+        self.level += 1
+
+        if self.level == 1:
+            # Мягкое прерывание: цикл доделает текущую итерацию и остановится.
+            if ctx:
+                ctx.interrupted = True
+            _notice("  [yellow]■[/yellow] [dim]Stopping after current step…"
+                    " (Ctrl+C again = hard stop)[/dim]")
+            return 1
+
+        # level >= 3: cancel завис (неотменяемый синхронный код / C-расширение) —
+        # аварийный выход всего процесса. Лучше так, чем висеть бесконечно.
+        if self.level >= 3:
+            _restore_termios()
+            # print_static здесь недоступен: он печатает через run_in_terminal,
+            # то есть на следующем шаге loop'а, которого уже не будет.
+            _write_now("\r\033[K  \033[31m■■■\033[0m \033[2mForce exit.\033[0m\n")
+            os._exit(130)
+
+        # level == 2: жёсткая отмена задачи прямо сейчас.
+        #
+        # ВАЖНО: termios здесь НЕ трогаем. Раньше тут стоял _restore_termios(),
+        # оставшийся от старой архитектуры, где постоянного Application не было
+        # и терминал надо было спасать руками. Теперь он живой и владеет
+        # терминалом: возврат в cooked-режим включает ECHO прямо под ним, и
+        # терминал начинает эхать служебные ответы (`^[[34;1R` — ответ на запрос
+        # позиции курсора). Отсюда мусор на экране, разъехавшаяся рамка и
+        # переставший работать Ctrl+C, потому что ptk теряет raw-режим.
+        # Терминал восстанавливаем только на уровне 3, перед самим выходом.
+        if ctx:
+            ctx.hard_interrupted = True
+        _notice("  [red]■■[/red] [dim]Emergency stop…[/dim]")
+        self.hard_at = time.monotonic()
+        self.silence_stderr()
+        task = self.task
+        if task is not None and not task.done():
+            task.cancel()
+        return 2
+
+
+#: Ход всегда один (очередь строго серийная), поэтому контроллер один на процесс.
+_INTERRUPT = InterruptController()
+
+
+def interrupt_controller() -> InterruptController:
+    return _INTERRUPT
+
+
+def _write_now(text: str) -> None:
+    """Синхронная запись в реальный терминал — только для аварийного выхода."""
+    try:
+        sys.__stdout__.write(text)
+        sys.__stdout__.flush()
+    except Exception:
+        pass
+
+
+async def _run_with_interrupt(coro, session):
+    # termios здесь больше не трогаем: терминалом всю сессию владеет
+    # Application, он же держит raw-режим и сам его восстанавливает на выходе.
+    # Снимок делает `interactive._run` ДО старта Application (пока режим
+    # cooked) — только такой годится для аварийного восстановления на level 3.
+    t0 = time.monotonic()
+    cancelled = False
+    task = asyncio.ensure_future(coro)
+
+    ctl = interrupt_controller()
+    ctl.begin(task)
 
     async def _cancel_watchdog():
         """После жёсткого Ctrl+C (level>=2) ждём отмену задачи; если она зависла
@@ -204,58 +280,44 @@ async def _run_with_interrupt(coro, session, on_cancelled=None):
             await asyncio.sleep(0.2)
             if task.done():
                 return
-            if _int_state["level"] >= 2:
-                # Засекаем дедлайн с момента первого жёсткого прерывания.
-                deadline = _int_state.get("_hard_at")
-                now = time.monotonic()
-                if deadline is None:
-                    _int_state["_hard_at"] = now
-                elif now - deadline > timeout:
-                    try:
-                        _restore_termios()
-                        _restore_stderr()
-                        sys.stderr.write(
-                            "\r\033[K  \033[31m■■\033[0m"
-                            " \033[2mTask did not cancel in time — force exit.\033[0m\n"
-                        )
-                        sys.stderr.flush()
-                    except Exception:
-                        pass
-                    os._exit(130)
+            hard_at = ctl.hard_at
+            if ctl.level >= 2 and hard_at is not None and time.monotonic() - hard_at > timeout:
+                _restore_termios()
+                ctl.restore_stderr()
+                _write_now(
+                    "\r\033[K  \033[31m■■\033[0m"
+                    " \033[2mTask did not cancel in time — force exit.\033[0m\n"
+                )
+                os._exit(130)
 
     watchdog = asyncio.ensure_future(_cancel_watchdog())
     try:
         try:
             await task
         except (asyncio.CancelledError, Exception):
-            if _int_state["level"] == 0:
+            if ctl.level == 0:
                 raise
         finally:
             watchdog.cancel()
-            signal.signal(signal.SIGINT, original_handler)
-            _stop_anim()
-            _restore_stderr()
-            _restore_termios()
+            ctl.end(task)
 
-        cancelled = _int_state["level"] > 0
+        cancelled = ctl.level > 0
         duration = time.monotonic() - t0
 
         await asyncio.to_thread(storage.save, session)
         return duration, cancelled
 
     except (BrokenPipeError, ConnectionError, OSError):
-        _restore_stderr()
-        _restore_termios()
-        if not cancelled and on_cancelled is None:
-            console.print("\n  [red]✗ API connection error[/red]")
+        ctl.end(task)
+        if not cancelled:
+            _notice("\n  [red]✗ API connection error[/red]")
         await asyncio.to_thread(storage.save, session)
         raise
     except Exception as e:
-        _restore_stderr()
-        _restore_termios()
+        ctl.end(task)
         logger.exception("agent run failed: %s: %s", type(e).__name__, e)
         if not cancelled:
-            console.print(f"\n  [red]✗ {escape(str(e))}[/red]")
+            _notice(f"\n  [red]✗ {escape(str(e))}[/red]")
         await asyncio.to_thread(storage.save, session)
         raise
 
@@ -469,35 +531,12 @@ def _print_welcome(model: str, session: Session, workdir: str = ".", n_lsp: int 
     console.print()
 
 
-def _print_session_switch(session: Session, context_count: int = 0):
-    try:
-        from ui.terminal_title import set_session_terminal_title
-        set_session_terminal_title(session)
-    except Exception:
-        logger.debug("session switch terminal title update failed", exc_info=True)
-    console.print()
-    console.print(Rule(style="dim"))
-    title = f" — {session.title}" if session.title else ""
-    console.print(
-        f"  [yellow]↻[/yellow] Session [bold]{session.id[:20]}[/bold]{escape(title)}"
-    )
-    if session.message_count > 0:
-        models = session.models_used
-        console.print(
-            f"  [dim]{session.message_count}msg · "
-            f"↑{format_tokens(session.raw_input_tokens)} ↓{format_tokens(session.output_tokens)} · "
-            f"≈{format_cost(session.total_cost)} · "
-            f"{escape(', '.join(models[:3]))}[/dim]"
-        )
-    if context_count > 0:
-        console.print(f"  [dim]{context_count} messages in context[/dim]")
-    console.print(Rule(style="dim"))
-    console.print()
-
-
-def _print_user_message(text: str, model: str):
-    pass
-
-
 def _print_response_separator():
-    console.print()
+    """Отбивка после ответа.
+
+    Сама статус-линия теперь живёт в верхней линии рамки и обновляется
+    Shell'ом, поэтому здесь остаётся только пустая строка. Если footer уже
+    закончил вывод такой отбивкой, вторую не добавляем.
+    """
+    from ui.shell import ensure_static_blank
+    ensure_static_blank()

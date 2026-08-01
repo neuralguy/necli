@@ -4,8 +4,6 @@ import os
 
 from .settings import get
 
-RESPONSE_TIMEOUT = int(os.getenv("NECLI_TIMEOUT", str(get("response_timeout", 180))))
-
 TARGET_MODEL: str = os.getenv("NECLI_MODEL", get("model", "Claude Opus 4.6"))
 
 # Канонический набор игнорируемых директорий для всех обходов ФС:
@@ -37,11 +35,11 @@ def is_ignored_dir(name: str) -> bool:
 # безопасно запускать параллельно). Используется в:
 #   - tools/registry.py (PLANNING_TOOLS / READ_ONLY_TOOLS)
 #   - apis/tool_schemas.py (_PLANNING_TOOL_NAMES — фильтр схем)
-# Алиас "read_file" обрабатывается отдельно в is_tool_allowed.
+# Алиас "read" обрабатывается отдельно в is_tool_allowed.
 # LSP-инструменты семантически read-only (навигация/диагностика, ничего не
 # пишут) — поэтому доступны и в plan-режиме главного агента, и plan-субагентам.
 READ_ONLY_TOOLS: frozenset[str] = frozenset({
-    "read_files", "grep",
+    "read", "grep",
     "lsp_references", "lsp_diagnostics",
     "memory_list", "memory_read",
 })

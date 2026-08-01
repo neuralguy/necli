@@ -33,7 +33,13 @@ def _term_width() -> int:
         return 80
 
 
-def build_status_line(state) -> str:
+def build_status_line(state, extra: str = "") -> str:
+    """Собирает статус для верхней линии рамки.
+
+    `extra` — хвост, который знает только вызывающий цикл (режим агента и
+    состояние очереди ходов). Он участвует в бюджете ширины: строка живёт
+    внутри линии рамки, и вылезший хвост порвал бы её переносом.
+    """
     s = state.session
     mc = s.message_count
     in_tok = s.raw_input_tokens
@@ -46,6 +52,7 @@ def build_status_line(state) -> str:
 
     _api_id = config.get_active_api()
     api_part = f"🔌 {_api_id} · " if _api_id else ""
+
     think_part = "💭 · " if getattr(state, "think_enabled", False) else ""
 
     ctx_full = f"{ctx_bar} {format_tokens(total_tok)}/{format_tokens(ctx_limit)}"
@@ -63,17 +70,22 @@ def build_status_line(state) -> str:
     # (минимум 3 символа на хвост, чтобы не выглядело обрезанным)
     budget = max(0, _term_width() - len("─── ") - len(" ") - 3)
 
-    parts = [api_part, think_part, msg_part, io_part, cost_part, model_part, ctx_full]
+    extra_part = f" · {extra}" if extra else ""
+
+    # Секция 1 — провайдер и модель; секция 2 — сообщения, токены, стоимость;
+    # дальше контекст и вспомогательные индикаторы.
+    parts = [api_part, model_part, msg_part, io_part, cost_part, ctx_full,
+             think_part, extra_part]
     line = "".join(parts)
 
     if _visible_len(line) <= budget:
         return line
 
-    # Индексы parts: 0=api, 1=think, 2=msg, 3=io, 4=cost, 5=model, 6=ctx
+    # Индексы parts: 0=api, 1=model, 2=msg, 3=io, 4=cost, 5=ctx, 6=think, 7=extra
     # Поэтапно сокращаем по приоритету (наименее важное → наиболее важное)
-    # 1) убрать api-индикатор
-    if _visible_len(line) > budget and api_part:
-        parts[0] = ""
+    # 1) убрать think-индикатор
+    if _visible_len(line) > budget and think_part:
+        parts[6] = ""
         line = "".join(parts)
 
     # 2) убрать стоимость
@@ -81,17 +93,17 @@ def build_status_line(state) -> str:
         parts[4] = ""
         line = "".join(parts)
 
-    # 4) убрать I/O
+    # 3) убрать I/O
     if _visible_len(line) > budget and io_part:
         parts[3] = ""
         line = "".join(parts)
 
-    # 5) убрать счётчик сообщений
+    # 4) убрать счётчик сообщений
     if _visible_len(line) > budget and msg_part:
         parts[2] = ""
         line = "".join(parts)
 
-    # 6) минимальный fallback: модель + прогресс контекста
+    # 5) минимальный fallback: модель + прогресс контекста (хвост тоже отбрасываем)
     if _visible_len(line) > budget:
         line = f"{state.cur_model} · {ctx_full}"
 

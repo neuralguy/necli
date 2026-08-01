@@ -151,24 +151,3 @@ def remove_preset(name: str) -> bool:
     shutil.rmtree(p.path)
     logger.info("agent_preset remove: %s", name)
     return True
-
-
-def build_presets_prompt() -> str:
-    """Список доступных пресетов для system prompt главного агента."""
-    presets = discover_presets()
-    if not presets:
-        return ""
-    lines = ["", "AVAILABLE AGENT PRESETS (reusable subagent roles):"]
-    for p in presets:
-        meta = []
-        if p.model:
-            meta.append(f"model={p.model}")
-        suffix = f"  [{', '.join(meta)}]" if meta else ""
-        desc = (p.description or "")[:120]
-        lines.append(f'  - "{p.name}": {desc}{suffix}')
-    lines.append(
-        'Reuse one via subagent task: {"preset": "<name>", "prompt": "<the task>"}. '
-        "A preset supplies the role/instructions/model; you only give the concrete task."
-    )
-    lines.append("")
-    return "\n".join(lines)

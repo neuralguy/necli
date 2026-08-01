@@ -1,6 +1,6 @@
 [project]
 name = "necli-api"
-version = "0.17.0"
+version = "0.18.0"
 description = "Terminal client for AI chat (API-only, no browser)"
 readme = "README.md"
 license = "Apache-2.0"
@@ -26,8 +26,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
-    "pytest-asyncio>=0.24",
     "vulture>=2.16",
     "pyinstaller>=6.0",
     "ruff>=0.8",
@@ -36,7 +34,7 @@ dev = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-src = ["src", "tests"]
+src = ["src"]
 extend-exclude = ["docs"]
 
 [tool.ruff.lint]
@@ -67,7 +65,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["N802", "N803", "N806", "B011", "PTH"]
 "scripts/**" = ["N", "PTH"]
 
 [tool.ruff.lint.isort]
@@ -81,17 +78,3 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
 skip-magic-trailing-comma = false
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = [
-    "slow: slow tests (>1s)",
-    "requires_pandoc: requires pandoc binary",
-    "requires_git: requires git binary",
-    "requires_node: requires node binary",
-    "requires_network: requires network access",
-    "integration: integration tests",
-    "e2e: end-to-end tests",
-]
-addopts = "-ra --strict-markers"
-asyncio_mode = "auto"

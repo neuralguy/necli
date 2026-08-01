@@ -1,7 +1,6 @@
 from .constants import (  # noqa: F401
     IGNORE_DIRS,
     READ_ONLY_TOOLS,
-    RESPONSE_TIMEOUT,
     TARGET_MODEL,
     is_ignored_dir,
 )
@@ -14,7 +13,7 @@ from .paths import (  # noqa: F401
     UI_FILE,
     ensure_dirs,
 )
-from .settings import get, get_all, reset, set_value  # noqa: F401
+from .settings import get, set_value
 from .ui import ui  # noqa: F401
 
 ensure_dirs()

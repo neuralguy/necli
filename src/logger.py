@@ -192,7 +192,7 @@ def _install_stdlib_intercept() -> None:
     for _name in (
         "httpx", "httpcore", "openai", "groq", "urllib3",
         "aiogram", "anthropic", "asyncio",
-        "google.auth", "google.genai", "httpx", "httpx._client", "httpcore",
+        "google.auth", "google.genai", "httpx._client",
         "PIL", "websockets", "aiohttp",
         "charset_normalizer", "prompt_toolkit", "textual",
         "ddgs", "trafilatura",

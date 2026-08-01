@@ -58,9 +58,6 @@ class RichEventHandler:
     """Реализация для Rich-терминала — делегирует в agent/display.py."""
 
     def __init__(self):
-        from rich.console import Console
-
-        self._console = Console()
         self._pending_call: tools.ToolCall | None = None
         self._pending_subtitle: str = ""
 
@@ -98,7 +95,11 @@ class RichEventHandler:
             "success": "green",
         }
         style = style_map.get(level, "dim")
-        self._console.print(f"  [{style}]{message}[/{style}]")
+        # print_static, а не своя Console: статусы агента должны попадать в тот
+        # же поток вывода, что шапки инструментов, иначе порядок строк в
+        # scrollback зависит от того, кто раньше сбросит свой буфер.
+        from agent.display import print_static
+        print_static(f"  [{style}]{message}[/{style}]")
 
     def on_subagent_start(
         self, index: int, total: int, mode: str, prompt: str,

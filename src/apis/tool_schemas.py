@@ -43,32 +43,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "read_files",
+            "name": "read",
             "description": (
-                "Read up to 20 files at once, or list a directory."
+                "Read a single file or directory. "
+                "takes one path, optional line limit and offset. "
                 "Supports images, .docx, .csv/.tsv, Excel."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "paths": {
-                        "type": "array",
-                        "items": {
-                            "oneOf": [
-                                {"type": "string"},
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "path": {"type": "string"},
-                                        "lines": {"type": "string", "description": "Line range like '10-50' or '5'."},
-                                    },
-                                    "required": ["path"],
-                                },
-                            ]
-                        },
-                        "description": "One or more file paths. Each item is a path string, or an object with path + optional lines.",
-                    },
+                    "path": {"type": "string", "description": "The absolute path to the file or directory to read"},
+                    "limit": {"type": "number", "description": "Max lines to read (default 1000)"},
+                    "offset": {"type": "number", "description": "Starting line number (1-indexed)"},
                 },
+                "required": ["path"],
             },
         },
     },
@@ -147,7 +135,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Images: either base64 data URIs (data:image/png;base64,...) "
                 "or local file paths in <img src>. Requires pandoc in PATH. "
                 "EDITING an existing .docx: do NOT rewrite the whole HTML. "
-                "read_files on the .docx returns its exact HTML source, edit it IN PLACE with "
+                "read on the .docx returns its exact HTML source, edit it IN PLACE with "
                 "patch_file (small find/replace on that HTML), then call create_docx "
                 "once with the FULL updated HTML to regenerate the .docx for viewing. "
                 "The HTML source is persisted, so patch_file targets survive between turns."
@@ -649,7 +637,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 from config import READ_ONLY_TOOLS as _READ_ONLY_TOOL_NAMES  # noqa: E402
 
 _PLANNING_TOOL_NAMES = _READ_ONLY_TOOL_NAMES | {"poll", "skill", "web_search", "web_fetch"}
-_AUTONOMOUS_TOOL_NAMES = _PLANNING_TOOL_NAMES | {"shell", "subagent"}
+_SWARM_TOOL_NAMES = _PLANNING_TOOL_NAMES | {"shell", "subagent"}
 
 # Cache for get_tool_schemas. Key — (mode, mcp_signature), where mcp_signature is
 # a tuple of MCP tool names. Invalidated whenever the MCP set changes.
@@ -680,7 +668,7 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
     """Returns JSON schemas for tools matching the given mode.
 
     plan/planning → read-only tools + plan (+ think if enabled).
-    autonomous    → planning tools + shell + subagent (+ think if enabled).
+    swarm         → planning tools + shell + subagent (+ think if enabled).
     agent         → all base tools + MCP + plan (+ think if enabled).
 
     think is included ONLY when think-mode is active — otherwise the model
@@ -690,7 +678,7 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
     skills add instructions but do not restrict tools.
     """
     think_on = _resolve_think_for_schemas()
-    restricted_mode = mode in ("plan", "planning", "autonomous", "auto")
+    restricted_mode = mode in ("plan", "planning", "swarm", "auto")
     mcp_sig = () if restricted_mode else _mcp_signature()
     cache_key = (mode, mcp_sig, think_on)
     cached = _SCHEMAS_CACHE.get(cache_key)
@@ -698,7 +686,7 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
         return list(cached)
 
     if restricted_mode:
-        allowed = (_AUTONOMOUS_TOOL_NAMES if mode in ("autonomous", "auto") else _PLANNING_TOOL_NAMES) | {"plan"}
+        allowed = (_SWARM_TOOL_NAMES if mode in ("swarm", "auto") else _PLANNING_TOOL_NAMES) | {"plan"}
         if think_on:
             allowed = allowed | {"think"}
         base = [
@@ -717,26 +705,6 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
             pass
     _SCHEMAS_CACHE[cache_key] = base
     return list(base)
-
-
-def tool_requires_args(name: str) -> bool:
-    """True if the tool has required parameters.
-
-    Needed for recovery from a proxy bug: when streaming native tool_calls,
-    some providers return empty `{}` args. If a tool has required fields,
-    empty `{}` almost certainly means lost arguments, so a fallback re-request
-    is needed. For argument-less tools (memory_list etc.), empty `{}` is valid
-    and no fallback is needed.
-    """
-    for s in TOOL_SCHEMAS:
-        fn = s.get("function", {})
-        if fn.get("name") == name:
-            params = fn.get("parameters", {}) or {}
-            return bool(params.get("required"))
-    # Unknown/MCP tool: safer to assume args are needed
-    # (extra fallback is cheaper than lost args). But if it's not our tool at all —
-    # empty dict is harmless; return False to avoid loops.
-    return False
 
 
 def invalidate_schemas_cache() -> None:

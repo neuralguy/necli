@@ -1,7 +1,16 @@
+"""Мастер первого запуска: язык → тема с превью → провайдер и ключ.
+
+Важно про порядок запуска: `commands/interactive.py` зовёт `run_onboarding()`
+ДО `asyncio.run(_run())`, то есть Shell'а в этот момент ещё нет и оверлеям
+рисовать некуда. Поэтому шаги написаны как корутины (единый API виджетов), а
+`overlays.*` внутри сам уходит на синхронный путь, пока `get_shell()` пуст.
+Если мастер когда-нибудь позовут из уже работающего Application — те же шаги
+поедут через оверлеи без правок.
+"""
+
 from __future__ import annotations
 
 import shutil
-import sys
 from io import StringIO
 
 from rich.align import Align
@@ -29,7 +38,8 @@ from config.themes import (
 from config.themes import (
     t as tc,
 )
-from ui.menu import _panel_menu_direct, select_menu
+from ui import overlays
+from ui.shell import get_shell, print_static
 
 console = Console()
 
@@ -59,6 +69,14 @@ def mark_onboarded() -> None:
 
 
 def _clear_screen() -> None:
+    """Чистит экран между шагами.
+
+    Только пока терминалом никто не владеет: при живом Application очистка
+    затёрла бы его рамку, и prompt_toolkit об этом бы не узнал.
+    """
+    if get_shell() is not None:
+        return
+    import sys
     sys.stdout.write("\x1b[2J\x1b[H")
     sys.stdout.flush()
 
@@ -92,11 +110,11 @@ def _hero_panel(step: int, total: int, title_key: str) -> Panel:
 
 def _show_hero(step: int, total: int, title_key: str) -> None:
     _clear_screen()
-    console.print(_hero_panel(step, total, title_key))
-    console.print()
+    print_static(_hero_panel(step, total, title_key))
+    print_static("")
 
 
-def _step_language(start: int = 0) -> tuple[bool, int]:
+async def _step_language(start: int = 0) -> tuple[bool, int]:
     _show_hero(1, 3, "onboarding.title_lang")
 
     current = config.get("language", "en")
@@ -104,7 +122,9 @@ def _step_language(start: int = 0) -> tuple[bool, int]:
         {"label": LANG_DISPLAY.get(code, code), "hint": code, "active": code == current}
         for code in SUPPORTED_LANGS
     ]
-    choice = select_menu(items, current=start, title=_("lang.subtitle"), allow_forward=True)
+    choice = await overlays.select_menu(
+        items, current=start, title=_("lang.subtitle"), allow_forward=True,
+    )
     if choice is None:
         return False, start
     if choice >= 0:
@@ -156,24 +176,33 @@ def _theme_list_panel(names: list[str], selected: int, current: str, width: int)
     return buf.getvalue()
 
 
-def _step_theme(start: int = 0) -> tuple[bool, int]:
+async def _step_theme(start: int = 0) -> tuple[bool, int]:
     _show_hero(2, 3, "onboarding.title_theme")
 
     names = list_themes()
     current = get_active_theme_name()
 
     # Раскладка как в /themes: панель списка сверху, превью под ней (вертикально).
-    term_w = shutil.get_terminal_size((100, 24)).columns
+    term_size = shutil.get_terminal_size((100, 24))
+    term_w = term_size.columns
     preview_w = min(76, term_w - 6)
     list_w = min(term_w, preview_w + 4)
+    # В оверлее тело обязано уместиться между линиями рамки: две линии, строка
+    # подсказки и обязательная пустая снизу. Не уместится — prompt_toolkit
+    # напишет «Window too small» вместо всего экрана, поэтому режем превью.
+    body_budget = max(8, term_size.lines - 5)
 
     def render_fn(sel: int) -> str:
         list_panel = _theme_list_panel(names, sel, current, list_w)
         preview = render_theme_preview(BUILTIN_THEMES[names[sel]], width=preview_w)
-        return list_panel + preview
+        out = list_panel + preview
+        if get_shell() is None:
+            return out
+        rows = out.split("\n")
+        return "\n".join(rows[:body_budget]) if len(rows) > body_budget else out
 
-    choice = _panel_menu_direct(
-        render_fn, sys.stdout,
+    choice = await overlays.panel_menu(
+        render_fn,
         _("themes.hint_apply") if _("themes.hint_apply") != "themes.hint_apply" else "↑↓ select · enter apply · esc skip",
         len(names), start,
         allow_back=True,
@@ -189,7 +218,7 @@ def _step_theme(start: int = 0) -> tuple[bool, int]:
     return True, cursor
 
 
-def _step_provider(start: int = 0) -> tuple[bool, int]:
+async def _step_provider(start: int = 0) -> tuple[bool, int]:
     from apis.config import add_api_config, list_api_configs
     from apis.registry import get_definition, reload_providers
 
@@ -201,7 +230,10 @@ def _step_provider(start: int = 0) -> tuple[bool, int]:
     ]
     items.append({"label": _("onboarding.skip_provider"), "hint": _("onboarding.skip_hint")})
 
-    choice = select_menu(items, current=start, title=_("onboarding.pick_provider"), allow_back=True, allow_forward=True)
+    choice = await overlays.select_menu(
+        items, current=start, title=_("onboarding.pick_provider"),
+        allow_back=True, allow_forward=True,
+    )
     if choice is None or choice == len(_PROVIDER_PRESETS):
         _ensure_default_provider()
         return False, start if choice is None else choice
@@ -214,10 +246,10 @@ def _step_provider(start: int = 0) -> tuple[bool, int]:
         provider_type=ptype, api_format=api_format,
     )
     reload_providers()
-    console.print(f"  [green]✓[/green] {_('api.added', name=name)}")
+    print_static(f"[green]✓[/green] {_('api.added', name=name)}")
 
     if pid not in ("ollama",):
-        _ask_api_key(pid, name)
+        await _ask_api_key(pid, name)
 
     defn = get_definition(pid)
     if defn:
@@ -231,22 +263,19 @@ def _step_provider(start: int = 0) -> tuple[bool, int]:
     return False, choice
 
 
-def _ask_api_key(pid: str, name: str) -> None:
+async def _ask_api_key(pid: str, name: str) -> None:
     from apis.config import set_api_key as _set_key
-    console.print()
-    console.print(f"  [dim]{_('onboarding.key_prompt_hint')}[/dim]")
-    try:
-        key = console.input(
-            f"  [bold]{_('api.field_api_key')}[/bold] [dim]({_('onboarding.optional')}):[/dim] "
-        ).strip()
-    except (KeyboardInterrupt, EOFError):
-        key = ""
-        console.print()
+    print_static("")
+    print_static(f"[dim]{_('onboarding.key_prompt_hint')}[/dim]")
+    # password=True: ключ не должен оставаться на экране и в scrollback.
+    key = (await overlays.ask_text(
+        f"{_('api.field_api_key')} ({_('onboarding.optional')}):", password=True,
+    ) or "").strip()
     if key:
         _set_key(pid, key)
-        console.print(f"  [green]✓[/green] {_('api.key_set')}")
+        print_static(f"[green]✓[/green] {_('api.key_set')}")
     else:
-        console.print(f"  [yellow]⚠[/yellow] {_('onboarding.key_skipped', name=name)}")
+        print_static(f"  [yellow]⚠[/yellow] {_('onboarding.key_skipped', name=name)}")
 
 
 def _ensure_default_provider() -> None:
@@ -281,22 +310,33 @@ def _ensure_default_provider() -> None:
             config.set_active_api_model(model_id)
 
 
-def run_onboarding() -> None:
+async def run_onboarding_async() -> None:
     steps = [_step_language, _step_theme, _step_provider]
     cursors = [0] * len(steps)
     i = 0
     try:
         while i < len(steps):
-            want_back, cursor = steps[i](cursors[i])
+            want_back, cursor = await steps[i](cursors[i])
             cursors[i] = cursor
             if want_back and i > 0:
                 i -= 1
             else:
                 i += 1
     except (KeyboardInterrupt, EOFError):
-        console.print()
+        print_static("")
         _ensure_default_provider()
     finally:
         mark_onboarded()
 
     _clear_screen()
+
+
+def run_onboarding() -> None:
+    """Синхронный вход: `interactive.py` зовёт мастер до `asyncio.run(_run())`.
+
+    Loop'а и Shell'а на этот момент нет, поэтому мост просто прокручивает
+    корутину своим `asyncio.run`, а виджеты внутри рисуются старым синхронным
+    путём — единственным работающим, пока Application не поднят.
+    """
+    from ui.menu import run_ui_sync
+    run_ui_sync(run_onboarding_async())

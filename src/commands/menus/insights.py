@@ -2,14 +2,8 @@
 
 import asyncio
 
-from rich.console import Console
-from rich.markup import escape
-
-from config.i18n import t as _
 from logger import logger
 from tools._paths import get_working_dir
-
-console = Console()
 
 
 def _run_async(coro):
@@ -43,23 +37,15 @@ def _run_async(coro):
 def insights_interactive() -> None:
     from memory.insights import generate_insights
 
-    console.print(f"  [dim]{_('insights.working')}[/dim]")
     try:
-        with console.status(_("insights.working"), spinner="dots"):
-            result = _run_async(
-                generate_insights(get_working_dir(), persist_memory=False)
-            )
+        _run_async(
+            generate_insights(get_working_dir(), persist_memory=False)
+        )
     except RuntimeError as e:
         if "no sessions" in str(e):
-            console.print(f"  [yellow]{_('insights.no_sessions')}[/yellow]")
             return
         logger.error("insights failed: {}", e)
-        console.print(f"  [red]{_('insights.failed', err=escape(str(e)))}[/red]")
         return
     except Exception as e:
         logger.opt(exception=True).error("insights failed: {}", e)
-        console.print(f"  [red]{_('insights.failed', err=escape(str(e)))}[/red]")
         return
-
-    path = result["report_path"]
-    console.print(f"  [green]✓[/green] {_('insights.done', path=escape(str(path)))}")

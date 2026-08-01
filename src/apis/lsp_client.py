@@ -203,9 +203,9 @@ class LSPManager:
         Раньше всё валилось в одно «нет сервера, проверь конфиг» — но причины
         разные: нет конфига для расширения / не найден root-маркер / сервер упал
         при старте. В случае с root-маркером конфиг в порядке, и совет «проверь
-        конфиг» сбивает с толку. Всегда подсказываем read_files как замену."""
+        конфиг» сбивает с толку. Всегда подсказываем read как замену."""
         suffix = file_path.suffix or "(no extension)"
-        fallback = " Use read_files to locate the symbol instead."
+        fallback = " Use read to locate the symbol instead."
         cfg = self._find_config_for(file_path)
         if not cfg:
             return (f"No LSP server configured for {suffix} files "

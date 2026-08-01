@@ -67,7 +67,7 @@ call, its action, or its preamble as ordinary text. The tool result is the only 
 
 1) JSON tools — JSON body:
 
-    :::call read_files
+    :::call read
     {"path": "main.py"}
     call:::
 
@@ -138,55 +138,11 @@ Remove newly added code that is not used.
 TOOLS = """# Tools"""
 
 
-FENCED_CALL_SYNTAX = (
-    """
-## Fenced call syntax
-
-⚠ The marker is `:::call` — THREE colons before `call` is canonical. `::call` (two) is tolerated and
-still executes, but always prefer three.
-
-Three categories of `:::call` blocks:
-
-1) JSON tools — body is a JSON object with the arguments. This is the DEFAULT for EVERY tool
-   except the two content/patch cases below (shell, lsp_*, poll, etc.):
-
-    :::call read_files
-    {"path": "main.py"}
-    call:::
-
-    :::call shell
-    {"command": "pytest -q"}
-    call:::
-
-2) Content tools (create_file, create_docx) — path REQUIRED in the open header, body is
-   raw content (no escaping needed, body can contain triple-backtick fences or tildes).
-   create_file creates a new file or fully overwrites an existing one:
-
-    :::call create_file path="src/main.py"
-    print("hi")
-    call:::
-
-3) patch_file — path REQUIRED, sections FIND/REPLACE / INSERT / delete_lines attribute:
-
-    :::call patch_file path="src/main.py"
-    --- FIND ---
-    def old(): pass
-    --- REPLACE ---
-    def new(): return 42
-    call:::
-
-   ONE change per patch_file call: EXACTLY ONE FIND section and ONE REPLACE section. Never repeat the
-   REPLACE marker after the replacement text. The body ends at call:::; no terminator marker is needed.
-   Several edits in one file = several SEPARATE patch_file calls (emit them together in one reply).
-    """
-)
-
-
 AVAILABLE_TOOLS = (
     """
 # Available tools
 
-shell, read_files, patch_file, create_file, poll, web_search, web_fetch, subagent,
+shell, read, patch_file, create_file, poll, web_search, web_fetch, subagent,
 skill, create_docx, docx_screenshot, lsp_references, lsp_diagnostics,
 memory_write, memory_list, memory_read.
 
@@ -203,20 +159,6 @@ scope="project" (default) for context specific to the current project.
 )
 
 
-LSP_TOOLS = (
-    """
-## LSP tools
-
-Available when an LSP server is configured for the file's language (via `.data/lsp_servers.json`).
-If none is configured, these tools return an error.
-
-For lsp_references: `line` is 1-based, `character` is the 0-based column of
-the symbol. They return `path:line:column`. lsp_diagnostics output lines: `SEVERITY line:col
-[source:code] message` (re-parses from disk, waits up to 4s).
-    """
-)
-
-
 TOOL_STRATEGY = (
     """
 # Tool strategy
@@ -226,8 +168,8 @@ Use LSP first for symbol questions:
 
 - post-edit code errors → `lsp_diagnostics`
 
-Use `read_files` and grep for text only: string literals, comments, log/error messages, config keys, or patterns
-you will feed into LSP. Pass file or directory paths to grep; use `read_files` for targeted line ranges. Fall back from LSP to file reading only when LSP is unavailable or returns nothing.
+Use `read` and grep for text only: string literals, comments, log/error messages, config keys, or patterns
+you will feed into LSP. Pass file or directory paths to grep; use `read` for targeted line ranges. Fall back from LSP to file reading only when LSP is unavailable or returns nothing.
 
 Use the plan tool only for multi-step or uncertain work; update it when the plan is used.
     """
@@ -308,7 +250,7 @@ MODE_PLANNING = (
 # Planning mode
 
 You are in PLANNING mode. This is a read-only engineering design/review mode, not implementation.
-Only read-only tools are available: read_files, web_search, poll,
+Only read-only tools are available: read, web_search, poll,
 skill. ALL write/execute tools (patch_file, create_file, shell, subagent, create_docx) are BLOCKED by the system —
 attempting them returns an error.
 
@@ -337,11 +279,11 @@ When the user is happy with the plan they will switch to AGENT mode, at which po
 )
 
 
-MODE_AUTONOMOUS = (
+MODE_SWARM = (
     """
-# Autonomous mode
+# Swarm mode
 
-You are in AUTONOMOUS mode. This is a long-running production-delivery mode.
+You are in SWARM mode. This is a long-running production-delivery mode.
 
 Your role:
 - You are an orchestrator, not the primary implementer.
@@ -465,18 +407,10 @@ BASE = "\n\n".join([
     RESPONSE_STRUCTURE,
     OUTCOME_DISCIPLINE,
     TOOLS,
-    HEADER,
     AVAILABLE_TOOLS,
-    HEADER,
     TOOL_STRATEGY,
     WEB_SEARCH,
     DOCX_FILES,
     HARD_CONSTRAINTS,
     LANGUAGE,
 ])
-
-# Conditional sections used by system_prompt.py
-MODE_PLANNING = MODE_PLANNING
-MODE_AUTONOMOUS = MODE_AUTONOMOUS
-THINK = THINK
-NOT_SUBAGENT = NOT_SUBAGENT

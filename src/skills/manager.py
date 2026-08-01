@@ -127,25 +127,6 @@ def create_skill(name: str, description: str, content: str) -> SkillInfo | None:
     return _load_skill_info(skill_dir)
 
 
-def add_skill(source_path: Path) -> SkillInfo:
-    USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-    if source_path.is_file() and source_path.name == SKILL_FILENAME:
-        source_path = source_path.parent
-    if not source_path.is_dir():
-        raise ValueError(f"Ожидалась директория со SKILL.md: {source_path}")
-    skill_md = source_path / SKILL_FILENAME
-    if not skill_md.exists():
-        raise FileNotFoundError(f"Не найден {SKILL_FILENAME} в {source_path}")
-    dest = USER_SKILLS_DIR / source_path.name
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(source_path, dest)
-    info = _load_skill_info(dest)
-    if not info:
-        raise ValueError(f"Не удалось загрузить скилл из {dest}")
-    return info
-
-
 def remove_skill(name: str) -> bool:
     skill = load_skill(name)
     if skill is None:
@@ -201,38 +182,3 @@ def consume_pending_messages() -> list[str]:
 def reset_active_skills() -> None:
     _active_skills.clear()
     _pending_messages.clear()
-
-
-def get_active_skill_names() -> set[str]:
-    return set(_active_skills)
-
-def build_skills_prompt() -> str:
-    skills = discover_skills()
-    if not skills:
-        return ""
-    available = []
-    for s in skills:
-        if not s.disable_model_invocation or s.name in _active_skills:
-            desc = s.description[:250] if s.description else "(без описания)"
-            available.append(f"  - {s.name}: {desc}")
-    if not available:
-        return ""
-    example_json = '{"name": "<имя_скилла>"}'
-    lines = [
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "СКИЛЛЫ",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-        "Скиллы — специализированные инструкции, расширяющие твои возможности.",
-        "Если задача соответствует доступному скиллу, загрузи его через инструмент skill:",
-        ":::call skill",
-        example_json,
-        "call:::",
-        "Скилл вернёт детальные инструкции. Следуй им.",
-        "",
-        "Доступные скиллы:",
-    ]
-    lines.extend(available)
-    lines.append("")
-    return "\n".join(lines)

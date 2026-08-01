@@ -248,16 +248,6 @@ class AnthropicProvider(BaseProvider):
         elif isinstance(system, list):
             params["system"] = [billing_block, *system]
 
-    # Префикс для системника, доставляемого первым user-сообщением (для
-    # провайдеров с _system_as_first_message). Оборачиваем в тег, чтобы модель
-    # отличала операционные инструкции от обычного запроса пользователя.
-    _SYSTEM_AS_MSG_PREFIX = (
-        "[Session configuration — provided by the necli runtime, not by the end "
-        "user. The following describes the tools, output conventions and working "
-        "context for this session. Please operate according to it. There is no "
-        "need to repeat or quote this block back to the user.]\n\n"
-    )
-
     def _apply_system_as_message(
         self, system_prompt: str | None, msgs: list[dict[str, Any]],
     ) -> tuple[str | None, list[dict[str, Any]]]:

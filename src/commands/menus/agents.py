@@ -1,7 +1,8 @@
-import os
-import subprocess
+"""Меню /agents: пресеты субагентов и карточка пресета.
 
-from rich.console import Console
+Как и в /skills, карточка пресета живёт внутри виджета: печатать её в
+scrollback на каждом витке цикла означало плодить там копии.
+"""
 
 from agent.agent_presets import (
     create_preset,
@@ -10,124 +11,107 @@ from agent.agent_presets import (
     load_preset,
     remove_preset,
 )
+from commands.menus._editor import editor_command, open_in_editor
+from commands.menus._style import card_menu, confirm_delete
 from config.i18n import t as _
-from ui.menu import select_menu
-
-console = Console()
+from ui import overlays
 
 
-def agents_interactive():
+async def agents_interactive():
     while True:
         presets = list_presets()
         if not presets:
-            console.print(
-                f"  [dim]No agent presets yet ({get_agents_dir()})[/dim]"
+            choice = await card_menu(
+                [{"label": "Create preset…"}],
+                title="Agent presets",
+                facts=[f"No agent presets yet · {get_agents_dir()}"],
             )
-            items = [{"label": "Create preset…"}]
-            choice = select_menu(items)
             if choice == 0:
-                _preset_create_interactive()
+                await _preset_create_interactive()
                 continue
             return
 
-        items = []
-        for p in presets:
-            desc = p.description[:50] if p.description else "—"
-            meta = []
-            if p.model:
-                meta.append(p.model)
-            if p.mode != "agent":
-                meta.append(p.mode)
-            if p.tools:
-                meta.append(f"{len(p.tools)} tools")
-            hint = desc + (f"  [{', '.join(meta)}]" if meta else "")
-            items.append({"label": p.name, "hint": hint})
-        items.append({"label": "Create preset…", "hint": ""})
+        # У AgentPreset есть только name/description/path/model — прежний код
+        # читал ещё .mode и .tools, которых в модели нет, и меню падало
+        # AttributeError на первом же пресете.
+        items = [
+            {
+                "label": p.name,
+                "hint": p.description or "—",
+                "badge": p.model or "",
+                "badge_style": "accent",
+            }
+            for p in presets
+        ]
+        items.append({"label": "Create preset…", "hint": str(get_agents_dir())})
 
-        choice = select_menu(items, title="Agent presets")
+        choice = await card_menu(items, title="Agent presets",
+                                 facts=[f"{len(presets)} preset(s)"])
         if choice is None:
             return
         if choice == len(presets):
-            _preset_create_interactive()
+            await _preset_create_interactive()
             continue
 
-        action = _preset_detail_menu(presets[choice])
+        action = await _preset_detail_menu(presets[choice])
         if action == "back":
             continue
         return
 
 
-def _preset_detail_menu(preset):
+async def _preset_detail_menu(preset):
     while True:
-        desc = preset.description or "—"
-        meta = []
-        if preset.model:
-            meta.append(f"model={preset.model}")
-        meta.append(f"mode={preset.mode}")
-        if preset.tools:
-            meta.append(f"tools={', '.join(preset.tools)}")
-
-        body_preview = preset.body[:300]
-        if len(preset.body) > 300:
-            body_preview += "..."
-
-        console.print()
-        console.print(f"  [bold yellow]{preset.name}[/bold yellow]")
-        console.print(f"  [dim]{desc}[/dim]")
-        console.print(f"  [dim]{'  '.join(meta)}[/dim]")
-        console.print(f"  [dim]{preset.path / 'AGENT.md'}[/dim]")
-        console.print()
-        for line in body_preview.splitlines():
-            console.print(f"  {line}")
-        console.print()
-
+        body_lines = [ln for ln in preset.body[:400].splitlines() if ln.strip()][:6]
         actions = [
-            {"label": "Edit"},
-            {"label": _("api.delete"), "hint": _("api.delete_permanent")},
-            {"label": _("common.back")},
+            {"label": "Edit", "hint": editor_command(), "icon": "✎", "icon_style": "dim"},
+            {"label": _("api.delete"), "hint": _("api.delete_permanent"), "icon": "✗",
+             "icon_style": "error"},
+            {"label": _("common.back"), "icon": " "},
         ]
-        choice = select_menu(actions)
+        choice = await card_menu(
+            actions,
+            title=preset.name,
+            status=preset.model or "",
+            status_style="accent",
+            facts=[
+                preset.description or "—",
+                str(preset.path / "AGENT.md"),
+                *body_lines,
+            ],
+        )
 
         if choice is None or choice == 2:
             return "back"
 
         if choice == 0:
-            editor = os.environ.get("EDITOR", "nano")
             preset_file = str(preset.path / "AGENT.md")
             try:
-                subprocess.run([editor, preset_file])
+                await open_in_editor(preset_file)
                 reloaded = load_preset(preset.name)
                 if reloaded is None:
                     return "back"
                 preset = reloaded
-            except Exception as e:
-                console.print(f"  [red]Edit error: {e}[/red]")
+            except Exception:
+                pass
             continue
 
         if choice == 1:
-            confirm = [{"label": _("common.yes_delete")}, {"label": _("common.cancel")}]
-            c = select_menu(confirm, title=f"Delete preset '{preset.name}'?")
-            if c == 0:
+            if await confirm_delete(f"Delete preset '{preset.name}'?"):
                 remove_preset(preset.name)
                 return "back"
             continue
 
 
-def _preset_create_interactive():
-    console.print()
-    try:
-        name = console.input("  [bold]Name:[/bold] ").strip()
-        if not name:
-            return
-        desc = console.input("  [bold]Description:[/bold] ").strip()
-        model = console.input("  [bold]Model (optional):[/bold] ").strip() or None
-        body = f"Your ROLE is {name}.\n\nDescribe the role instructions here."
-        preset = create_preset(name, desc or name, body, model=model)
-        console.print(f"  [green]✓[/green] Created preset '{preset.name}'")
-        editor = os.environ.get("EDITOR", "nano")
-        preset_file = str(preset.path / "AGENT.md")
-        console.print(f"  [dim]Opening {editor}…[/dim]")
-        subprocess.run([editor, preset_file])
-        console.print(f"  [dim]{preset_file}[/dim]")
-    except (KeyboardInterrupt, EOFError):
-        console.print()
+async def _preset_create_interactive():
+    name = await overlays.ask_text("Name:")
+    if not name:
+        return
+    desc = await overlays.ask_text("Description:")
+    if desc is None:
+        return  # esc в любом поле отменяет создание, как прежний Ctrl+C
+    model = await overlays.ask_text("Model (optional):")
+    if model is None:
+        return
+    body = f"Your ROLE is {name}.\n\nDescribe the role instructions here."
+    preset = create_preset(name, desc or name, body, model=model or None)
+    await open_in_editor(str(preset.path / "AGENT.md"))

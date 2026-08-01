@@ -14,7 +14,7 @@ from tools.file_ops import (
     docx_screenshot,
     execute_grep,
     patch_file,
-    read_files,
+    read,
 )
 from tools.image_search import execute_image_search
 from tools.memory_tool import memory_list, memory_read, memory_write
@@ -42,8 +42,7 @@ def _lsp_diag(call):
 # Маппинг имя → функция-обработчик
 TOOL_REGISTRY: dict[str, Callable] = {
     "shell": execute_shell,
-    "read_files": read_files,
-    "read_file": read_files,  # alias
+    "read": read,
     "grep": execute_grep,
     "patch_file": patch_file,
     "create_file": create_file,
@@ -210,10 +209,9 @@ def execute_call(call: ToolCall) -> ToolResult:
     return result
 
 
-# Канонический набор — config.READ_ONLY_TOOLS. Алиас "read_file" для
-# обратной совместимости с моделями, которые иногда называют его так.
-PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"read_file", "poll", "skill", "web_search", "web_fetch"})
-AUTONOMOUS_TOOLS = frozenset(PLANNING_TOOLS | {"shell", "subagent"})
+# Канонический набор — config.READ_ONLY_TOOLS.
+PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"poll", "skill", "web_search", "web_fetch"})
+SWARM_TOOLS = frozenset(PLANNING_TOOLS | {"shell", "subagent"})
 
 _PLANNING_TOOLS_HUMAN = ", ".join(sorted(_READ_ONLY_CANONICAL))
 
@@ -225,15 +223,15 @@ def is_tool_allowed(
 ) -> bool:
     if mode == "agent":
         return True
-    if mode in ("autonomous", "auto"):
-        return tool_name in AUTONOMOUS_TOOLS
+    if mode in ("swarm", "auto"):
+        return tool_name in SWARM_TOOLS
     return tool_name in PLANNING_TOOLS
 
 
 def build_blocked_result(call: ToolCall, mode: str = "planning") -> ToolResult:
     """Создаёт ToolResult для инструмента, запрещённого текущим режимом."""
-    allowed = AUTONOMOUS_TOOLS if mode in ("autonomous", "auto") else PLANNING_TOOLS
-    allowed_human = ", ".join(sorted(allowed - {"read_file"}))
+    allowed = SWARM_TOOLS if mode in ("swarm", "auto") else PLANNING_TOOLS
+    allowed_human = ", ".join(sorted(allowed))
     return ToolResult(
         name=call.tool_name,
         status="error",

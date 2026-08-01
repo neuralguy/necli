@@ -1,6 +1,7 @@
 """Сохранение, загрузка и листинг сессий — site-aware."""
 
 import json
+import shutil
 import time
 
 import config
@@ -35,6 +36,12 @@ def _compressed_total_cost(data: dict) -> float:
 
 
 def save(session: Session):
+    # Пустая сессия (0 сообщений) — не сохраняем, удаляем директорию
+    if session.message_count == 0:
+        if session.dir.exists():
+            shutil.rmtree(str(session.dir), ignore_errors=True)
+            logger.debug("session.save: removed empty session dir {}", session.id[:16])
+        return
     session.ensure_dir()
     try:
         _save_history(session)
@@ -166,7 +173,7 @@ def list_sessions(limit: int = 20) -> list[dict]:
         info = _read_summary(session_dir)
         if not info:
             info = _read_summary_from_history(session_dir)
-        if info:
+        if info and info.get("messages", 0) > 0:
             sessions.append(info)
     sessions.sort(key=lambda s: s.get("updated_at", s.get("created_at", 0)), reverse=True)
     if limit > 0:
@@ -477,8 +484,4 @@ def get_statistics(days: int | None = None) -> dict:
                     stats["by_model"][m]["messages"] += per_model
 
     return stats
-
-
-def get_global_statistics() -> dict:
-    return get_statistics(days=None)
 

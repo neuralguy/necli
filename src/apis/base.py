@@ -125,8 +125,6 @@ class BaseProvider:
     # лимит или баланс текущего ключа), а не просто ретраить. 429 — обычный
     # rate limit; 402 — исчерпан лимит плана/баланса ("Top up balance").
     _CREDENTIAL_ROTATE_STATUS_CODES: tuple[int, ...] = (402, 429)
-    _BASE_RETRY_DELAY: float = 2.0
-    _MAX_RETRY_DELAY: float = 8.0
 
     def __init__(
         self,

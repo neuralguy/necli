@@ -61,21 +61,6 @@ def load_source(docx_path: Path) -> str | None:
         logger.opt(exception=True).warning("docx_source load failed for {}: {}", docx_path, e)
         return None
 
-def delete_source(docx_path: Path) -> None:
-    """Удаляет сохранённый исходник (например при delete_file docx)."""
-    try:
-        key = _key_for(docx_path)
-        d = _sources_dir()
-        for suffix in (".html", ".meta"):
-            f = d / f"{key}{suffix}"
-            if f.exists():
-                f.unlink()
-    except Exception as e:
-        logger.opt(exception=True).debug("docx_source delete failed for {}: {}", docx_path, e)
-    # Шаблон-оригинал тоже чистим.
-    delete_template(docx_path)
-
-
 def save_template(docx_path: Path) -> Path | None:
     """Кладёт копию ОРИГИНАЛЬНОГО .docx как шаблон для точного round-trip.
 
@@ -121,20 +106,7 @@ def load_template(docx_path: Path) -> Path | None:
         return None
 
 
-def delete_template(docx_path: Path) -> None:
-    try:
-        key = _key_for(docx_path)
-        d = _sources_dir()
-        for suffix in (".template.docx", ".template.meta"):
-            f = d / f"{key}{suffix}"
-            if f.exists():
-                f.unlink()
-    except Exception as e:
-        logger.opt(exception=True).debug("docx_template delete failed for {}: {}", docx_path, e)
-
-
 __all__ = [
-    "delete_source",
     "load_source",
     "load_template",
     "save_source",

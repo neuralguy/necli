@@ -18,31 +18,29 @@ from config.i18n import t as _i18n
 from config.themes import t
 from config.ui import ui
 
-THINKING_STYLE = "dim italic"
-
 THINKING_FRAMES = SPINNER_FRAMES
 WRITING_FRAMES = SPINNER_FRAMES
 
 
-def make_thinking_indicator(spinner_frame: str, model: str) -> Text:
+def make_thinking_indicator(spinner_frame: str) -> Text:
     txt = Text()
-    txt.append(f"  {spinner_frame} ", style=f"bold {t('accent')}")
-    txt.append(model, style=f"bold {t('accent')}")
+    txt.append(f"{spinner_frame} ", style=f"bold {t('accent')}")
     suffix = ui.get("indicators.thinking_suffix", f"{_i18n('ui.thinking')}…")
-    txt.append(f"  {suffix}", style=THINKING_STYLE)
+    txt.append(f"{suffix}", style=f"bold {t('accent')}")
     return txt
 
 
 def make_writing_indicator(spinner_frame: str, tool_name: str) -> Text:
-    _, color = TOOL_DISPLAY.get(tool_name, ("Tool", t("warning")))
+    """Однострочный индикатор подготовки команды без её имени.
+
+    Подписи команд принадлежат статическому scrollback. Динамическая зона
+    намеренно не показывает ни имя, ни ещё недописанные аргументы: её высота
+    остаётся постоянной, пока модель формирует вызов.
+    """
+    del tool_name
     txt = Text()
-    txt.append(f"  {spinner_frame} ", style=f"bold {color}")
-    if tool_name == "tool":
-        txt.append("using tool…", style="dim")
-        return txt
-    prefix = ui.get("indicators.writing_prefix", "writing ")
-    suffix = ui.get("indicators.writing_suffix", "…")
-    txt.append(f"{prefix}{tool_name}{suffix}", style="dim")
+    txt.append(f"{spinner_frame} ", style=f"bold {t('accent')}")
+    txt.append("working…", style="dim")
     return txt
 
 
@@ -300,12 +298,9 @@ def _build_partial_syntax(code: str, lang: str, cache_token):
     cached = _PARTIAL_SYNTAX_CACHE.get(cache_token)
     if cached is not None:
         return cached
-    from agent.display import is_compact
-    bg = "default" if is_compact() else t("bg_code")
-    pad = (0, 0) if is_compact() else (0, 2)
     syn = Syntax(
         code, lang, theme="monokai", line_numbers=False,
-        padding=pad, background_color=bg, word_wrap=True,
+        padding=(0, 0), background_color="default", word_wrap=True,
     )
     if len(_PARTIAL_SYNTAX_CACHE) >= _PARTIAL_SYNTAX_CACHE_MAX:
         _PARTIAL_SYNTAX_CACHE.pop(next(iter(_PARTIAL_SYNTAX_CACHE)))
@@ -610,7 +605,7 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
 
 def render_reasoning_panel(text: str, streaming: bool = False):
     """Панель с реальными мыслями ИИ (reasoning_content) — формат think-блока с пометкой raw."""
-    from agent.display import _w, is_compact, is_expanded_preview
+    from agent.display import is_compact, is_expanded_preview
     from ui.formatting import latex_to_unicode
 
     muted = t("dim_text")
@@ -673,22 +668,10 @@ def render_reasoning_panel(text: str, streaming: bool = False):
             out.append(Text("        " + _i18n("compact.think_expand", n=hidden), style="dim italic"))
         return Group(*out)
 
-    body = Text(full, style=f"italic {muted}")
-    title = f"[bold magenta]{emoji} {label}[/bold magenta]"
-    return Panel(
-        body,
-        title=title,
-        title_align="left",
-        border_style="magenta",
-        padding=tuple(ui.get("paddings.think_panel", [0, 2])),
-        width=_w(),
-    )
-
 
 def render_live_group(
     current_text: str,
     has_partial: bool,
-    partial_body: str,
     partial_tool: str,
     spinner_frame: str,
     writing_frame: str,
@@ -698,7 +681,6 @@ def render_live_group(
     reasoning_done: bool = False,
     think_log=None,
     partial_thought: str | None = None,
-    partial_attrs: str = "",
     response_streaming: bool = True,
     partial_elapsed: float = 0.0,
 ) -> Group:
@@ -731,24 +713,19 @@ def render_live_group(
         ))
 
     if has_partial and partial_tool == "think":
-        # think уже отображается через think_log.render_line выше с partial-текстом
+        # think уже отображается выше через render_think_static с partial-текстом
         # (parse_partial_thought на text-буфере). Generic panel НЕ нужна.
         pass
-    elif has_partial and partial_body:
-        partial_panel = render_partial_tool(
-            partial_body, partial_tool,
-            spinner_frame=writing_frame, attrs_header=partial_attrs,
-            elapsed_seconds=partial_elapsed,
-        )
-        if partial_panel is not None:
-            parts.append(Text(""))
-            parts.append(partial_panel)
     elif has_partial:
+        # Имя команды, её аргументы и partial-превью не должны жить в
+        # динамической зоне. Они менялись на каждом чанке, раздували высоту
+        # кадра и дёргали открытые меню. Полный подписанный блок появится в
+        # scrollback ровно один раз после выполнения.
         parts.append(Text(""))
         parts.append(make_writing_indicator(writing_frame, partial_tool))
 
     if not parts:
-        parts.append(make_thinking_indicator(spinner_frame, model))
+        parts.append(make_thinking_indicator(spinner_frame))
 
     return Group(*parts)
 

@@ -43,6 +43,17 @@ class SubagentResult:
     has_changes: bool = False
 
 
+def _fail_buffers(buffers: list[SubagentBuffer], error: str) -> None:
+    """Помечает буферы провалом при раннем выходе оркестратора.
+
+    Без этого буферы навсегда остаются в "queued": трекер ждёт done/error в
+    wait_all_done() и панель висит с очередью, которая никогда не двинется.
+    """
+    for b in buffers:
+        if b.status not in ("done", "error"):
+            b.on_error(error)
+
+
 class SubagentOrchestrator:
     """Запускает API-субагентов с изолированными ApiSession + git worktree."""
 
@@ -81,6 +92,7 @@ class SubagentOrchestrator:
 
         api_sess = get_api_session()
         if api_sess is None:
+            _fail_buffers(self._buffers, "API session not initialized for subagents.")
             return [
                 SubagentResult(
                     task_index=i,
@@ -101,6 +113,7 @@ class SubagentOrchestrator:
             except GitError as e:
                 err_msg = str(e)
                 logger.error("subagent_git: ensure_git_repo failed: %s", err_msg)
+                _fail_buffers(self._buffers, f"Git setup failed: {err_msg}")
                 return [
                     SubagentResult(
                         task_index=i, mode=t.mode, response="",
@@ -150,6 +163,7 @@ class SubagentOrchestrator:
                 from agent.subagent_git import cleanup_worktree
                 for h in handles:
                     cleanup_worktree(self._working_dir, h)
+                _fail_buffers(self._buffers, f"Worktree setup failed: {err_msg}")
                 return [
                     SubagentResult(
                         task_index=i, mode=t.mode, response="",

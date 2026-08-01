@@ -324,7 +324,7 @@ class _ApiSubagentRunner:
             "waste that kills a subagent — a few grep/LSP calls plus narrow reads cost a fraction of it.\n"
             "  - You ALREADY KNOW the content you write/patch — do NOT re-read a file right after "
             "editing it just to 'check'. The edit either applied or errored; trust the result.\n"
-            "  - Read each needed range ONCE up front (batch them in one read_files call). Don't re-read "
+            "  - Read each needed range ONCE up front (batch them in one read call). Don't re-read "
             "the same file across iterations 'to be sure'.\n"
             "  - VERIFY ONCE at the end, not after every change: make all edits, then run the check "
             "(test/grep/build) a single time. Fix only what it surfaces.\n"
@@ -1000,6 +1000,11 @@ async def run_api_subagents(
     results_by_index: dict[int, SubagentResult] = {}
     _init_progress_log(run_dir, len(tasks))
     if dep_error:
+        # Буферы тоже помечаем ошибкой: иначе они навсегда останутся в "queued",
+        # а трекер ждёт done/error и панель зависнет с неподвижной очередью.
+        for b in buffers:
+            if b.status not in ("done", "error"):
+                b.on_error(f"Dependency setup failed: {dep_error}")
         results = [
             SubagentResult(
                 task_index=i, mode=task.mode, response="",
@@ -1033,11 +1038,21 @@ async def run_api_subagents(
         остальных субагентов своей волны.
         """
         i = runner.index
+        buf = runner.buffer
         try:
             if sem is None:
+                if buf:
+                    buf.on_start()
                 raw = await runner.run()
             else:
+                # Ожидание слота семафора — это НЕ «starting»: агент ещё ничего
+                # не делает. При max_concurrency=12 и 56 задачах 44 строки
+                # показывали «starting» и врали про то, что происходит.
+                if buf:
+                    buf.on_queued()
                 async with sem:
+                    if buf:
+                        buf.on_start()
                     raw = await runner.run()
             text, iters, err = raw
             result = SubagentResult(

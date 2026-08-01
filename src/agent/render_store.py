@@ -167,6 +167,18 @@ class RenderStore:
     def add_think(self, steps: list[str]) -> RenderItem:
         return self.add("think", {"steps": [s for s in (steps or []) if s]})
 
+    def update_think(self, item: RenderItem, steps: list[str]) -> None:
+        """Обновляет снимок мыслей: Ctrl+O должен воспроизводить все raw-тексты."""
+        item.payload["steps"] = [s for s in (steps or []) if s]
+
+    def add_reasoning(self, text: str) -> RenderItem:
+        """Сохраняет reasoning_content как отдельный raw-thinking блок."""
+        return self.add("reasoning", {"text": text or ""})
+
+    def update_reasoning(self, item: RenderItem, text: str) -> None:
+        """Обновляет накапливаемый raw-thinking без размножения событий."""
+        item.payload["text"] = text or ""
+
     def to_dict(self) -> dict:
         return {"version": _VERSION, "items": [it.to_dict() for it in self.items]}
 

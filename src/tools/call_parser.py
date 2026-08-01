@@ -15,7 +15,7 @@ from .json_repair import robust_json_loads as _robust_json_loads
 from .models import ToolCall
 
 NAMED_TOOLS = frozenset({
-    "read_files", "read_file", "grep", "patch_file",
+    "read", "grep", "patch_file",
     "create_file", "poll", "skill", "shell", "web_search", "web_fetch",
     "subagent", "create_docx", "docx_screenshot", "expand_tool_result",
     "lsp_references", "lsp_diagnostics",
@@ -287,7 +287,7 @@ def _is_known_tool(tool_name: str) -> bool:
 
 
 # Кривые открывающие маркеры: модель роняет одно из трёх двоеточий
-# (`::call read_files`). Канонизируем В ТРИ — но ТОЛЬКО когда это явный fence:
+# (`::call read`). Канонизируем В ТРИ — но ТОЛЬКО когда это явный fence:
 # маркер в начале строки + ИЗВЕСТНЫЙ инструмент. Не задевает код вроде
 # `std::call_once` (мид-строка) и обычную прозу. NB: с тех пор как _CALL_BLOCK_RE
 # сам матчит 2-3 двоеточия, исполнение ::call больше НЕ зависит от этой функции —

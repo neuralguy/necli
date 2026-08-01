@@ -1,7 +1,7 @@
 """Native file operations — no shell, no heredoc.
 
 Подпакет разбит по операциям:
-- read.py — read_files + helpers (_read_single_file, _apply_lines_filter)
+- read.py — read + helpers (_read_single_file, _apply_lines_filter)
 - write.py — create_file (create-or-overwrite)
 - patch.py — patch_file
 - _fuzzy.py — fuzzy find/replace для patch_file
@@ -14,7 +14,7 @@ from tools.file_ops.docx_screenshot import docx_screenshot
 from tools.file_ops.docx_writer import create_docx
 from tools.file_ops.grep import execute_grep
 from tools.file_ops.patch import patch_file
-from tools.file_ops.read import MAX_READ_FILES, read_files
+from tools.file_ops.read import MAX_READ_FILES, read
 from tools.file_ops.write import create_file
 
 __all__ = [
@@ -24,5 +24,5 @@ __all__ = [
     "docx_screenshot",
     "execute_grep",
     "patch_file",
-    "read_files",
+    "read",
 ]

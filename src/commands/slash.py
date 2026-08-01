@@ -1,19 +1,16 @@
+import inspect
 import os
 from dataclasses import dataclass
 
 from rich.console import Console
-from rich.markup import escape
-from rich.table import Table
 
 import config
-import models as app_models
 import session.storage as storage
 from config.i18n import t as _
 from config.themes import t
 from logger import logger
 from session import Session
 from tools._paths import get_working_dir
-from ui import format_cost, format_tokens
 from ui.menu import select_session_menu
 
 console = Console()
@@ -22,7 +19,6 @@ console = Console()
 @dataclass
 class SlashResult:
     """Result of slash-command handling."""
-    handled: bool = True
     do_new: bool = False
     do_branch: bool = False
     do_reflect: bool = False
@@ -31,74 +27,11 @@ class SlashResult:
     do_compress: bool = False
     do_commit: bool = False
     commit_hint: str = ""
-    undo_n: int | None = None
     switch_api: str | None = None
     switch_api_model: str | None = None
     toggle_think: bool = False
     toggle_tool_format: bool = False
     tg_toggle: bool | None = None
-
-
-def _add_grouped_model_rows(table: Table, by_model: dict) -> None:
-    models_sorted = sorted(
-        by_model.keys(),
-        key=lambda m: (app_models.model_group_order(app_models.model_group(m)), m),
-    )
-    prev_group = None
-    for m in models_sorted:
-        group = app_models.model_group(m)
-        if group != prev_group:
-            if prev_group is not None:
-                table.add_section()
-            table.add_row(f"[bold dim]{group.upper()}[/bold dim]", "", "", "", "", "", "")
-            prev_group = group
-        d = by_model[m]
-        total_tok = d["input_tokens"] + d["output_tokens"]
-        table.add_row(
-            f"  {m}", str(d["sessions"]), str(d["messages"]),
-            format_tokens(d["input_tokens"]),
-            format_tokens(d["output_tokens"]),
-            format_tokens(total_tok), format_cost(d["cost"]),
-        )
-
-
-def _print_stats(period_days: int | None = None) -> None:
-    st = storage.get_statistics(days=period_days)
-    if st["total_sessions"] == 0:
-        console.print(f"  [dim]{_('stats.no_data')}[/dim]")
-        return
-
-    title = _("stats.overall")
-    if period_days is not None:
-        suffix = "" if period_days == 1 else "s"
-        title = _("stats.last_n_days", n=period_days, s=suffix)
-
-    table = Table(
-        border_style="dim", padding=(0, 1), show_header=True,
-        header_style="bold dim", title=title, title_style="bold",
-    )
-    table.add_column(_("stats.col_model"), style="yellow")
-    table.add_column(_("stats.col_sessions"), justify="right")
-    table.add_column(_("stats.col_msgs"), justify="right")
-    table.add_column(_("stats.col_input"), justify="right", style="cyan")
-    table.add_column(_("stats.col_output"), justify="right", style="green")
-    table.add_column(_("stats.col_total_tok"), justify="right")
-    table.add_column(_("stats.col_cost"), justify="right", style="bold")
-
-    _add_grouped_model_rows(table, st["by_model"])
-
-    total_tok = st["total_input_tokens"] + st["total_output_tokens"]
-    table.add_section()
-    table.add_row(
-        f"[bold]{_('stats.total')}[/bold]",
-        f"[bold]{st['total_sessions']}[/bold]",
-        f"[bold]{st['total_messages']}[/bold]",
-        f"[bold cyan]{format_tokens(st['total_input_tokens'])}[/bold cyan]",
-        f"[bold green]{format_tokens(st['total_output_tokens'])}[/bold green]",
-        f"[bold]{format_tokens(total_tok)}[/bold]",
-        f"[bold]{format_cost(st['total_cost'])}[/bold]",
-    )
-    console.print(table)
 
 
 def _print_help() -> None:
@@ -144,7 +77,34 @@ def _normalize_cmd(cmd: str) -> tuple[str, str]:
     return head, rest
 
 
-def _handle_slash(
+def _resolve_cd_target(raw: str) -> str | None:
+    """Нормализует путь для /cd. None — такого каталога нет.
+
+    Вынесено из `_handle_slash`: тот стал корутиной, а блокирующие обращения к
+    ФС в корутине — отдельная синхронная функция (и линтер, и смысл).
+    """
+    target = os.path.expandvars(os.path.expanduser(raw))
+    if not os.path.isabs(target):
+        target = os.path.join(get_working_dir(), target)
+    target = os.path.realpath(target)
+    return target if os.path.isdir(target) else None
+
+
+async def _call_menu(fn, *args, **kwargs):
+    """Зовёт точку входа меню, не зная, синхронная она или уже async.
+
+    Меню переезжают на оверлеи Shell (им нужен `await overlays.*`) файл за
+    файлом. Пока часть точек входа синхронная, ждём только то, что
+    действительно корутина: иначе интеграция ломалась бы на каждом
+    полупереехавшем меню, а `await` у синхронной функции — TypeError.
+    """
+    result = fn(*args, **kwargs)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+async def _handle_slash(
     cmd: str,
     model: str,
     session: Session,
@@ -161,7 +121,6 @@ def _handle_slash(
 
     if head == "/branch":
         if session.message_count == 0:
-            console.print(f"  [dim]{_('slash.branch_empty')}[/dim]")
             return r
         r.do_branch = True
         return r
@@ -185,24 +144,13 @@ def _handle_slash(
 
     if head == "/compress":
         if session.message_count == 0:
-            console.print(f"  [dim]{_('slash.nothing_to_compress')}[/dim]")
             return r
         r.do_compress = True
-        return r
-
-    if head == "/undo":
-        try:
-            r.undo_n = int(rest.strip())
-        except ValueError:
-            r.undo_n = 1
-        if r.undo_n == 0:
-            r.undo_n = 1
         return r
 
     if head == "/models":
         active_api = config.get_active_api()
         if not active_api:
-            console.print(f"  [red]{_('slash.api_not_configured')}[/red]")
             return r
         from apis.registry import get_definitions
         defns = get_definitions()
@@ -222,11 +170,11 @@ def _handle_slash(
                 model_providers.append(pid)
                 group_labels.append(defn.name)
         if not api_models:
-            console.print(f"  [dim]{_('slash.no_models_provider', name=active_api)}[/dim]")
             return r
         current_api_model = config.get_active_api_model()
         from ui.menu import select_api_model_menu
-        choice = select_api_model_menu(
+        choice = await _call_menu(
+            select_api_model_menu,
             api_models,
             current_id=current_api_model,
             group_labels=group_labels,
@@ -240,20 +188,15 @@ def _handle_slash(
                 config.set_active_api_model(chosen_model.id)
                 r.switch_api = chosen_provider
                 r.switch_api_model = chosen_model.id
-                console.print(
-                    f"  [green]\u2713[/green] {defns[chosen_provider].name} \u2192"
-                    f" [yellow]{chosen_model.display_name}[/yellow]"
-                    f" [dim]({chosen_model.id})[/dim]"
-                )
         return r
 
     if head == "/sessions":
         sessions_list = storage.list_sessions(limit=0)
         if not sessions_list:
-            console.print(f"  [dim]{_('slash.no_sessions')}[/dim]")
             return r
 
-        choice = select_session_menu(sessions_list, current_id=session.id)
+        choice = await _call_menu(select_session_menu, sessions_list,
+                                  current_id=session.id)
         if choice is not None:
             sid = sessions_list[choice]["id"]
             if sid != session.id:
@@ -261,13 +204,16 @@ def _handle_slash(
         return r
 
     if head == "/stats":
+        # [N] сохраняет прежний смысл — период общего свода в днях; теперь он
+        # ещё и открывает вид сразу на разделе history с этим периодом.
         period_days = int(rest) if rest.strip().isdigit() else None
-        _print_stats(period_days)
+        from commands.menus.stats import stats_interactive
+        await _call_menu(stats_interactive, session, period_days)
         return r
 
     if head == "/insights":
         from commands.menus.insights import insights_interactive
-        insights_interactive()
+        await _call_menu(insights_interactive)
         return r
 
     if head == "/copy":
@@ -276,7 +222,6 @@ def _handle_slash(
             n = 1
         assistant_msgs = [m for m in session.messages if m.role == "assistant"]
         if not assistant_msgs:
-            console.print(f"  [dim]{_('sh.copy_empty')}[/dim]")
             return r
         picked = assistant_msgs[-n:]
         if len(picked) == 1:
@@ -284,118 +229,108 @@ def _handle_slash(
         else:
             payload = "\n\n---\n\n".join((m.content or "") for m in picked)
         from ui.clipboard_copy import copy_to_clipboard
-        err = copy_to_clipboard(payload)
-        if err:
-            console.print(f"  [red]{_('sh.copy_fail', err=err)}[/red]")
-        else:
-            console.print(f"  [green]✓[/green] [dim]{_('sh.copy_ok', n=len(picked), chars=len(payload))}[/dim]")
+        copy_to_clipboard(payload)
         return r
 
     if head == "/history":
         from commands.menus.history import show_history
         n = int(rest) if rest.strip().isdigit() else 10
-        show_history(session, n)
+        await _call_menu(show_history, session, n)
         return r
 
     if head == "/cd":
         target = rest.strip()
         if not target:
-            console.print(f"  [bold {t('success')}]{escape(os.getcwd())}[/bold {t('success')}]")
             return r
-        target = os.path.expanduser(target)
-        target = os.path.expandvars(target)
-        if not os.path.isabs(target):
-            target = os.path.join(get_working_dir(), target)
-        target = os.path.realpath(target)
-        if not os.path.isdir(target):
-            console.print(f"  [red]{_('slash.not_a_directory', path=target)}[/red]")
+        target = _resolve_cd_target(target)
+        if target is None:
             return r
         r.change_dir = target
-        console.print(f"  [green]✓[/green] → [bold {t('success')}]{escape(target)}[/bold {t('success')}]")
         return r
 
     if head == "/ssh":
         from commands.menus.ssh import ssh_interactive
-        ssh_interactive()
+        await _call_menu(ssh_interactive)
         return r
 
     if head == "/skills":
         from commands.menus.skills import skills_interactive
-        skills_interactive()
+        await _call_menu(skills_interactive)
         return r
 
     if head == "/agents":
         from commands.menus.agents import agents_interactive
-        agents_interactive()
+        await _call_menu(agents_interactive)
         return r
 
     if head == "/permissions":
         from commands.menus.permissions import permissions_interactive
-        permissions_interactive()
+        await _call_menu(permissions_interactive)
         return r
 
     if head == "/help":
         import sys
         if sys.stdin.isatty() and sys.stderr.isatty():
             from commands.menus.help import help_interactive
-            help_interactive()
+            await _call_menu(help_interactive)
         else:
             _print_help()
         return r
 
     if head == "/themes":
         from commands.menus.themes import themes_interactive
-        themes_interactive()
+        await _call_menu(themes_interactive)
         return r
 
     if head == "/api":
         from commands.menus.api import api_interactive
-        return api_interactive()
+        return await _call_menu(api_interactive)
 
     if head == "/tg":
         from commands.menus.telegram import telegram_interactive
-        r.tg_toggle = telegram_interactive()
+        r.tg_toggle = await _call_menu(telegram_interactive)
         return r
 
     if head == "/mcp":
         from commands.menus.mcp import mcp_interactive
-        mcp_interactive()
+        await _call_menu(mcp_interactive)
         return r
 
     if head == "/lsp":
         from commands.menus.lsp import lsp_interactive
-        lsp_interactive()
+        await _call_menu(lsp_interactive)
         return r
 
     if head == "/params":
         from commands.menus.params import params_interactive
-        params_interactive()
+        await _call_menu(params_interactive)
+        return r
+
+    if head == "/autoprune":
+        from commands.menus.autoprune import autoprune_interactive
+        await _call_menu(autoprune_interactive)
         return r
 
     if head == "/proxy":
         arg = rest.strip()
         if arg:
             # Инлайн-режим: /proxy <url> | /proxy off|none|clear
-            from commands.menus.proxy import _invalidate_api_llm, _validate
+            from apis.agent_adapter import invalidate_api_llm
+            from commands.menus.proxy import _validate
             if arg.lower() in ("off", "none", "clear", "-"):
                 config.set_value("proxy", "")
-                _invalidate_api_llm()
-                console.print(f"  [green]✓[/green] {_('proxy.cleared')}")
+                invalidate_api_llm()
             elif _validate(arg):
                 config.set_value("proxy", arg)
-                _invalidate_api_llm()
-                console.print(f"  [green]✓[/green] proxy = [yellow]{arg}[/yellow]")
-            else:
-                console.print(f"  [red]{_('proxy.invalid')}[/red]")
+                invalidate_api_llm()
         else:
             from commands.menus.proxy import proxy_interactive
-            proxy_interactive()
+            await _call_menu(proxy_interactive)
         return r
 
     if head == "/lang":
         from commands.menus.lang import lang_interactive
-        lang_interactive()
+        await _call_menu(lang_interactive)
         return r
 
-    console.print(f"  [dim]{_('slash.unknown_hint')}[/dim]")
     return r

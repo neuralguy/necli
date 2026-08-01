@@ -27,7 +27,8 @@ class InteractiveState:
     think_changed: bool = False
     activity_status: str = "idle"
 
-    recap_task: object = None  # asyncio.Task с фоновым рекапом текущего раунда
+    recap_task: object = None  # asyncio.Task генерации рекапа текущего раунда
+    recap_background_tasks: set[object] = field(default_factory=set)
 
     def save_session(self) -> None:
         try:

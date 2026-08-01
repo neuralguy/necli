@@ -53,35 +53,6 @@ def _find_at_reference(text, cursor_pos):
         return None
     return left[at_pos + 1:]
 
-
-
-
-def _format_tokens(num_bytes):
-    tokens = num_bytes // 4
-    if tokens < 1000:
-        return f"~{tokens} tok"
-    if tokens < 1_000_000:
-        return f"~{tokens / 1000:.1f}K tok"
-    return f"~{tokens / 1_000_000:.1f}M tok"
-
-
-def _dir_total_size(path):
-    total = 0
-    try:
-        for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if not _should_ignore(d, True)]
-            for f in files:
-                if _should_ignore(f, False):
-                    continue
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                except OSError:
-                    pass
-    except (PermissionError, OSError):
-        pass
-    return total
-
-
 def _slash_commands():
     """Команды + метаданные для автокомплита.
 
@@ -178,8 +149,11 @@ class FileAtCompleter(Completer):
             start_position = -len(ref)
             if is_dir:
                 display_text = rel_path
-                dir_size = _dir_total_size(base_dir / rel_path)
-                display_meta = _format_tokens(dir_size) if dir_size > 0 else _("ac.empty")
+                # Никогда не обходим каталог рекурсивно из completer'а: один
+                # `@` перед большим node_modules раньше мог заморозить ввод на
+                # секунды. Размер станет известен инструменту чтения, здесь
+                # достаточно дешёвой метки типа.
+                display_meta = _("ac.folder")
             else:
                 display_text = rel_path
                 try:
@@ -197,4 +171,3 @@ class FileAtCompleter(Completer):
             count += 1
             if count >= _MAX_RESULTS:
                 break
-

@@ -22,7 +22,6 @@
 from .runner import run_hooks
 from .schema import (
     HOOK_EVENTS,
-    HookEvent,
     HookMatcher,
     HookOutcome,
     HookSpec,
@@ -30,7 +29,6 @@ from .schema import (
 
 __all__ = [
     "HOOK_EVENTS",
-    "HookEvent",
     "HookMatcher",
     "HookOutcome",
     "HookSpec",

@@ -3,6 +3,12 @@
 POSIX: termios/tty raw-mode + os.read. Windows: msvcrt.getwch.
 Возвращает нормализованные имена: up/down/left/right/enter/escape/ctrl-c
 или сам символ.
+
+ТОЛЬКО для путей без Application. Пока `ui/shell.py` поднят, клавиши приходят
+от prompt_toolkit (`Overlay.handle_key`), и читать stdin здесь же — значит
+отбирать байты у него. Модуль остаётся ради синхронных фолбэков `ui/menu.py`
+(`select_menu`, `_panel_menu_direct`) и `ui/poll.py`: headless, не-TTY, ранний
+старт до создания Shell. Новый код на него опираться не должен.
 """
 
 import sys

@@ -1,9 +1,10 @@
 """Terminal rendering of tool commands and their output."""
 
+import asyncio
 import json
 import re
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -20,6 +21,61 @@ def is_compact() -> bool:
     return True
 
 console = Console()
+
+#: Консоль-перехватчик статики. Ставится только на время Ctrl+O replay: он
+#: собирает всю историю в один буфер и отдаёт её Shell'у одной строкой, иначе
+#: каждый элемент истории лез бы в терминал своим run_in_terminal и рамка
+#: перерисовывалась бы столько раз, сколько в сессии сообщений.
+_STATIC_CAPTURE: Console | None = None
+
+
+def set_static_capture(target: Console | None) -> None:
+    global _STATIC_CAPTURE
+    _STATIC_CAPTURE = target
+
+
+def get_static_capture() -> Console | None:
+    return _STATIC_CAPTURE
+
+
+def print_static(renderable) -> None:
+    """Единственный канал вывода агента в scrollback.
+
+    Почему не console.print: под patch_stdout Rich пишет в StdoutProxy, а тот
+    копит строки в собственной очереди и сбрасывает их отдельным
+    run_in_terminal с задержкой. Shell печатает через run_in_terminal сразу —
+    два канала перемешивались, и шапка инструмента могла оказаться выше своего
+    же результата. Один канал = порядок гарантирован.
+
+    Инструменты выполняются в рабочем потоке (loop.run_in_executor), а
+    run_in_terminal требует живого loop'а. Поэтому из потока прыгаем на loop
+    через call_soon_threadsafe: прямая запись в stdout попала бы в середину
+    кадра Application и порвала рамку.
+
+    Без Shell (headless, -p, не-TTY, тесты) печатаем прежней консолью: она сама
+    решает, включать ли ANSI, поэтому вывод в файл остаётся чистым.
+    """
+    target = _STATIC_CAPTURE
+    if target is not None:
+        target.print(renderable)
+        return
+    from ui.shell import get_shell
+    shell = get_shell()
+    if shell is None:
+        console.print(renderable)
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop = getattr(getattr(shell, "app", None), "loop", None)
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(shell.print_static, renderable)
+                return
+            except RuntimeError:
+                pass
+    shell.print_static(renderable)
+
 
 # Когда True — рендер-функции не пишут в RenderStore, чтобы replay не зациклился.
 _REPLAY_ACTIVE = False
@@ -82,14 +138,16 @@ def show_plan_update(plan, action: str = "", focus_index: int | None = None) -> 
         focus_index = getattr(plan, "current_step_index", None)
     if focus_index is None:
         focus_index = 0
-    console.print()
     try:
         from planner import plan_to_snapshot, render_plan_panel
-        console.print(render_plan_panel(
+        # Ведущая пустая строка и панель уходят одним print_static: два вызова
+        # означали бы два run_in_terminal, то есть лишний перерисованный кадр
+        # рамки между пустой строкой и самой панелью.
+        print_static(Group(Text(""), render_plan_panel(
             plan,
             compact=False,
             focus_index=focus_index,
-        ))
+        )))
         if not _REPLAY_ACTIVE:
             from agent.loop import get_current_ctx
             ctx = get_current_ctx()
@@ -116,8 +174,7 @@ _TOOL_TITLE_ARG = {
     "poll": "question",
     "subagent": "prompt",
     "expand_tool_result": "id",
-    "read_files": "paths",
-    "read_file": "paths",
+    "read": "path",
 }
 
 _SILENT_OK_TOOLS = frozenset({
@@ -130,12 +187,6 @@ def COMPACT_HEAD_LINES():  # noqa: N802
     return int(ui.get("limits.compact_head_lines", 10))
 def COMPACT_TAIL_LINES():  # noqa: N802
     return int(ui.get("limits.compact_tail_lines", 10))
-
-# Для верстки с рамками (не compact) — больший лимит на статичный вывод.
-def PANEL_HEAD_LINES():  # noqa: N802
-    return int(ui.get("limits.panel_head_lines", 5))
-def PANEL_TAIL_LINES():  # noqa: N802
-    return int(ui.get("limits.panel_tail_lines", 5))
 
 def _spinner_frames() -> list[str]:
     frames = ui.get("spinner.frames", None)
@@ -260,18 +311,12 @@ def _format_path_for_title(path) -> str:
     return str(path) if path else ""
 
 def _compact_display_value(value: str) -> str:
-    """Compact display: head + ... + tail for large text values.
-
-    В режиме с рамками используем больший лимит (PANEL_*),
-    в compact-режиме — узкий (COMPACT_*).
-    """
+    """Compact display: head + ... + tail for large text values."""
     if not isinstance(value, str):
         return value
     if _EXPANDED_PREVIEW:
         return value
-    if is_compact():
-        return _compact_content(value, COMPACT_HEAD_LINES(), COMPACT_TAIL_LINES())
-    return _compact_content(value, PANEL_HEAD_LINES(), PANEL_TAIL_LINES())
+    return _compact_content(value, COMPACT_HEAD_LINES(), COMPACT_TAIL_LINES())
 
 
 def prepare_display_args(args: dict, tool_name: str) -> dict:
@@ -315,16 +360,21 @@ def show_command(cmd: str, tool_name: str = "shell", args: dict | None = None, s
     _show_tool_compact(None, None, cmd, tool_name, args, subtitle=subtitle)
 
 
-def _file_link_style(raw_path, base_color: str) -> str:
-    """Если raw_path — реальный файловый путь, возвращает стиль с file:// link."""
-    if not raw_path or not isinstance(raw_path, str):
-        return f"bold {base_color}"
+def _file_uri(raw_path: str) -> str:
+    """Абсолютный file URI для ссылки и авто-распознавания терминалом."""
     try:
         from tools._paths import resolve_path
-        p = resolve_path(raw_path)
-        return f"bold underline {base_color} link file://{p}"
+        return resolve_path(raw_path).resolve().as_uri()
     except Exception:
+        from pathlib import Path
+        return Path(raw_path).expanduser().resolve().as_uri()
+
+
+def _file_link_style(raw_path, base_color: str) -> str:
+    """Стиль с корректной OSC 8-ссылкой на локальный файл."""
+    if not raw_path or not isinstance(raw_path, str):
         return f"bold {base_color}"
+    return f"bold underline {base_color} link {_file_uri(raw_path)}"
 
 
 def _format_elapsed(elapsed: float) -> str:
@@ -344,7 +394,7 @@ def _format_tool_tokens(call: tools.ToolCall | None, result: tools.ToolResult) -
     from ui import format_tokens
 
     read_tools = {
-        "read_files", "read_file", "grep", "lsp_references",
+        "read", "grep", "lsp_references",
         "lsp_diagnostics", "web_search", "web_fetch", "image_search",
         "docx_screenshot", "skill", "memory_list", "memory_read",
     }
@@ -388,13 +438,16 @@ def _compact_title_text(
         display_name = f"{lead_frame} {label}"
     txt = Text()
     raw_path = args.get("path", "")
-    if not raw_path and tool_name in ("read_files", "read_file"):
-        # read_files использует paths (plural), не path.
+    if not raw_path and tool_name == "read":
         _paths = args.get("paths")
         if _paths:
             raw_path = _paths if isinstance(_paths, (list, tuple)) else str(_paths)
     path_disp = _format_path_for_title(raw_path)
     arg_disp = path_disp
+    # Синтетический блок нескольких Read: количество нужно только развёрнутым.
+    combined_read_count = args.get("_combined_read_count")
+    if tool_name == "read" and combined_read_count:
+        arg_disp = f"{combined_read_count} files" if _EXPANDED_PREVIEW else ""
     if tool_name == "grep" and args.get("pattern"):
         pat = str(args["pattern"])[:60]
         arg_disp = f"{pat} -> {path_disp}" if path_disp else pat
@@ -419,8 +472,8 @@ def _compact_title_text(
         if is_file_path:
             if isinstance(raw_path, str):
                 link_path = raw_path
-            elif path_disp and isinstance(path_disp, str) and tool_name in ("read_files", "read_file"):
-                # read_files paths=[{path: '/foo'}, ...] — raw_path список,
+            elif path_disp and isinstance(path_disp, str) and tool_name == "read":
+                # read paths=[{path: '/foo'}, ...] — raw_path список,
                 # но path_disp уже извлёк путь; используем его для линка.
                 link_path = path_disp
         if link_path:
@@ -459,12 +512,23 @@ def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult |
             return out.split("\n", 1)[0][:80]
         return ""
 
-    if tool_name in ("read_files", "read_file"):
+    if tool_name == "image_search":
+        if result is not None:
+            out = (result.output or "").strip()
+            if not out:
+                return ""
+            n_queries = len(re.findall(r"(?m)^\[Query \d+:", out))
+            if n_queries >= 2 and not _EXPANDED_PREVIEW:
+                return _i18n("compact.queries_n", n=n_queries)
+        return ""
+
+    if tool_name == "read":
         if result is not None:
             infos: list[str] = []
             for line in (result.output or "").split("\n"):
                 s = line.strip()
-                if s.startswith("[") and s.endswith("]") and ("lines" in s or "·" in s or "bytes" in s):
+                # Считаем все [...] строки — и partial, и полные, и директории
+                if s.startswith("[") and s.endswith("]"):
                     infos.append(s.strip("[]"))
             if not infos:
                 return ""
@@ -632,11 +696,96 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
     ) and result is not None and result.status == "ok":
         return _compact_result_list_preview(tool_name, result)
 
+    # image_search — в свёрнутом виде None (сводка через _compact_summary_line),
+    # в развёрнутом — полный вывод инструмента.
+    if tool_name == "image_search" and result is not None and result.status == "ok":
+        if not _EXPANDED_PREVIEW:
+            return None
+        output = (result.output or "").strip()
+        if not output:
+            return None
+        lines = output.split("\n")
+        out: list = []
+        for ln in lines:
+            out.append(Text(f"   {ln}"))
+        return out
+
     # memory_read/memory_write — метаданные + тело (первые 5 строк)
     if tool_name in ("memory_read", "memory_write") and result is not None and result.status == "ok":
         return _compact_memory_preview(result)
 
+    # Read — кликабельный путь: полный файл без суффикса, диапазон через «·».
+    if tool_name == "read" and result is not None:
+        out = _compact_read_preview(result, args)
+        if out is not None:
+            return out
+
     return None
+
+
+def _compact_read_preview(result: tools.ToolResult, args: dict | None = None) -> list | None:
+    """Превью для комбинированного read блока (несколько файлов).
+
+    При _EXPANDED_PREVIEW показывает кликабельные пути файлов.
+    При свёрнутом виде возвращает None — _compact_summary_line покажет «N файлов».
+    """
+    if not _EXPANDED_PREVIEW:
+        return None
+    output = (result.output or "").strip()
+    if not output:
+        return None
+    lines = output.split("\n")
+    # Одиночное чтение: показываем только путь при полном чтении; у диапазона
+    # сохраняем метаданные после «·».
+    if args and args.get("path") and not args.get("_combined_read_count"):
+        path = str(args["path"])
+        suffix = ""
+        requested_lines = args.get("lines")
+        if requested_lines:
+            first = lines[0].strip()
+            info = first[1:-1] if first.startswith("[") and first.endswith("]") else ""
+            marker = info.find("lines ")
+            suffix = info[marker:].strip() if marker >= 0 else str(requested_lines)
+        uri = _file_uri(path)
+        line = Text(f"   {ui.get('symbols.summary_prefix', '⎿  ')}", style=t("info"))
+        line.append(uri, style=_file_link_style(path, "info"))
+        if suffix:
+            line.append(f" · {suffix}", style=t("info"))
+        return [line]
+
+    # Проверяем что все строки — [...] info (комбинированный формат)
+    info_texts: list[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("[") and s.endswith("]") and ("·" in s or "directory" in s):
+            info_texts.append(s[1:-1])
+        else:
+            continue  # [path] без суффикса = полное чтение, пропускаем
+    if not info_texts:
+        return None
+
+    out: list = []
+    indent = "   "
+    for i, txt in enumerate(info_texts):
+        prefix = "\u23bf " if i == 0 else "  "
+        # "path · suffix" → разделяем
+        sep = txt.rfind("·")
+        if sep >= 0:
+            path_part = txt[:sep].strip()
+            suffix_part = txt[sep + 1:].strip()
+        else:
+            path_part = txt
+            suffix_part = ""
+        line = Text()
+        line.append(f"{indent}{prefix}", style=t("info"))
+        if path_part:
+            line.append(_file_uri(path_part), style=_file_link_style(path_part, "info"))
+        if suffix_part:
+            line.append(f" · {suffix_part}", style=t("info"))
+        out.append(line)
+    return out if out else None
 
 
 def _compact_result_list_preview(tool_name: str, result: tools.ToolResult) -> list | None:
@@ -913,8 +1062,10 @@ def _show_tool_compact(
     time_str = _format_elapsed(elapsed)
     status_full = f"{icon}{time_str}{_format_tool_tokens(call, result)}" if icon else ""
 
-    console.print()
-    console.print(_compact_title_text(tool_name, args, status_full, status_color))
+    # Весь блок инструмента печатается ОДНИМ print_static. Построчная печать
+    # давала бы по run_in_terminal на строку: рамка снималась и возвращалась
+    # десять раз на один результат, и между строками мог вклиниться чужой вывод.
+    parts: list = [Text(""), _compact_title_text(tool_name, args, status_full, status_color)]
 
     # Сначала пробуем богатое превью контента (только если успех).
     # Используем НЕурезанные raw_args — _compact_preview_content сам ограничивает
@@ -922,8 +1073,8 @@ def _show_tool_compact(
     if result is None or result.status == "ok":
         preview = _compact_preview_content(tool_name, raw_args, result)
         if preview:
-            for line in preview:
-                console.print(line)
+            parts.extend(preview)
+            print_static(Group(*parts))
             return
 
     summary = _compact_summary_line(tool_name, args, result, cmd)
@@ -938,7 +1089,8 @@ def _show_tool_compact(
             else:
                 indent = "   "
                 prefix = ui.get("symbols.tree_last", "└─ ") if i == len(lines) - 1 else ui.get("symbols.tree_branch", "├─ ")
-            console.print(Text(f"{indent}{prefix}{line}", style=sum_color))
+            parts.append(Text(f"{indent}{prefix}{line}", style=sum_color))
+    print_static(Group(*parts))
 
 
 
@@ -954,6 +1106,147 @@ def show_tool_combined(
 
     _store_tool(call, result, subtitle=subtitle)
     _show_tool_compact(call, result, cmd, tool_name, args, subtitle=subtitle)
+
+
+def show_read_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> None:
+    """Сгруппировать несколько read результатов в один компактный блок.
+
+    Вызывается из executor.execute_and_show, когда в одном вызове агент
+    читает несколько файлов подряд — вместо N отдельных блоков показываем
+    один заголовок и список файлов.
+
+    По умолчанию блок свёрнут — показывает только «… N файлов (ctrl+o развернуть)».
+    При Ctrl+O (replay) раскрывается в список файлов с кликабельными путями.
+    """
+    if not pairs:
+        return
+
+    n = len(pairs)
+    all_ok = all(r.status == "ok" for _, r in pairs)
+    icon = "✓" if all_ok else "✗"
+    status_color = "green" if all_ok else "red"
+
+    total_elapsed = sum((r.elapsed or 0.0) for _, r in pairs)
+    time_str = _format_elapsed(total_elapsed)
+
+    from session.tokens import count_tokens
+    from ui import format_tokens
+    total_tk = sum(count_tokens(r.output) for _, r in pairs)
+
+    # Один список является источником истины и для счётчика, и для обоих видов.
+    info_items: list[tuple[str, str]] = []  # (path, suffix)
+    all_lines: list[str] = []
+    for call, result in pairs:
+        path = (call.args or {}).get("path", "") or ""
+        item = _format_read_info(call, result)
+        if item is not None:
+            path, suffix = item
+        else:
+            suffix = "read"
+        info_items.append((path, suffix))
+        all_lines.append(f"[{path} · {suffix}]")
+    combined_output = "\n".join(all_lines)
+
+    # Синтетический вызов — без path/paths в args, чтобы заголовок был просто «Read»
+    combined_call = tools.ToolCall(
+        command="read",
+        tool_name="read",
+        args={"_combined_read_count": n},
+        raw="",
+    )
+    combined_result = tools.ToolResult(
+        name="read",
+        status="ok" if all_ok else "error",
+        output=combined_output,
+        exit_code=0,
+        command="read",
+        elapsed=total_elapsed,
+    )
+
+    # Сохраняем один combined entry в RenderStore (для Ctrl+O replay)
+    _store_tool(combined_call, combined_result)
+
+    # Рендер заголовка — без скобок (paths в теле блока). Блок целиком уходит
+    # одним print_static: см. _show_tool_compact.
+    parts: list = [Text(""), _compact_title_text(
+        "read", {"_combined_read_count": n},
+        f"{icon}{time_str} ↑{format_tokens(total_tk)}",
+        status_color,
+    )]
+
+    if not info_items:
+        print_static(Group(*parts))
+        return
+
+    if _EXPANDED_PREVIEW:
+        # Раскрытый вид — кликабельные file:// URI
+        indent = "   "
+        for i, (path, suffix) in enumerate(info_items):
+            prefix = "\u23bf " if i == 0 else "  "
+            line = Text()
+            line.append(f"{indent}{prefix}", style=t("info"))
+            line.append(_file_uri(path), style=_file_link_style(path, "info"))
+            line.append(f" · {suffix}", style=t("info"))
+            parts.append(line)
+    else:
+        # Свёрнутый вид — "N файлов (ctrl+o развернуть)"
+        indent = "   "
+        parts.append(Text(
+            f"{indent}\u23bf {_i18n('compact.files_n', n=n)}",
+            style=f"italic {t('dim_text')}",
+        ))
+    print_static(Group(*parts))
+
+
+def _format_read_info(call: tools.ToolCall, result: tools.ToolResult) -> tuple[str, str] | None:
+    """Форматирует информацию о прочитанном файле.
+
+    Возвращает (path, suffix) или None, если файл был прочитан полностью
+    (без указания диапазона) — в этом случае строка не нужна.
+    suffix — например «lines 1-10 of 50» или «directory».
+    """
+    out = (result.output or "").strip()
+    if not out:
+        return None
+
+    first = out.split("\n", 1)[0].strip()
+    if not first.startswith("[") or not first.endswith("]"):
+        return None
+
+    info = first[1:-1]  # убираем скобки
+    if not info:
+        return None
+
+    path = (call.args or {}).get("path", "") or ""
+
+    # Директория — всегда показываем
+    if "directory" in info:
+        return (path, "directory")
+
+    # Показываем только partial-чтения (с диапазоном строк) и truncated
+    is_partial = False
+    if "showing first" in info:
+        is_partial = True
+    elif "lines " in info and " of " in info:
+        # Проверяем что диапазон НЕ покрывает весь файл
+        m = __import__("re").search(r"lines (\d+)-(\d+) of (\d+)", info)
+        if m:
+            start, end, total = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if not (start == 1 and end == total):
+                is_partial = True
+    if not is_partial:
+        return None
+
+    # Извлекаем суффикс (диапазон/статус), отбрасывая путь
+    suffix = info
+    if "·" in info:
+        suffix = info.split("·", 1)[-1].strip()
+    else:
+        li = info.find("lines")
+        if li >= 0:
+            suffix = info[li:].strip()
+    return (path, suffix)
+
 
 def show_output(result: tools.ToolResult):
     """Legacy wrapper — used when call is not available. Renders output-only panel."""

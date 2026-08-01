@@ -1,12 +1,25 @@
-"""
-Ввод пользователя через prompt_toolkit.
+"""Адаптер ввода поверх `ui.shell.Shell`.
 
-- Enter отправляет, Esc+Enter — новая строка
-- `\\` + Enter в конце строки — новая строка (multiline продолжение)
-- Ctrl+C при вводе — пустая строка
-- Ctrl+D — выход
-- Ctrl+V — вставить текст из буфера обмена
-- Ctrl+P — вставить изображение из буфера обмена
+Раньше здесь жил свой `PromptSession`: он сам читал stdin, сам рисовал
+separator со статусом и сам печатал эхо, отматывая курсор вверх. Теперь
+экраном владеет единственный Application (`ui/shell.py`), а поле ввода
+доступно всегда — в том числе пока агент отвечает. Поэтому от прежнего класса
+осталась только та часть, которую Shell не знает и знать не должен:
+
+- вставка из буфера обмена (Ctrl+V текст/картинка, Ctrl+P картинка,
+  bracketed paste с маркером `[Pasted N lines]`);
+- учёт вставленных картинок и маппинг `[imageN]` → путь;
+- полноширинное эхо отправленной реплики (его печатает воркер очереди
+  перед началом ответа — см. `commands/agent_queue`);
+- статус активности в заголовке терминала.
+
+Имена атрибутов и методов сохранены: на `state.prompt_input` смотрят
+`agent/executor.py`, `agent/tg_menu.py`, `agent/render_replay.py`,
+`commands/slash_handler.py`.
+
+Клавиши: Enter отправляет, Esc+Enter и `\\`+Enter — перенос строки,
+Ctrl+C чистит ввод (а во время хода — прерывает его), Ctrl+D — выход,
+Ctrl+V — вставка, Ctrl+P — картинка из буфера обмена.
 """
 
 import logging
@@ -14,27 +27,22 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
-from prompt_toolkit import PromptSession
 from prompt_toolkit import print_formatted_text as ptk_print
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.history import FileHistory, ThreadedHistory
-from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout.processors import Processor, Transformation
 from prompt_toolkit.styles import Style
 from wcwidth import wcswidth
 
-import config
 from config.themes import t
-from ui.completer import make_combined_completer
 from ui.formatting import BAR_EMPTY_END, BAR_EMPTY_START, BAR_FILLED_END, BAR_FILLED_START
+from ui.shell import get_shell
 
 logger = logging.getLogger(__name__)
 
-_HISTORY_FILE = config.BASE_DIR / "history"
 
 def _build_style():
     return Style.from_dict(
@@ -42,40 +50,16 @@ def _build_style():
             "prompt": f"bold {t('accent')}",
             "prompt-arrow": f"bold {t('success')}",
             "separator": t("muted"),
-            "status-text": "bold #ffffff",
-            "bottom-toolbar": f"{t('dim_text')} bg:{t('bg_code')}",
-            "bottom-toolbar.text": t("dim_text"),
+            "status-text": "bold #E8E8E8",
             "bar-filled": t("bar_filled"),
             "bar-empty": t("muted"),
-            "hint-left": f"{t('dim_text')} bg:{t('bg_code')}",
-            "hint-right": f"#555555 bg:{t('bg_code')}",
-            "auto-suggest": "#555555",
-            "completion-menu": "bg:default noinherit",
-            "completion-menu.completion": "bg:default #888888 noinherit",
-            "completion-menu.completion.current": f"bg:default {t('accent')} noinherit",
-            "completion-menu.meta.completion": "bg:default #555555 noinherit",
-            "completion-menu.meta.completion.current": f"bg:default {t('accent')} noinherit",
-            "scrollbar.background": "bg:default noinherit",
-            "scrollbar.button": "bg:default noinherit",
-            "scrollbar.arrow": "bg:default noinherit",
         }
     )
 
+
+# Возвращался из read() при Ctrl+D. Сам read() уехал в Shell (SUBMIT_EOF), но
+# сентинел реэкспортируется из ui/__init__.py — оставляем.
 _EOF = object()
-# Возвращается из read(), когда ожидание ввода прервано завершением фоновой
-# задачи (buffer пуст) — REPL синтезирует continuation-ход для агента.
-_BG_RESUME = object()
-
-
-class _PastedTextHistory(ThreadedHistory):
-    """Раскрывает временные маркеры перед сохранением записи истории."""
-
-    def __init__(self, history, expand):
-        super().__init__(history)
-        self._expand = expand
-
-    def append_string(self, string: str) -> None:
-        super().append_string(self._expand(string))
 
 
 def _get_clipboard_text() -> str:
@@ -121,6 +105,12 @@ def _get_term_width() -> int:
         return 80
 
 
+def _vw(s: str) -> int:
+    """Видимая ширина строки в ячейках терминала."""
+    n = wcswidth(s)
+    return n if n >= 0 else len(s)
+
+
 class _ImageHighlighter(Processor):
     _PATTERN = re.compile(r'(\[image\d+\])')
 
@@ -139,41 +129,141 @@ class _ImageHighlighter(Processor):
 
 
 class InputPrompt:
-    """Обёртка над prompt_toolkit для удобного ввода."""
+    """Тонкая обёртка над Shell: вставки, картинки, эхо, статус активности."""
 
-    def __init__(self, working_dir: str = ".", on_mode_toggle=None):
+    def __init__(self, working_dir: str = ".", on_mode_toggle=None, shell=None):
         self.pending_images: list[Path] = []
         self._image_counter = 0
-        self._on_mode_toggle = on_mode_toggle
-        self.mode: str = "agent"
-        self.activity_status: str = "idle"
+        # Режим живёт в Shell (его переключает Tab). Локальное поле — только
+        # для случаев без Application: тесты и headless-режим.
+        self._mode: str = "agent"
         self.session = None
         # Callback пересчёта status-строки для Ctrl+O reprint.
         self.status_provider = None
         self._last_status_text: str | None = None
         self._pasted_texts: dict[str, list[str]] = {}
-        self._submitted_display_text: str | None = None
         self._submitted_text: str | None = None
-        self._combined_completer, self._file_completer = make_combined_completer(working_dir)
-        self._session = PromptSession(
-            history=_PastedTextHistory(FileHistory(str(_HISTORY_FILE)), self._expand_for_history),
-            key_bindings=self._make_bindings(),
-            completer=self._combined_completer,
-            complete_while_typing=True,
-            auto_suggest=AutoSuggestFromHistory(),
-            style=_build_style(),
-            multiline=False,
-            wrap_lines=True,
-            enable_history_search=False,
-            mouse_support=False,
-            reserve_space_for_menu=12,
-            input_processors=[_ImageHighlighter()],
-        )
+        self._working_dir = working_dir
+        self._shell = None
+        if shell is not None:
+            self.attach(shell)
+
+    # ────────────────────────────── связь с Shell ──────────────────────────
+    @property
+    def shell(self):
+        return self._shell or get_shell()
+
+    def attach(self, shell) -> None:
+        """Досоединяет к Shell то, чего в ядре нет: вставки и подсветку картинок.
+
+        Ядро Shell общее для всех подсистем, поэтому клавиши буфера обмена
+        доклеиваются сюда, в его KeyBindings, а не форком ядра.
+        """
+        self._shell = shell
+        self._bind_paste_keys(shell)
+        try:
+            control = shell.input_window.content
+            control.input_processors = [
+                *(control.input_processors or []),
+                _ImageHighlighter(),
+            ]
+        except Exception:
+            logger.debug("image highlighter attach failed", exc_info=True)
+
+    @property
+    def mode(self) -> str:
+        sh = self._shell
+        return sh.mode if sh is not None else self._mode
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        self._mode = value
+        sh = self._shell
+        if sh is not None:
+            sh.mode = value
+            sh.invalidate()
 
     def set_working_dir(self, path: str):
         """Update the working directory for file autocomplete."""
-        self._file_completer.set_working_dir(path)
+        self._working_dir = path
+        sh = self._shell
+        if sh is not None:
+            sh.set_working_dir(path)
 
+    # ───────────────────────────── клавиши вставки ─────────────────────────
+    def _overlay_owns_keys(self, key: str, event) -> bool:
+        """Пока нижней зоной владеет оверлей, вставлять в поле ввода нельзя:
+        отдаём клавишу оверлею и уходим."""
+        sh = self._shell
+        if sh is None or sh.overlay is None:
+            return False
+        try:
+            sh.overlay.handle_key(key, event)
+        except Exception:
+            logger.debug("overlay handle_key failed", exc_info=True)
+        sh.invalidate()
+        return True
+
+    def _bind_paste_keys(self, shell) -> None:
+        kb = shell.kb
+
+        def paste_into_overlay(text: str) -> bool:
+            """Вставить текст в активное ask_text-поле, если оно открыто."""
+            sh = self._shell
+            if sh is None or sh.overlay is None or not sh.overlay.wants_text:
+                return False
+            # Текущие текстовые оверлеи однострочные. Терминалы часто кладут
+            # в clipboard завершающий LF — превращаем переводы строк в пробелы,
+            # а не отклоняем всю вставку.
+            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+            sh.overlay_buffer.insert_text(normalized.replace("\n", " "))
+            sh.invalidate()
+            return True
+
+        @kb.add("c-v", eager=True)
+        def _paste(event):
+            # Ctrl+V универсален: сначала пробуем картинку, потом текст.
+            sh = self._shell
+            if sh is not None and sh.overlay is not None:
+                if sh.overlay.wants_text:
+                    text = _get_clipboard_text()
+                    if text:
+                        paste_into_overlay(text)
+                    else:
+                        sh.invalidate()
+                else:
+                    self._overlay_owns_keys("c-v", event)
+                return
+            if not self._insert_image(shell.input_buffer):
+                text = _get_clipboard_text()
+                if text:
+                    text = text.replace("\r\n", "\n").replace("\r", "\n")
+                    self._insert_pasted_text(shell.input_buffer, text)
+            shell.invalidate()
+
+        @kb.add("c-p", eager=True)
+        def _paste_image(event):
+            if self._overlay_owns_keys("c-p", event):
+                return
+            self._insert_image(shell.input_buffer)
+            shell.invalidate()
+
+        @kb.add(Keys.BracketedPaste)
+        def _bracketed_paste(event):
+            data = (event.data or "").replace("\r\n", "\n").replace("\r", "\n")
+            if not data:
+                return
+            sh = self._shell
+            if sh is not None and sh.overlay is not None:
+                if sh.overlay.wants_text:
+                    paste_into_overlay(data)
+                else:
+                    sh.invalidate()
+                return
+            self._insert_pasted_text(shell.input_buffer, data)
+            shell.invalidate()
+
+    # ────────────────────────────── картинки ───────────────────────────────
     def _session_images_dir(self) -> Path | None:
         """Папка для картинок текущей сессии: <session.dir>/clipboard_images."""
         sess = self.session
@@ -202,13 +292,30 @@ class InputPrompt:
             return True
         return False
 
+    def clear_images(self):
+        self.pending_images = []
+        self._image_counter = 0
+
+    def get_and_clear_images(self) -> list[Path]:
+        images = self.pending_images[:]
+        self.pending_images = []
+        self._image_counter = 0
+        return images
+
+    # ───────────────────────── многострочные вставки ───────────────────────
     def _insert_pasted_text(self, buf, text: str) -> None:
         """Вставляет многострочный текст как маркер, сохраняя оригинал до отправки."""
         if "\n" not in text:
             buf.insert_text(text)
             return
         marker = f"[Pasted {len(text.splitlines())} lines]"
-        self._pasted_texts.setdefault(marker, []).append(text)
+        pending = self._pasted_texts.setdefault(marker, [])
+        # Если такого маркера в буфере уже нет — предыдущую вставку отменили
+        # (Ctrl+C чистит ввод внутри Shell, и хука отмены у нас больше нет).
+        # Иначе устаревший текст подставился бы вместо новой вставки.
+        if marker not in (getattr(buf, "text", "") or ""):
+            pending.clear()
+        pending.append(text)
         buf.insert_text(marker)
 
     def _expand_pasted_text(self, text: str) -> str:
@@ -221,152 +328,22 @@ class InputPrompt:
 
     def _expand_for_history(self, text: str) -> str:
         """Раскрывает вставки для истории, не меняя видимый буфер."""
-        self._submitted_display_text = text
         self._submitted_text = self._expand_pasted_text(text)
         return self._submitted_text
 
-    def _make_bindings(self) -> KeyBindings:
-        kb = KeyBindings()
+    def expand_submitted(self, text: str) -> str:
+        """Раскрывает `[Pasted N lines]` в реальный текст отправленной реплики.
 
-        @kb.add(Keys.Enter)
-        def _submit_or_continue(event):
-            buf = event.current_buffer
+        Раньше это делала обёртка истории prompt_toolkit в момент записи; теперь
+        буфером владеет Shell, поэтому раскрываем в главном цикле — до эха и до
+        постановки в очередь, чтобы агент получил текст, а не маркер.
+        """
+        return self._expand_for_history(text)
 
-            # Если в меню автодополнения выбран пункт — принять его, не отправлять
-            if buf.complete_state and buf.complete_state.complete_index is not None:
-                buf.complete_state = None
-                return
-
-            line = buf.document.current_line_before_cursor
-
-            # Если строка заканчивается на \\ — удаляем \\ и переносим
-            if line.endswith("\\"):
-                buf.delete_before_cursor(count=1)
-                buf.insert_text("\n")
-                return
-
-            buf.validate_and_handle()
-
-        @kb.add("c-c", eager=True)
-        def _cancel_input(event):
-            self._pasted_texts.clear()
-            self._submitted_display_text = None
-            self._submitted_text = None
-            event.current_buffer.reset()
-
-        @kb.add(Keys.Escape, Keys.Enter)
-        def _newline(event):
-            event.current_buffer.insert_text("\n")
-
-        @kb.add(Keys.Tab)
-        def _tab_toggle_mode(event):
-            order = ("agent", "planning", "autonomous")
-            try:
-                idx = order.index(self.mode)
-            except ValueError:
-                idx = 0
-            self.mode = order[(idx + 1) % len(order)]
-            if self._on_mode_toggle:
-                self._on_mode_toggle(self.mode)
-            event.app.invalidate()
-
-        # ── Стрелки для истории ──
-        @kb.add("up")
-        def _history_prev(event):
-            event.current_buffer.auto_up()
-
-        @kb.add("down")
-        def _history_next(event):
-            event.current_buffer.auto_down()
-
-        # ── Ctrl+V: универсальная вставка — сначала картинка, потом текст ──
-        @kb.add("c-v", eager=True)
-        def _paste(event):
-            # 1) Если в буфере картинка — вставляем её
-            if self._insert_image(event.current_buffer):
-                return
-            # 2) Иначе — обычный текст
-            text = _get_clipboard_text()
-            if text:
-                text = text.replace("\r\n", "\n").replace("\r", "\n")
-                self._insert_pasted_text(event.current_buffer, text)
-
-        # ── Ctrl+O: toggle expanded/compact view (только в compact-режиме) ──
-        @kb.add("c-o", eager=True)
-        def _toggle_expand_render(event):
-            def _do_toggle():
-                try:
-                    from agent.display import is_expanded_preview
-                    from agent.loop import get_current_ctx
-                    from agent.render_replay import clear_terminal, replay
-                    ctx = get_current_ctx()
-                    if ctx is None:
-                        return
-                    store = getattr(ctx, "render_store", None)
-                    if store is None or len(store) == 0:
-                        return
-                    next_expanded = not is_expanded_preview()
-                    logger.debug("ctrl+o toggle: expand=%s items=%d", next_expanded, len(store))
-                    clear_terminal()
-                    replay(store, expand=next_expanded)
-                    # Перерисовать status-separator поверх результата replay.
-                    pi = getattr(ctx, "prompt_input", None)
-                    if pi is not None and hasattr(pi, "reprint_separator"):
-                        fresh = getattr(ctx, "last_status_text", None)
-                        # Пустой статус пересчитываем через callback.
-                        if not fresh:
-                            rebuild = getattr(ctx, "rebuild_status", None)
-                            if callable(rebuild):
-                                try:
-                                    fresh = rebuild()
-                                    ctx.last_status_text = fresh or ""
-                                except Exception:
-                                    logger.debug("ctrl+o rebuild_status failed", exc_info=True)
-                        if fresh:
-                            try:
-                                pi._last_status_text = fresh
-                            except Exception:
-                                logger.debug("ctrl+o set last_status_text failed", exc_info=True)
-                        try:
-                            pi.reprint_separator()
-                        except Exception:
-                            logger.warning("reprint_separator failed", exc_info=True)
-                except Exception:
-                    logger.warning("ctrl+o toggle failed", exc_info=True)
-
-            from prompt_toolkit.application import run_in_terminal as _rit
-            _rit(_do_toggle)
-            # Принудительно перерисовать prompt — иначе prompt_toolkit может
-            # стереть строки над собой при следующем нажатии.
-            try:
-                event.app.invalidate()
-            except Exception:
-                pass
-
-        # ── BracketedPaste ──
-        @kb.add(Keys.BracketedPaste)
-        def _bracketed_paste(event):
-            data = event.data or ""
-            if data:
-                data = data.replace("\r\n", "\n").replace("\r", "\n")
-                self._insert_pasted_text(event.current_buffer, data)
-
-        return kb
-
-    def clear_images(self):
-        self.pending_images = []
-        self._image_counter = 0
-
-    def get_and_clear_images(self) -> list[Path]:
-        images = self.pending_images[:]
-        self.pending_images = []
-        self._image_counter = 0
-        return images
-
+    # ───────────────────────────── статус активности ───────────────────────
     def set_activity_status(self, status: str, session=None) -> None:
         if status not in ("idle", "working", "poll", "done"):
             status = "idle"
-        self.activity_status = status
         if session is not None:
             self.session = session
         try:
@@ -377,31 +354,9 @@ class InputPrompt:
         except Exception:
             logger.debug("prompt activity status update failed", exc_info=True)
 
-    def _mode_fragments(self):
-        if self.mode == "planning":
-            return [
-                ("", "🧠 "),
-                ("#e6a817 bold", "plan"),
-                ("class:prompt-arrow", " > "),
-            ]
-        if self.mode == "autonomous":
-            return [
-                ("", "🔮 "),
-                (f"{t('purple')} bold", "auto"),
-                ("class:prompt-arrow", " > "),
-            ]
-        return [
-            ("", "🚀 "),
-            (f"{t('success')} bold", "agent"),
-            ("class:prompt-arrow", " > "),
-        ]
-
+    # ─────────────────────── separator (нужен replay'ю) ────────────────────
     def _make_separator_fragments(self, status_text: str | None = None):
         w = _get_term_width()
-
-        def _vw(s: str) -> int:
-            n = wcswidth(s)
-            return n if n >= 0 else len(s)
 
         has_complete_bar = (
             status_text
@@ -419,11 +374,11 @@ class InputPrompt:
             _empty_part, rest = rest.split(BAR_EMPTY_START, 1)
             empty, after = rest.split(BAR_EMPTY_END, 1)
 
-            prefix = "\u2500\u2500\u2500 "
+            prefix = "─── "
             suffix = " "
             visible_len = _vw(prefix) + _vw(before) + _vw(filled) + _vw(empty) + _vw(after) + _vw(suffix)
             remaining = max(0, w - visible_len)
-            tail = "\u2500" * remaining
+            tail = "─" * remaining
 
             parts.append(("class:separator", prefix))
             parts.append(("class:status-text", before))
@@ -433,215 +388,26 @@ class InputPrompt:
             parts.append(("class:separator", suffix + tail))
             return parts
         elif status_text:
-            prefix = "\u2500\u2500\u2500 "
+            prefix = "─── "
             suffix = " "
             inner_len = _vw(prefix) + _vw(status_text) + _vw(suffix)
             remaining = max(0, w - inner_len)
-            tail = "\u2500" * remaining
+            tail = "─" * remaining
             return [
                 ("class:separator", prefix),
                 ("class:status-text", status_text),
                 ("class:separator", suffix + tail),
             ]
-        sep = "\u2500" * w
+        sep = "─" * w
         return [("class:separator", sep)]
 
-    def _make_prompt_fragments(self, status_text: str | None = None):
-        return self._mode_fragments()
-
-    def _print_separator(self, status_text: str | None = None):
-        ptk_print(FormattedText(self._make_separator_fragments(status_text)), style=_build_style())
-
-    async def read(
-        self,
-        status_text: str | None = None,
-        bg_resume: bool = False,
-    ):
-        """Читает ввод пользователя.
-
-        bg_resume=True: пока ждём ввод, параллельно следим за завершением
-        фоновых задач. Если задача завершилась И поле ввода ПУСТО (пользователь
-        не печатает — не мешаем ему) — прерываем ожидание и возвращаем
-        _BG_RESUME, чтобы REPL разбудил агента. Если в буфере есть текст —
-        не трогаем, ждём отправки.
-        """
-        self._last_status_text = status_text
-        try:
-            self._print_separator(status_text)
-            if bg_resume:
-                result = await self._read_with_bg_resume(status_text)
-                if result is _BG_RESUME:
-                    return _BG_RESUME
-            else:
-                result = await self._session.prompt_async(
-                    lambda: self._make_prompt_fragments(),
-                    bottom_toolbar=None,
-                )
-            display_result = result or ""
-            result = self._submitted_text or display_result
-            self._submitted_display_text = None
-            self._submitted_text = None
-            cleaned = result.strip()
-            if cleaned:
-                self._echo_submitted(result, displayed_text=display_result)
-            return cleaned
-        except EOFError:
-            return _EOF
-        except KeyboardInterrupt:
-            return None
-
-    async def _read_with_bg_resume(self, status_text: str | None):
-        """prompt_async, прерываемый завершением фоновой задачи (если буфер пуст).
-
-        Возвращает строку ввода либо _BG_RESUME. EOFError/KeyboardInterrupt
-        пробрасываются наружу (обрабатываются в read()).
-        """
-        import asyncio
-
-        from tools.background import (
-            clear_finish_event,
-            get_finish_event,
-            has_pending_finished,
-        )
-
-        prompt_task = asyncio.ensure_future(
-            self._session.prompt_async(
-                lambda: self._make_prompt_fragments(),
-                bottom_toolbar=None,
-            )
-        )
-
-        while True:
-            finish_ev = get_finish_event()
-            # Нет моста (Event не привязан) — обычное ожидание ввода.
-            if finish_ev is None:
-                return await prompt_task
-
-            bg_task = asyncio.ensure_future(finish_ev.wait())
-            try:
-                done, _pending = await asyncio.wait(
-                    {prompt_task, bg_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-            except asyncio.CancelledError:
-                for t in (prompt_task, bg_task):
-                    if not t.done():
-                        t.cancel()
-                raise
-
-            if prompt_task in done:
-                # Пользователь отправил ввод — он приоритетнее.
-                if not bg_task.done():
-                    bg_task.cancel()
-                return prompt_task.result()
-
-            # Сработал bg_task: фоновая задача завершилась.
-            clear_finish_event()
-            buffer_has_text = bool(
-                (self._session.app.current_buffer.text or "").strip()
-            )
-            if buffer_has_text or not has_pending_finished():
-                # Пользователь печатает (не мешаем) ИЛИ ложное срабатывание
-                # (всё уже доставлено) — продолжаем ждать ввод, перевзводим Event.
-                continue
-            # Поле пусто и есть что доставить → прерываем ввод, будим агента.
-            if not prompt_task.done():
-                self._session.app.exit(result="")
-                try:
-                    await prompt_task
-                except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
-                    pass
-                except Exception:
-                    logger.debug("prompt_task raised on bg-exit", exc_info=True)
-            return _BG_RESUME
-
-    def _echo_submitted(self, text: str, displayed_text: str | None = None) -> None:
-        """Перепечатывает отправленный ввод белым текстом на сером фоне на всю
-        ширину (многострочно). Сначала стирает строки, которые prompt_toolkit
-        оставил в скроллбэке (prompt + перенесённые строки ввода)."""
-        w = _get_term_width()
-
-        def _vw(s: str) -> int:
-            n = wcswidth(s)
-            return n if n >= 0 else len(s)
-
-        # prompt-строка: "🚀 agent > " (видимая ширина) — её prompt_toolkit
-        # печатает перед текстом. Считаем сколько визуальных строк заняла
-        # вся реплика (prompt+text с учётом wrap), чтобы поднять курсор.
-        if self.mode == "planning":
-            mode_prefix = "🧠 plan > "
-        elif self.mode == "autonomous":
-            mode_prefix = "🔮 auto > "
-        else:
-            mode_prefix = "🚀 agent > "
-        prefix_w = _vw(mode_prefix)
-        rows = 0
-        for i, ln in enumerate((displayed_text or text).split("\n")):
-            line_w = (prefix_w if i == 0 else 0) + _vw(ln)
-            rows += max(1, (line_w + w - 1) // w) if line_w else 1
-
-        # Пишем напрямую в реальный терминал (sys.__stdout__), а не через
-        # обёртку prompt_toolkit — иначе escape-коды печатаются как текст
-        # ("?[JA") и prompt_toolkit ломает курсор.
-        out = sys.__stdout__
-        try:
-            # Курсор после Enter — на строке под вводом. Поднимаемся к началу
-            # prompt-строки (rows вверх), в начало строки, стираем до конца экрана.
-            out.write(f"\033[{rows}A\r\033[J")
-            bg = t("bg_code")
-            fg = "97"  # bright white
-            # bg_code вида "#1a1a2e" → 24-bit ANSI
-            bg_seq = ""
-            if bg.startswith("#") and len(bg) == 7:
-                r, g, b = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
-                bg_seq = f"48;2;{r};{g};{b}"
-            # Маппинг [imageN] → путь для OSC 8 file://-гиперссылок (Ctrl+клик).
-            image_paths = {
-                f"[image{idx}]": p
-                for idx, p in enumerate(self.pending_images, start=1)
-            }
-
-            def _linkify(seg: str) -> str:
-                # Оборачивает [imageN] в OSC 8 file://-ссылку + underline.
-                # ширину не меняет (escape-коды невидимы).
-                if not image_paths:
-                    return seg
-                def _repl(m):
-                    ph = m.group(0)
-                    p = image_paths.get(ph)
-                    if p is None:
-                        return ph
-                    uri = Path(p).resolve().as_uri()
-                    return f"\033]8;;{uri}\033\\\033[4m{ph}\033[24m\033]8;;\033\\"
-                return _ImageHighlighter._PATTERN.sub(_repl, seg)
-
-            lines = text.split("\n")
-            for i, ln in enumerate(lines):
-                prefix = mode_prefix if i == 0 else " "
-                filled = prefix + ln
-                pad = max(0, w - _vw(filled))
-                body = _linkify(prefix + ln) + " " * pad
-                if bg_seq:
-                    out.write(f"\033[1;{fg};{bg_seq}m{body}\033[0m\n")
-                else:
-                    out.write(f"\033[1;{fg}m{body}\033[0m\n")
-            from datetime import datetime
-            now = datetime.now().strftime("%H:%M:%S")
-            pad = max(0, w - _vw(now))
-            out.write(f"\033[38;5;250m{' ' * pad}{now}\033[0m\n")
-            out.flush()
-        except Exception:
-            logger.debug("echo_submitted failed", exc_info=True)
-
     def reprint_separator(self) -> None:
-        """Перерисовать separator со статусом (для Ctrl+O после clear).
+        """Печатает статус-линию в scrollback.
 
-        Печатаем в реальный stdout с явным output, чтобы prompt-toolkit
-        видел строку как внешний вывод и не стирал её при rerender.
+        Внутри Application линия рамки рисуется сама, поэтому здесь это нужно
+        только там, где Application временно не владеет экраном (replay в
+        headless-режиме).
         """
-        import sys
-
-        from prompt_toolkit.output.defaults import create_output
         status = getattr(self, "_last_status_text", None)
         if not status and callable(getattr(self, "status_provider", None)):
             try:
@@ -649,15 +415,91 @@ class InputPrompt:
                 self._last_status_text = status or ""
             except Exception:
                 logger.debug("reprint_separator status_provider failed", exc_info=True)
-        logger.debug("reprint_separator: status_len=%d", len(status or ""))
         fragments = self._make_separator_fragments(status)
         try:
+            from prompt_toolkit.output.defaults import create_output
             out = create_output(stdout=sys.__stdout__)
-            ptk_print(
-                FormattedText(fragments),
-                style=_build_style(),
-                output=out,
-            )
+            ptk_print(FormattedText(fragments), style=_build_style(), output=out)
         except Exception:
-            sys.__stdout__.write("\u2500" * 80 + "\n")
+            sys.__stdout__.write("─" * _get_term_width() + "\n")
             sys.__stdout__.flush()
+
+    # ──────────────────────────────── эхо ввода ────────────────────────────
+    def _mode_prefix(self) -> str:
+        if self.mode == "planning":
+            return "🧠 plan > "
+        if self.mode == "swarm":
+            return "🔮 swarm > "
+        return "🚀 agent > "
+
+    def render_echo(self, text: str) -> str:
+        """Собирает полосу эха: bold bright-white на фоне bg_code во всю ширину,
+        префикс режима на первой строке, `[imageN]` как OSC-8 file://-ссылки,
+        и справа снизу серое время отправки."""
+        w = _get_term_width()
+        mode_prefix = self._mode_prefix()
+
+        bg = t("bg_code")
+        bg_seq = ""
+        if isinstance(bg, str) and bg.startswith("#") and len(bg) == 7:
+            r, g, b = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
+            bg_seq = f"48;2;{r};{g};{b}"
+        fg = "97"  # bright white
+
+        # Маппинг [imageN] → путь для OSC 8 file://-гиперссылок (Ctrl+клик).
+        image_paths = {
+            f"[image{idx}]": p
+            for idx, p in enumerate(self.pending_images, start=1)
+        }
+
+        def _linkify(seg: str) -> str:
+            # Оборачивает [imageN] в OSC 8 file://-ссылку + underline.
+            # Ширину не меняет (escape-коды невидимы).
+            if not image_paths:
+                return seg
+
+            def _repl(m):
+                ph = m.group(0)
+                p = image_paths.get(ph)
+                if p is None:
+                    return ph
+                uri = Path(p).resolve().as_uri()
+                return f"\033]8;;{uri}\033\\\033[4m{ph}\033[24m\033]8;;\033\\"
+            return _ImageHighlighter._PATTERN.sub(_repl, seg)
+
+        out: list[str] = []
+        for i, ln in enumerate(text.split("\n")):
+            prefix = mode_prefix if i == 0 else " "
+            pad = max(0, w - _vw(prefix + ln))
+            body = _linkify(prefix + ln) + " " * pad
+            if bg_seq:
+                out.append(f"\033[1;{fg};{bg_seq}m{body}\033[0m\n")
+            else:
+                out.append(f"\033[1;{fg}m{body}\033[0m\n")
+        now = datetime.now().strftime("%H:%M:%S")
+        out.append(f"\033[38;5;250m{' ' * max(0, w - _vw(now))}{now}\033[0m\n")
+        return "".join(out)
+
+    def echo_submitted(self, text: str) -> None:
+        """Печатает эхо реплики в scrollback.
+
+        Курсор больше не отматывается вверх: поле ввода живёт внутри
+        Application и стирается им самим — стирать нечего, а прежний
+        `\\033[NA\\033[J` съел бы чужой вывод.
+        """
+        if not (text or "").strip():
+            return
+        try:
+            block = self.render_echo(text)
+        except Exception:
+            logger.debug("render_echo failed", exc_info=True)
+            return
+        sh = self.shell
+        if sh is not None:
+            sh.print_static_raw(block)
+            return
+        try:
+            sys.__stdout__.write(block)
+            sys.__stdout__.flush()
+        except Exception:
+            logger.debug("echo_submitted failed", exc_info=True)

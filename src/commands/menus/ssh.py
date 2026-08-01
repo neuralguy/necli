@@ -1,109 +1,92 @@
-import sys
+"""Меню /ssh: список хостов и карточка хоста.
 
-from rich.console import Console
+Карточка хоста живёт внутри виджета; события показываются динамически.
+"""
 
+from commands.menus._style import card_menu, confirm_delete, facts_line
 from config.i18n import t as _
 from config.ssh import add_host, list_hosts, parse_host_string, remove_host
-from ui.menu import select_menu
-
-console = Console()
+from ui import overlays
 
 
-def ssh_interactive():
+async def ssh_interactive():
     while True:
         hosts = list_hosts()
 
         items = []
         for alias, cfg in hosts.items():
-            user = cfg.get('user', 'root')
-            host = cfg.get('host', '?')
-            port = cfg.get('port', 22)
-            confirm = '🔒' if cfg.get('confirm_dangerous', True) else '🔓'
+            safe = cfg.get("confirm_dangerous", True)
             items.append({
-                "label": f"{confirm} {alias}",
-                "hint": f"{user}@{host}:{port}",
+                "icon": "🔒" if safe else "🔓",
+                "icon_style": "success" if safe else "warning",
+                "label": alias,
+                "hint": f"{cfg.get('user', 'root')}@{cfg.get('host', '?')}"
+                        f":{cfg.get('port', 22)}",
+                "badge": cfg.get("key", "") or _("ssh.key_system"),
+                "badge_style": "dim",
             })
-        items.append({"label": _("ssh.add_host"), "hint": ""})
+        items.append({"icon": " ", "label": _("ssh.add_host"), "hint": ""})
 
-        if not hosts:
-            console.print(f"  [dim]{_('ssh.no_hosts')}[/dim]")
-
-        choice = select_menu(items, title=_("ssh.title"))
+        facts = [f"{len(hosts)} host(s)"] if hosts else [_("ssh.no_hosts")]
+        choice = await card_menu(items, title=_("ssh.title"), facts=facts)
         if choice is None:
             return
         if choice == len(hosts):
-            _ssh_add_interactive()
+            await _ssh_add_interactive()
             continue
 
         host_items = list(hosts.items())
         if not (0 <= choice < len(host_items)):
             continue
         alias, cfg = host_items[choice]
-        action = _ssh_detail(alias, cfg)
+        action = await _ssh_detail(alias, cfg)
         if action == "back":
             continue
         return
 
 
-def _ssh_detail(alias: str, cfg: dict):
+async def _ssh_detail(alias: str, cfg: dict):
     while True:
-        user = cfg.get('user', 'root')
-        host = cfg.get('host', '?')
-        port = cfg.get('port', 22)
-        key = cfg.get('key', '')
-        confirm = cfg.get('confirm_dangerous', True)
-        confirm_str = f"[green]{_('ssh.yes')}[/green]" if confirm else f"[red]{_('ssh.no')}[/red]"
-        key_str = key if key else _("ssh.key_system")
-
-        sys.stdout.write("\x1b7")
-        sys.stdout.flush()
-
-        console.print()
-        console.print(f"  [bold yellow]{alias}[/bold yellow]")
-        console.print(f"  [dim]{user}@{host}:{port}[/dim]")
-        console.print(f"  [dim]{_('ssh.key_label')} {key_str}[/dim]")
-        console.print(f"  [dim]{_('ssh.confirm_dangerous_label')} {confirm_str}[/dim]")
-        console.print()
+        user = cfg.get("user", "root")
+        host = cfg.get("host", "?")
+        port = cfg.get("port", 22)
+        confirm_dangerous = cfg.get("confirm_dangerous", True)
 
         actions = [
-            {"label": _("ssh.test_connection")},
-            {"label": _("api.delete"), "hint": _("api.delete_permanent")},
-            {"label": _("common.back")},
+            {"label": _("ssh.test_connection"), "icon": "↻", "icon_style": "accent"},
+            {"label": _("api.delete"), "hint": _("api.delete_permanent"), "icon": "✗",
+             "icon_style": "error"},
+            {"label": _("common.back"), "icon": " "},
         ]
-        choice = select_menu(actions)
-
-        sys.stdout.write("\x1b8")
-        sys.stdout.write("\x1b[J")
-        sys.stdout.flush()
+        choice = await card_menu(
+            actions, title=alias,
+            status=f"{user}@{host}:{port}", status_style="accent",
+            facts=[facts_line(
+                f"{_('ssh.key_label')} {cfg.get('key', '') or _('ssh.key_system')}",
+                f"{_('ssh.confirm_dangerous_label')} "
+                f"{_('ssh.yes') if confirm_dangerous else _('ssh.no')}",
+            )],
+        )
 
         if choice is None or choice == 2:
             return "back"
 
         if choice == 0:
-            console.print("  [yellow]⚠[/yellow] SSH connection check unavailable (tools.ssh removed)")
             continue
 
         if choice == 1:
-            confirm_items = [{"label": _("common.yes_delete")}, {"label": _("common.cancel")}]
-            c = select_menu(confirm_items, title=_("ssh.delete_q", name=alias))
-            if c == 0:
+            if await confirm_delete(_("ssh.delete_q", name=alias)):
                 remove_host(alias)
-                console.print(f"  [green]✓[/green] {_('ssh.host_removed', name=alias)}")
                 return "back"
             continue
 
 
-def _ssh_add_interactive():
-    console.print()
-    try:
-        alias = console.input(f"  [bold]{_('ssh.field_alias')}:[/bold] ").strip()
-        if not alias:
-            return
-        host_str = console.input(f"  [bold]{_('ssh.field_userhost')}:[/bold] ").strip()
-        if not host_str:
-            return
-        user, host, port = parse_host_string(host_str)
-        add_host(alias, host, user=user, port=port)
-        console.print(f"  [green]✓[/green] {_('ssh.host_added', name=alias, target=f'{user}@{host}:{port}')}")
-    except (KeyboardInterrupt, EOFError):
-        console.print()
+async def _ssh_add_interactive():
+    alias = await overlays.ask_text(f"{_('ssh.field_alias')}:")
+    if not alias:
+        return
+    host_str = await overlays.ask_text(f"{_('ssh.field_userhost')}:")
+    if not host_str:
+        return
+    user, host, port = parse_host_string(host_str)
+    add_host(alias, host, user=user, port=port)

@@ -173,8 +173,7 @@ DEFAULTS: dict[str, Any] = {
     "tools": {
         "poll":          {"label": "Poll",       "emoji": "❓", "color_role": "accent"},
         "shell":         {"label": "Shell",      "emoji": "⏺",  "color_role": "warning"},
-        "read_files":    {"label": "Read",       "emoji": "📖", "color_role": "info"},
-        "read_file":     {"label": "Read",       "emoji": "📖", "color_role": "info"},
+        "read":     {"label": "Read",       "emoji": "📖", "color_role": "info"},
         "grep":          {"label": "Grep",       "emoji": "🔎", "color_role": "info"},
         "patch_file":    {"label": "Patch",      "emoji": "🔧", "color_role": "warning"},
         "create_file":   {"label": "Create",     "emoji": "✨", "color_role": "success"},
@@ -280,10 +279,6 @@ class UIConfig:
                 json.dump(DEFAULTS, f, ensure_ascii=False, indent=2)
         except OSError as e:
             _log.error("ui_config: failed to write defaults to %s: %s", UI_FILE, e)
-
-    def reload(self) -> None:
-        self._data = None
-        self._ensure_loaded()
 
     def get(self, path: str, default: Any = None) -> Any:
         """Dotted path: ui.get('tools.shell.emoji', '⏺')."""

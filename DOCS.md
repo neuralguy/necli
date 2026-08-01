@@ -4,7 +4,7 @@
 
 **Терминальный AI-агент. CLI + Telegram-мост, одно ядро.**
 
-API-only клиент для LLM: прямые вызовы провайдеров через **httpx** (свои реализации, без LangChain), гибридный режим инструментов (fenced `:::call` блоки + native function calling), стриминг с инлайн-выполнением tool-блоков, агентный цикл до 500 итераций, до 100 параллельных субагентов с **git worktree-изоляцией**, DAG-зависимостями, ролями/пресетами и фазовой оркестрацией (phases / items+stages в одном вызове), планировщик, скиллы, долговременная память между сессиями с автоизвлечением фактов, инсайты по всем сессиям (`/insights`), MCP, LSP, git-based undo/redo, авто-pruning истории, автоочистка `.data/`, голосовой ввод, headless-режим для CI и зеркало в Telegram.
+API-only клиент для LLM: прямые вызовы провайдеров через **httpx** (свои реализации, без LangChain), гибридный режим инструментов (fenced `:::call` блоки + native function calling), стриминг с инлайн-выполнением tool-блоков, агентный цикл до 500 итераций, до 100 задач на один вызов субагентов с **git worktree-изоляцией**, DAG-зависимостями, ролями/пресетами и фазовой оркестрацией (phases / items+stages в одном вызове), планировщик, скиллы, долговременная память между сессиями с автоизвлечением фактов, инсайты по всем сессиям (`/insights`), MCP, LSP, хуки (совместимые с claude-code), авто-pruning истории, автоочистка `.data/`, headless-режим для CI и зеркало в Telegram.
 
 Python ≥ 3.10. Управление зависимостями — `uv`.
 
@@ -16,14 +16,14 @@ Python ≥ 3.10. Управление зависимостями — `uv`.
 pip install uv
 uv sync
 
-# CLI (Rich Live в терминале)
-uv run python src/main.py cli --api onlysq
+# CLI (интерактивный prompt_toolkit shell)
+uv run python src/main.py cli --api openai
 
 # Headless (CI / pipe / cron)
 echo "сосчитай строки .py" | uv run python src/main.py run --quiet --allow-all
 ```
 
-Ключи API хранятся в `.data/config.json` (`api_keys`) и редактируются через меню `/api` внутри CLI.
+Ключи API и определения провайдеров хранятся в `.data/apis.json` (`providers` / `keys`) и редактируются через меню `/api` внутри CLI.
 
 ---
 
@@ -36,23 +36,25 @@ echo "сосчитай строки .py" | uv run python src/main.py run --quiet
 5. [Агентный цикл](#агентный-цикл)
 6. [Формат tool calls](#формат-tool-calls)
 7. [Инструменты](#инструменты)
-8. [Режимы (agent / planning)](#режимы-agent--planning)
+8. [Режимы (agent / planning / swarm)](#режимы-agent--planning--swarm)
 9. [Планировщик](#планировщик)
 10. [Сессии, токены, стоимость](#сессии-токены-стоимость)
 11. [Slash-команды](#slash-команды)
 12. [Субагенты](#субагенты)
 13. [Скиллы](#скиллы)
 14. [Память (memory)](#память-memory)
-15. [MCP](#mcp)
-16. [LSP](#lsp)
-17. [Telegram-мост](#telegram-мост)
-18. [Headless / CI](#headless--ci)
-19. [Система разрешений](#система-разрешений)
-20. [UI и темы (CLI)](#ui-и-темы-cli)
-21. [Тесты](#тесты)
-22. [Логирование](#логирование)
-23. [Структура проекта](#структура-проекта)
-24. [Инсайты (/insights)](#инсайты-insights)
+15. [Хуки (hooks)](#хуки-hooks)
+16. [Сессионные заметки (session notes)](#сессионные-заметки-session-notes)
+17. [SSH](#ssh)
+18. [MCP](#mcp)
+19. [LSP](#lsp)
+20. [Telegram-мост](#telegram-мост)
+21. [Headless / CI](#headless--ci)
+22. [Система разрешений](#система-разрешений)
+23. [UI и темы (CLI)](#ui-и-темы-cli)
+24. [Логирование](#логирование)
+25. [Структура проекта](#структура-проекта)
+26. [Инсайты (/insights)](#инсайты-insights)
 
 ---
 
@@ -62,19 +64,21 @@ echo "сосчитай строки .py" | uv run python src/main.py run --quiet
 
 | Команда | Назначение |
 |---------|------------|
-| `cli` | Основной TUI на Rich Live + prompt_toolkit. |
+| `cli` | Основной TUI на постоянном prompt_toolkit Application (без `rich.live.Live` в пути отрисовки). |
 | `run` | Headless: один проход агента, результат в stdout, exit code 0/1/2. |
 
 Опции `cli`:
 
 | Флаг | Назначение |
 |------|------------|
-| `--api, -A` | Активировать провайдера на этот запуск (`--api onlysq`). |
+| `--api, -A` | Активировать провайдера на этот запуск (`--api openai`). |
 | `--model, -m` | Модель (id или display name). |
 | `--workdir, -w` | Рабочая директория (по умолчанию — `cwd`). |
 | `--resume, -r` | Восстановить сессию по id или префиксу. |
 
 При старте `src/main.py` поднимает `RLIMIT_NOFILE` до 8192 (httpx-стримы + множество открытых файлов сессий быстро упираются в дефолт 1024 на Linux).
+
+Опции `run` (см. `commands/headless.py`): `--model/-m`, `--workdir/-w`, `--api/-A`, `--json`, `--quiet/-q`, `--timeout`, `--allow-all`. `stdin` подхватывается, если не tty. Exit code 0/1/2.
 
 ---
 
@@ -85,7 +89,7 @@ echo "сосчитай строки .py" | uv run python src/main.py run --quiet
 │ ui/prompt  │ ────────────► │ commands/        │
 │ (PT)       │               │ interactive.py   │
 └────────────┘               └──┬───────────────┘
-        ▲                       │ /slash → commands/slash.py
+        ▲                       │ /slash → commands/slash_handler.py
         │ stream chunks         ▼
 ┌──────────────────┐    ┌──────────────────────┐
 │ agent/stream.py  │ ◄──┤ agent/loop.py        │
@@ -108,7 +112,7 @@ echo "сосчитай строки .py" | uv run python src/main.py run --quiet
 
 Два фронтенда поверх одного ядра (`agent/` + `apis/` + `tools/` + `session/`):
 
-- `commands/interactive.py` — TUI с Rich Live.
+- `commands/interactive.py` — TUI с постоянным prompt_toolkit Application (`ui/shell.py`), последовательная очередь ходов агента (`commands/agent_queue.py`).
 - `apis/telegram.py` + `agent/telegram_handler.py` — Telegram-мост.
 
 LangChain **не используется**. Своя минимальная замена `langchain_core.messages` живёт в `apis/messages.py` (`SystemMessage` / `HumanMessage` / `AIMessage` / `ToolMessage` + `AIMessageChunk` с `__add__`). Общая логика стрима, retry/throttle, нативных tool calls и multimodal-вложений — в `apis/base.py:BaseProvider`. Провайдеры наследуются от него: `openai_provider`, `anthropic_provider`, `google_provider`, `custom_provider`.
@@ -117,49 +121,58 @@ LangChain **не используется**. Своя минимальная з�
 
 ## Конфигурация и `.data/`
 
-Вся персистентность лежит в `.data/` рядом с проектом (`config/paths.py`):
+Вся персистентность лежит в `.data/` рядом с проектом (`config/paths.py`; базовый каталог — `.data` рядом с кодом, либо `NECLI_HOME`; в frozen-режиме — `~/.necli`):
 
 ```
 .data/
 ├── config.json                # основной конфиг (config/settings.py)
-├── apis.json                  # альтернативный источник API-конфигов
+├── apis.json                  # провайдеры и ключи (providers / keys)
+├── ui.json                    # override эмодзи/лейблов/цветов инструментов + лимиты
+├── hooks.json                 # хуки (см. раздел Хуки)
 ├── mcp_servers.json           # MCP-сервера
 ├── lsp_servers.json           # LSP-сервера (опционально, есть дефолты)
-├── history                    # история ввода prompt_toolkit
-├── docx_reference.docx        # генерится один раз для create_docx
+├── ssh_hosts.json             # SSH-хосты (см. раздел SSH)
 ├── pinned_sessions.json       # закреплённые сессии (не удаляются автоочисткой)
 ├── .last_cleanup              # маркер последней автоочистки .data (раз в сутки)
+├── history                    # история ввода prompt_toolkit
 ├── clipboard_images/          # вставленные через Ctrl+P изображения
 ├── uploads/                   # кэш загруженных картинок (напр. из Telegram)
-├── subagents/<run-id>/sub-N/  # git worktrees субагентов
-├── undo/<key>/git/            # git-стор undo/redo (отдельный от проектного .git)
+├── subagents/<run-id>/        # run-директории субагентов (shared.md, worktrees)
 ├── docx_sources/              # HTML-исходники + .template.docx для round-trip
 ├── agents/<name>/AGENT.md     # заготовки-пресеты субагентов
-├── memory/<project>/*.md      # долговременная память проекта (см. раздел)
+├── memory/                    # долговременная память проекта + _global (см. раздел)
 ├── insights/report-*.html     # HTML-отчёты команды /insights
-├── ui.json                    # override эмодзи/лейблов/цветов инструментов
 ├── skills/<name>/SKILL.md     # скиллы (см. раздел)
 └── sessions/<id>/
     ├── history.json           # полные сообщения сессии
     ├── summary.json           # агрегаты cost/tokens
-    └── .plan.md               # активный план (если есть)
+    ├── .plan.md               # активный план (если есть)
+    └── session_notes.md       # сессионные заметки (см. раздел)
 ```
 
-**Автоочистка `.data/`** (`config/data_cleanup.py`) запускается тихо в фоне при старте, не чаще раза в сутки (маркер `.last_cleanup`), с безопасной retention-политикой: сессии старше 30 дней (но последние 100 и все pinned сохраняются), `subagents/` старше 14 дней, временные `clipboard_images/`/`docx_*`/`uploads/` старше 7 дней, undo-репы старше 60 дней (кроме текущей рабочей директории). Конфиги, реестры, `agents/`, `skills/`, `memory/` не трогаются.
+**Автоочистка `.data/`** (`config/data_cleanup.py`) запускается тихо в фоне при старте, не чаще раза в сутки (маркер `.last_cleanup`), с безопасной retention-политикой:
+
+- сессии старше **30 дней** — кандидаты на удаление, но последние **100** и все **pinned** сохраняются;
+- пустые сессии-директории удаляются;
+- `subagents/` старше **14 дней**;
+- `clipboard_images/`, `docx_shots/`, `docx_sources/`, `uploads/` старше **7 дней**;
+- мёртвые ssh-сокеты старше **1 дня**;
+- корневой мусор `_clean_root_junk()`: `_git_stats.py`, `api_providers.json`, `diff_target.txt`, `docx_reference.docx`.
+
+Конфиги, реестры, `agents/`, `skills/`, `memory/` не трогаются. `docx_reference.docx` больше **не** генерируется как служебный файл `create_docx` — он считается мусором и вычищается автоочисткой.
 
 Ключевые поля `config.json` (см. `config/settings.py`):
 
 | Поле | Назначение |
 |------|------------|
 | `active_api`, `active_api_model` | Текущий провайдер и модель. |
-| `api_providers`, `api_keys` | Устарело: провайдеры и ключи живут в `.data/apis.json` (`providers` / `keys`), миграция из config.json автоматическая. |
 | `tool_permissions` | Постоянные разрешения инструментов. |
 | `theme`, `theme_custom` | Активная тема и переопределение ролей. |
 | `telegram_bot_token`, `telegram_chat_id`, `telegram_enabled` | Telegram-мост. |
 | `think_enabled` | Глобальный THINK-режим (рассуждения вслух). |
 | `temperature`, `max_tokens` | Generation params. |
 
-Доступ — `config.get(key, default)` / `config.set_value(key, value)`. Словарь кэшируется, мутации идут только через `set_value`.
+Провайдеры и ключи живут в `.data/apis.json` (поля `providers` / `keys`), миграция из старых `api_providers` / `api_keys` в `config.json` автоматическая. Доступ — `config.get(key, default)` / `config.set_value(key, value)`. Словарь кэшируется, мутации идут только через `set_value`.
 
 ---
 
@@ -173,11 +186,11 @@ LangChain **не используется**. Своя минимальная з�
 
 Инстансы кэшируются по `(provider_id, model_id, kwargs)` — kwargs включены в ключ, иначе каждый вызов с параметрами плодил бы новый инстанс со свежим `session_id` и сбивал prompt-cache. `reload_providers()` сбрасывает кэш — нужен после правок через `/api`.
 
-Встроенные определения (`apis/definitions/`): anthropic, google, groq, lmstudio, ollama, openai, openrouter, xai. Пользовательские OpenAI-совместимые прокси и свои шлюзы добавляются через `/api` или правкой `.data/apis.json`.
+Встроенные определения (`apis/definitions/`): anthropic, google, groq, lmstudio, ollama, openai, openrouter, xai (+ шаблон `_example.json`). Пользовательские OpenAI-совместимые прокси и свои шлюзы добавляются через `/api` или правкой `.data/apis.json`.
 
 Поля определения: `default_headers` (произвольные HTTP-заголовки) и `extra` — шлюзовые настройки без хардкода в коде: `append_query`, `session_id_header`, `billing_header`, `inject_metadata`, `use_aiohttp`, `system_as_first_message`, `use_bearer_auth`, `prompt_cache`, `extra_body`, `reasoning_models`.
 
-На провайдера можно повесить несколько ключей (список в `apis.json["keys"]`, каждому — имя) — при rate-limit запрос автоматически повторяется со следующим ключом.
+На провайдера можно повесить несколько ключей (список в `apis.json["keys"]`, каждому — имя) — при rate-limit запрос автоматически повторяется со следующим ключом (ротация).
 
 Каждая модель: `id`, `display_name`, `context_window`, `input_price` / `output_price` (USD за 1M токенов). Цены используются в `session/session.py:_compute_cost`: при наличии реального `usage` от провайдера — он, иначе fallback на tiktoken-оценку.
 
@@ -187,13 +200,13 @@ LangChain **не используется**. Своя минимальная з�
 
 `agent/loop.py` содержит две реализации над одним и тем же `apis.agent_adapter.api_send_message`:
 
-- **`run_agent_interactive`** — основной цикл с `LiveStream` (`agent/stream.py`). Стримит ответ, парсит `:::call <tool> ... call:::` блоки по мере поступления, выполняет инлайн через `agent/stream_tool_exec.py`. После каждой итерации скармливает `ToolResult`'ы модели как новое сообщение. До `MAX_ITERATIONS = 500`.
+- **`run_agent_interactive`** — основной цикл с `LiveStream` (`agent/stream.py`). Стримит ответ, парсит `:::call <tool> ... call:::` блоки по мере поступления, выполняет инлайн через `agent/stream_tool_exec.py`. После каждой итерации скармливает `ToolResult`'ы модели как новое сообщение. До `MAX_ITERATIONS = 500` (`agent/loop.py:65`).
 - **`run_agent`** — headless-вариант без Rich Live. Используется в `commands/headless.py`.
 
 Ключевые детали:
 
-- **`AgentContext`** (`agent/context.py`) хранит план, рабочую директорию, mode (`agent | planning`), event-handler, snapshot файлов из `agent/fs_watcher.py`, `step_tracker` (`agent/project_stats.py`), счётчик nudge и флаги прерывания.
-- На каждый раунд `agent/messages.build_first_message` / `_build_result_message` дополняет сообщение блоком плана и трекингом изменений ФС.
+- **`AgentContext`** (`agent/context.py`) хранит план, рабочую директорию, mode (`agent | planning | swarm`), event-handler, snapshot файлов из `agent/fs_watcher.py`, `step_tracker` (`agent/project_stats.py`), счётчик nudge и флаги прерывания.
+- На каждый раунд `agent/messages.build_first_message` / `_build_result_message` дополняет сообщение блоком плана, сессионными заметками и трекингом изменений ФС.
 - **Авто-продолжение**: подозрение на обрыв (`is_likely_truncated`) → `CONTINUE_MESSAGE` («продолжай»); ошибка прокси (`is_api_proxy_error`) → повтор.
 - **Авто-компрессия истории** в `commands/interactive._maybe_auto_compress` срабатывает при `context_tokens / get_context_limit(model) ≥ 0.90`.
 - **События** — через интерфейс `AgentEventHandler` (`agent/events.py`). Дефолт — `RichEventHandler`; при активном TG-мосте оборачивается `TelegramEventHandler`.
@@ -212,17 +225,17 @@ LangChain **не используется**. Своя минимальная з�
    ...body...
    call:::
    ```
-   Парсятся `tools/call_parser.py`. Лимит `MAX_TOOL_CALLS_PER_MESSAGE = 50`. Три формата:
+   Парсятся `tools/call_parser.py`. Лимит `MAX_TOOL_CALLS_PER_MESSAGE = 50` (`tools/parser.py:16`). Три формата:
    - **JSON-инструменты** — body это JSON.
    - **Контентные** (`create_file` / `create_docx`) — `path="..."` в шапке, body — сырой контент.
    - **`patch_file`** — секции `--- FIND --- / --- REPLACE --- / --- INSERT ---` или атрибут `delete_lines`.
 
-2. **Native function calling.** Глобальный единый переключатель `tool_format_force_native` (команда `/tool_format`, читается в `system_prompt._resolve_native_tools`): `True` (дефолт) → native function calling для всех провайдеров, `False` → fenced. В native-режиме `BaseProvider` биндит JSON-схемы из `apis/tool_schemas.py`; полученные `tool_calls` конвертируются в текстовые fenced-блоки (`_tool_calls_to_text_blocks`) и проходят через тот же парсер — UI одинаковый, но результаты возвращаются модели как структурные `ToolMessage` (не как текстовый транскрипт). Системный промпт полностью изолирует режимы: в native-варианте нет ни одного упоминания fenced-синтаксиса.
+2. **Native function calling.** Глобальный единый переключатель `tool_format_force_native` (дефолт `True`, `config/settings.py:27`; команда `/tool_format`): `True` → native function calling для всех провайдеров, `False` → fenced. В native-режиме `BaseProvider` биндит JSON-схемы из `apis/tool_schemas.py`; полученные `tool_calls` конвертируются в текстовые fenced-блоки и проходят через тот же парсер — UI одинаковый, но результаты возвращаются модели как структурные `ToolMessage` (не как текстовый транскрипт). Системный промпт полностью изолирует режимы: в native-варианте нет ни одного упоминания fenced-синтаксиса (промпты — `prompts/native.py` / `prompts/fenced.py`).
 
 Особенности:
 
 - При пустых `args` после стрима (баг ряда прокси) делается fallback non-stream запрос за корректным JSON.
-- Прокси (OnlySQ и др.) html-эскейпят кавычки/угловые скобки в SSE; декодирование — единый канонический модуль `tools/_html_unescape.py`, используется в `tools/call_parser.py`, `apis/agent_adapter.py`, `agent/display.py`.
+- Прокси html-эскейпят кавычки/угловые скобки в SSE; декодирование — единый канонический модуль `tools/_html_unescape.py`, используется в `tools/call_parser.py`, `apis/agent_adapter.py`, `agent/display.py`.
 - `usage` (`input`, `output`, `reasoning`) пробрасывается из ответа провайдера в `Message.usage`.
 - Длина fence для контентных инструментов выбирается динамически.
 
@@ -230,18 +243,20 @@ LangChain **не используется**. Своя минимальная з�
 
 ## Инструменты
 
-Единый реестр — `tools/registry.py:TOOL_REGISTRY`. JSON-схемы для native — `apis/tool_schemas.py`. Одинаковые имена работают и в fenced, и в native режиме.
+Единый реестр — `tools/registry.py:TOOL_REGISTRY` (строки 43-63). JSON-схемы для native — `apis/tool_schemas.py`. Одинаковые имена работают и в fenced, и в native режиме.
+
+Полный список (`TOOL_REGISTRY`):
 
 | Категория | Инструменты |
 |-----------|-------------|
 | Shell | `shell` |
-| Чтение / поиск | `read_files` (alias `read_file`), `grep` |
-| Запись / правка | `create_file`, `patch_file`, `create_docx` |
-| DOCX | `create_docx`, `docx_screenshot` (рендер страницы .docx/.pdf в PNG через LibreOffice + PyMuPDF) |
+| Чтение | `read`, `grep` |
+| Запись / правка | `create_file`, `patch_file` |
+| DOCX | `create_docx`, `docx_screenshot` (рендер страницы .docx/.pdf в PNG) |
 | Сеть | `web_search`, `web_fetch`, `image_search` |
 | Мета | `subagent`, `skill`, `poll`, `expand_tool_result` |
 | Память | `memory_write`, `memory_list`, `memory_read` (долговременная память проекта, см. раздел Память) |
-| LSP | `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_diagnostics` |
+| LSP | `lsp_references`, `lsp_diagnostics` |
 | MCP | `mcp__<server_id>__<tool_name>` (динамически после `init_mcp_from_config`) |
 | Control-tools | `plan` (чеклист задачи, не исполняет код), `think` (рассуждение вслух — только при включённом THINK-режиме) |
 
@@ -249,42 +264,51 @@ LangChain **не используется**. Своя минимальная з�
 
 Существенные детали:
 
-- **`read_files`** — поддерживает `.docx`, `.pdf`, изображения, csv/tsv, Excel. Лимиты: `MAX_READ_FILES = 20`, `MAX_LINES = 1000`.
+- **`read`** — поддерживает `.docx`, `.pdf`, изображения, csv/tsv, Excel. Лимиты: `MAX_READ_FILES = 20`, `MAX_LINES = 1000` (`tools/file_ops/read.py`).
+- **`grep`** (`tools/file_ops/grep.py`) — поиск по содержимому с regex, автоматически исключает зависимости/кэши/скрытые директории.
 - **`patch_file`** — `find/replace` (одиночный или массив `patches`), `line + insert` для вставки, `delete_lines="10-15"`. Fuzzy-матч с warning'ом (`tools/file_ops/_fuzzy.py`).
 - **`create_docx`** — HTML → Pandoc 3.x → DOCX. Inline-CSS (`color`, `font-family`, `font-size`, `background-color`, `text-align`) применяется пост-процессом python-docx. LaTeX `$...$` / `$$...$$` → нативные OMML-формулы. Round-trip read→edit→write через двухпроходный pandoc (html + markdown). Подробности — в `AGENTS.md` и скилле `docx-mastery`.
 - **`docx_screenshot`** — рендерит страницу(ы) .docx или .pdf в PNG и прикрепляет к следующему ходу модели (multimodal), чтобы она «увидела» реальную вёрстку — шрифты, поля, таблицы, формулы, разрывы. Pipeline: .docx → .pdf через LibreOffice headless (`soffice --convert-to`), .pdf → PNG через PyMuPDF при 200 DPI. Аргументы: `page` (одна страница) или `pages` (`"2-5"`, `"1,3,7"`, `"2-4,8,10-11"`, список, или `"all"`).
-- **`shell`** — `cd` и `&&` / `||` явно запрещены парсером (`tools/shell.py`).
+- **`shell`** — `cd` и `&&` / `||` явно запрещены парсером (`tools/shell.py`). Тяжёлые/долгие команды можно запускать в фоне: `background=true` в аргументах (`tools/background.py`) — задача исполняется отдельно, результат приходит уведомлением по завершении.
 - **`web_search`** — DuckDuckGo (через `ddgs`) и/или прямой fetch URL через `trafilatura`. Результаты кэшируются.
-- **`grep`** — рекурсивный поиск по файлам или одному пути; системные каталоги,
-  зависимости, кэши и артефакты сборки исключаются.
-- **`web_fetch`** — извлекает содержимое заданного URL; для поиска URL используется
-  `web_search`.
+- **`web_fetch`** — отдельный fetch содержимого одного или нескольких URL (извлекает текст, при необходимости raw HTML).
+- **`image_search`** — поиск картинок в сети и скачивание их в `assets/images`.
 - **`poll`** — запрос к пользователю с до 4 вариантами. В headless автоматически отказывает.
 - **`expand_tool_result`** — длинные output'ы усекаются с маркером `expand via :::call expand_tool_result {"id": "..."}`; модель просит полный текст по id. Кэш `agent/result_cache.py` (FIFO, в памяти процесса).
-- **LSP-tools** — `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_diagnostics`. Используют `apis/lsp_client.py:LSPManager`. По умолчанию `pyright`, `typescript-language-server`, `gopls`, `rust-analyzer` — если бинарь есть в PATH.
+- **LSP-tools** — только `lsp_references` / `lsp_diagnostics` (см. раздел LSP; `lsp_definition` и `lsp_hover` удалены).
 - **Валидация аргументов** — `tools/arg_validation.py` сверяет args со схемой до вызова handler'а: алиасы имён параметров, коэрция типов (`"42"`→`42`), точные диагностики обязательных полей и enum.
 
 ### Read-only / planning-mode
 
-`tools/registry.py` экспортирует `READ_ONLY_TOOLS` (он же `PLANNING_TOOLS` из `config.constants`) — `{read_files, poll, web_search, skill, memory_list, memory_read}` + read-only LSP-инспекторы. В `planning` mode разрешены только они + `plan`.
+`tools/registry.py` экспортирует `PLANNING_TOOLS` / `SWARM_TOOLS` (канонический `READ_ONLY_TOOLS` — из `config/constants.py`, см. раздел Режимы). В `planning` mode разрешены только они + `plan`.
 
 ### Лимиты вызовов
 
-- `MAX_TOOL_CALLS_PER_MESSAGE = 50` — лишние блоки в одном сообщении отбрасываются.
+- `MAX_TOOL_CALLS_PER_MESSAGE = 50` — лишние блоки в одном сообщении отбрасываются (`tools/parser.py:16`).
+- `MAX_ITERATIONS = 500` — потолок итераций главного агента (`agent/loop.py:65`).
+- `MAX_SUBAGENT_ITERATIONS = 200` — потолок итераций субагента (`agent/subagent_api.py:46`).
+- До **100 задач** на один вызов `subagent` (`agent/subagent.py:80`), конкурентность внутри волны — `subagent.max_concurrency = 12` (`config/ui.py:224`).
 - Каждый вызов выполняется отдельно `agent/executor._execute_single` с тиканием спиннера и трекингом изменений ФС.
 
 ---
 
-## Режимы (agent / planning)
+## Режимы (agent / planning / swarm)
 
-Переключение по `Tab` в prompt или через `/mode`. `AgentContext.toggle_mode` циклит `agent ↔ planning`.
+Переключение по **Tab** в prompt (`commands/interactive.py _toggle_mode`; в Telegram — `/menu` → mode, `agent/tg_menu.py`, `modes = [agent, planning, swarm]`).
 
 | Режим | Иконка | Что разрешено |
 |-------|--------|---------------|
 | `agent` | 🚀 | Полный набор инструментов. Дефолт. |
-| `planning` | 🧠 | Только read-only: `read_files` + LSP-read + `plan` / `poll` / `web_search` / `skill` / `memory_list` / `memory_read`. Любая попытка вызвать write/shell/etc. возвращает `build_blocked_result`. |
+| `planning` | 🧠 | Read-only + планирование: `read`, `grep`, `lsp_references`, `lsp_diagnostics`, `memory_list`, `memory_read`, `poll`, `skill`, `web_search`, `web_fetch` + control-tool `plan`. Любая попытка вызвать write/shell/etc. возвращает `build_blocked_result`. |
+| `swarm` | 🔮 | `planning` + `shell` + `subagent` — режим для оркестрации параллельных субагентов. |
 
-При переключении `agent/loop` добавляет уведомление о новом режиме в первое сообщение нового раунда; аналогично обрабатывается `/think`.
+Составы — из кода (`src/config/constants.py:41`, `src/tools/registry.py:213-214`):
+
+- `READ_ONLY_TOOLS = {read, grep, lsp_references, lsp_diagnostics, memory_list, memory_read}`.
+- `PLANNING_TOOLS = READ_ONLY_TOOLS | {poll, skill, web_search, web_fetch}`.
+- `SWARM_TOOLS = PLANNING_TOOLS | {shell, subagent}`.
+
+При переключении режима в первое сообщение нового раунда инжектится notice о смене режима. Аналогично `/think` — notice включения/выключения THINK-режима.
 
 ---
 
@@ -301,12 +325,11 @@ LangChain **не используется**. Своя минимальная з�
   call:::
   ```
 
-  Поддерживаемые действия: `create`, `update` (по `step` / `index` / `title`), `add_step`, `remove_step`. Лимит — 25 шагов, минимум 3.
-- После каждого ответа `agent/loop._process_plan_commands` применяет команды, обновляет `.plan.md` в директории сессии и рисует панель `render_plan_panel`.
+  Поддерживаемые действия: `create`, `update` (по `step` / `index` / `title`), `add_step`, `remove_step`. **Минимум 3 шага** (`planner.py:286`).
+- После каждого ответа `agent/loop` применяет команды плана, обновляет `.plan.md` в директории сессии и рисует панель `render_plan_panel`.
 - `LiveStream` обрабатывает блоки plan в стриме: показывает прогресс-бар (`▮▮▯▯ 2/4`) прямо во время ответа.
 - Окно `prev/current/next` инжектится в контекст следующего сообщения через `Plan.render_for_context`.
 - При завершении (`is_complete`) `.plan.md` удаляется, при загрузке (`load_plan_file`) восстанавливается из markdown.
-- `/plan-clear` сбрасывает план и удаляет файл.
 - Если модель долго работает без tool-вызовов, но план не завершён — посылается nudge с напоминанием.
 
 ---
@@ -344,11 +367,7 @@ LangChain **не используется**. Своя минимальная з�
 
 ### Pruning контекста перед отправкой
 
-`apis/_context_pruner.py` обрезает старые tool-результаты из истории перед запросом, экономя токены без потери актуального контекста. Работает в обоих форматах (text-mode блоки `$ read_files ...` и native `ToolMessage`). Триггеры вытеснения: (A) файл перезаписан в более позднем раунде; (B) тот же путь прочитан позже (дедуп); (C) крупное чтение старше `_KEEP_RECENT_ROUNDS=4` раундов; (D) hard-cap — любое чтение/вывод старше `_HARD_EVICT_ROUNDS=10`. Свежий раунд не трогается. Вместо контента ставится маркер `[content evicted to save tokens — ...]` с подсказкой перечитать. Вытеснение выводов тяжёлых инструментов (`shell`, `web_search`, lsp_*) — по возрасту (C/D).
-
-### Undo / redo файловых изменений
-
-`agent/undo_store.py` — git-based timeline правок, **отдельный** от проектного `.git`. GIT_DIR лежит в `.data/undo/<sha1(workdir)>/git` (проектный репозиторий не трогается, `.gitignore`-паттерны в его `info/exclude`). Перед каждым раундом `snapshot_round` коммитит состояние файлов; `refs/undo/tip` отмечает верхушку timeline (новый снапшот после `/undo` отрезает старое «будущее»). Команда `/undo [N]` двигает рабочее дерево на N раундов назад (`reset --hard` + `clean -fd`), `N<0` — redo вперёд.
+`apis/_context_pruner.py` обрезает старые tool-результаты из истории перед запросом, экономя токены без потери актуального контекста. Работает в обоих форматах (text-mode блоки и native `ToolMessage`). Триггеры вытеснения: (A) файл перезаписан в более позднем раунде; (B) тот же путь прочитан позже (дедуп); (C) крупное чтение старше `_KEEP_RECENT_ROUNDS=4` раундов; (D) hard-cap — любое чтение/вывод старше `_HARD_EVICT_ROUNDS=10`. Свежий раунд не трогается. Вместо контента ставится маркер `[content evicted to save tokens — ...]` с подсказкой перечитать. Вытеснение выводов тяжёлых инструментов (`shell`, `web_search`, lsp_*) — по возрасту (C/D).
 
 ---
 
@@ -358,45 +377,46 @@ LangChain **не используется**. Своя минимальная з�
 
 **Правило мест**: новая команда обязана быть в `commands/registry.py` (метаданные → help+completer подхватываются сами) и в `commands/slash.py` (диспетчер `_handle_slash`); если она меняет состояние / запускает async — ещё и в `commands/slash_handler.py`. См. `AGENTS.md`.
 
-| Команда | Что делает |
-|---------|------------|
-| `/help`, `/?` | Справка. |
-| `/api`, `/apis` | Меню провайдеров: добавление/правка, ключи, активная модель, tool format. |
-| `/models` | Picker моделей активного провайдера. |
-| `/model [<name>]` | Без аргумента — показать текущую модель и цену; с именем — прямое переключение. |
-| `/params` | Generation params (temperature, max_tokens). |
-| `/copy [N]` | Скопировать последние N ответов ассистента в буфер обмена (по умолчанию 1). |
-| `/new` | Новый чат: чистит сессию и `ApiSession`, сбрасывает session-level разрешения. |
-| `/sessions` | Меню сохранённых сессий с cost/tokens preview. |
-| `/session <id>` | Переключение по id/префиксу. |
-| `/compress` | Сжать историю через активную модель, сохранить бэкап. |
-| `/stats [N]` | Статистика за N дней (по умолчанию 7) + общая. |
-| `/insights` | Анализ всех сессий → HTML-отчёт + извлечение фактов в память (см. раздел Инсайты). |
-| `/history [N]` | Последние N действий агента (по умолчанию 10). |
-| `/cd PATH` | Сменить рабочую директорию (для tools и file-completer). |
-| `/permissions`, `/perm` | Allow/deny инструментов на уровне session / process / forever. |
-| `/skills`, `/skill` | Меню скиллов. |
-| `/agents` | CRUD заготовок-пресетов субагентов (`.data/agents/<name>/AGENT.md`). |
-| `/mcp`, `/mcps` | MCP-сервера: добавление, enable/disable, реконнект. |
-| `/lsp`, `/lsps` | LSP-сервера: список / enable / диагностика. |
-| `/tg` | Telegram-мост. |
-| `/themes`, `/theme` | Выбор темы и кастомизация ролей. |
-| `/lang` | Язык интерфейса. |
-| `/think` | Toggle THINK-режима (рассуждения вслух). |
-| `/tool_format` | Toggle глобального native function calling (`tool_format_force_native`) — иначе fenced. |
-| `/plan` | Показать текущий план. |
-| `/reflect` | Рефлексия: модель анализирует сессию и предлагает обновить `AGENTS.md`. |
-| `/undo [N]` | Откатить/вернуть файловые изменения на N раундов через отдельный git-стор (`agent/undo_store.py`). N<0 — redo. |
-| `/branch` | Управление git-ветками рабочего репозитория. |
-| `/commit` | Сгенерировать коммит через `agent/commit_agent.py` и закоммитить. |
+Полный актуальный список (`commands/registry.py`, категории из `CATEGORIES`):
+
+| Команда | Категория | Что делает |
+|---------|-----------|------------|
+| `/new` | session | Новый чат: чистит сессию и `ApiSession`, сбрасывает session-level разрешения и активные скиллы. |
+| `/branch` | session | Управление git-ветками рабочего репозитория. |
+| `/commit` | session | Сгенерировать коммит через `agent/commit_agent.py` и закоммитить. |
+| `/sessions` | session | Меню сохранённых сессий с cost/tokens preview. |
+| `/history [N]` | session | Последние N действий агента (по умолчанию 10). |
+| `/compress` | session | Сжать историю через активную модель, сохранить бэкап. |
+| `/reflect` | session | Рефлексия: модель анализирует сессию и предлагает обновить `AGENTS.md` (`commands/slash.py:141`). |
+| `/api` | model | Меню провайдеров: добавление/правка, ключи, активная модель. |
+| `/models` | model | Picker моделей активного провайдера. |
+| `/params` | model | Generation params (temperature, max_tokens). |
+| `/autoprune` | model | Меню авто-pruning контекста (`commands/menus/autoprune.py`). |
+| `/proxy [URL\|off]` | model | Установить/сбросить HTTP(S)/SOCKS-прокси для API-вызовов (`commands/menus/proxy.py`). |
+| `/cd PATH` | tools | Сменить рабочую директорию (для tools и file-completer). |
+| `/permissions` | tools | Allow/deny инструментов на уровне session / process / forever. |
+| `/mcp` | tools | MCP-сервера: добавление, enable/disable, реконнект. |
+| `/lsp` | tools | LSP-сервера: список / enable / диагностика. |
+| `/skills` | tools | Меню скиллов: список / создание / добавление / удаление. |
+| `/agents` | tools | CRUD заготовок-пресетов субагентов (`.data/agents/<name>/AGENT.md`). |
+| `/ssh` | tools | Меню управления SSH-хостами (`.data/ssh_hosts.json`). |
+| `/themes` | display | Выбор темы и кастомизация ролей. |
+| `/lang` | display | Язык интерфейса (en, ru, de, fr, zh). |
+| `/think` | display | Toggle THINK-режима (рассуждения вслух); toggle `think_enabled`. |
+| `/tool_format` | display | Toggle глобального native function calling (`tool_format_force_native`) — иначе fenced. |
+| `/help` | misc | Справка (группировка по категориям). |
+| `/stats [N]` | misc | Интерактивная статистика за N дней + общая, с вкладками (session / hands / models / tools / history). |
+| `/insights` | misc | Анализ всех сессий → HTML-отчёт + извлечение фактов в память (см. раздел Инсайты). |
+| `/copy [N]` | misc | Скопировать последние N ответов ассистента в буфер обмена (по умолчанию 1). |
+| `/tg` | misc | Telegram-мост: токен / чат / тест / on-off. |
 
 ---
 
 ## Субагенты
 
-`tools/subagent.py` + `agent/subagent.py` + `agent/subagent_api.py` + `agent/subagent_git.py` + `agent/subagent_render.py`.
+`tools/subagent.py` + `agent/subagent.py` + `agent/subagent_api.py` + `agent/subagent_git.py` + `agent/subagent_render.py` + `agent/subagent_display.py`.
 
-- До **100 параллельных задач** в одном вызове. Каждая — отдельная `ApiSession`, изолированный контекст, свой stream. Конкурентность ограничена семафором (`subagent.max_concurrency` в `config/ui.py`, дефолт 12): сотни задач можно слать, они дренируются батчами без 429.
+- До **100 задач** в одном вызове (`agent/subagent.py:80`). Каждая — отдельная `ApiSession`, изолированный контекст, свой stream. Конкурентность ограничена семафором (`subagent.max_concurrency` в `config/ui.py`, дефолт 12): сотни задач можно слать, они дренируются батчами без 429.
 - Формы вызова (нормализуются в `tools/subagent_specs.py:build_subagent_task_specs`):
   - `prompt` — одиночный субагент;
   - `tasks: [...]` — fan-out: параллельные независимые задачи;
@@ -415,8 +435,8 @@ LangChain **не используется**. Своя минимальная з�
   - `depends_on` — список 1-based индексов задач, которые должны завершиться ДО этой. Их результаты инжектятся в промпт. Задачи без зависимостей идут параллельными волнами, зависимые ждут (`_resolve_dependencies` → топосортировка в волны). В `phases` зависимость от предыдущей фазы проставляется автоматически.
 - **`isolate`** — по умолчанию `false`: субагенты пишут ПРЯМО в общую рабочую директорию, поэтому работу надо резать на независимые слайсы (каждый субагент владеет своими файлами). `isolate=true` — каждому отдельный git worktree (см. ниже).
 - Все субагенты запускаются в agent-mode и получают одинаковый полный набор инструментов (кроме явно запрещённых внутри субагента `poll` и вложенного `subagent`).
-- Дисплей: `SubagentTracker` / `SubagentBuffer` рисуют несколько строк прогресса параллельно; в финале выводят свод по задачам. Инкрементальный лог завершившихся — `progress.md` в run-директории.
-- Лимит итераций субагента — `MAX_SUBAGENT_ITERATIONS = 120`.
+- Дисплей: `SubagentTracker` / `SubagentBuffer` + `SwarmOverlay` — интерактивная панель в нижней зоне (навигация стрелками, Enter — детали задачи), плюс `agent/subagent_display.py`. Инкрементальный лог завершившихся — `progress.md` в run-директории.
+- Лимит итераций субагента — `MAX_SUBAGENT_ITERATIONS = 200` (`agent/subagent_api.py:46`).
 - Внутри субагента **запрещены** `poll` и вложенный `subagent`. `web_search` **разрешён** — субагент умеет искать в сети.
 - Список доступных моделей и заготовок-пресетов подмешивается в системный промпт через `system_prompt._build_subagent_models_block` / `_build_agent_presets_block`.
 
@@ -442,12 +462,13 @@ LangChain **не используется**. Своя минимальная з�
 
 ## Скиллы
 
-`skills/manager.py` + `tools/skill_tool.py`. Скилл — директория `.data/skills/<name>/SKILL.md` с frontmatter:
+`skills/manager.py` + `skills/registry.py` + `tools/skill_tool.py`. Скилл — директория `.data/skills/<name>/SKILL.md` с frontmatter:
 
 ```markdown
 ---
 name: docx-mastery
 description: Полное руководство по работе с .docx через create_docx
+disable-model-invocation: false
 ---
 
 ...тело скилла...
@@ -455,6 +476,7 @@ description: Полное руководство по работе с .docx че
 
 Поведение:
 
+- Каталоги: `skills/default/` (в git, встроенные) и `skills/user/` (в gitignore, пользовательские) — создаются в `config/paths.py ensure_dirs`.
 - Скиллы обнаруживаются `discover_skills()` и подмешиваются в системный промпт через `build_skills_prompt` — модель видит каталог с описаниями.
 - Чтобы активировать, модель вызывает `skill` с `{"name": "..."}`. Тело инжектится как user-message с маркером `━━━ СКИЛЛ АКТИВИРОВАН ━━━`.
 - `disable-model-invocation: true` в frontmatter скрывает скилл из автокаталога (доступен только по явному вызову через `/skills`).
@@ -465,17 +487,69 @@ description: Полное руководство по работе с .docx че
 
 ## Память (memory)
 
-`memory/` — долговременная память агента (порт memory-системы Claude Code). Хранит факты, **не выводимые** из кода/git/`AGENTS.md`: предпочтения пользователя, обратную связь по стилю работы, контекст проекта, внешние референсы. Файлы — markdown с YAML-подобным frontmatter в `.data/memory/<project>/` (изоляция по рабочей директории: `slug-<sha1[:10]>`).
+`memory/` — долговременная память агента (порт memory-системы Claude Code). Хранит факты, **не выводимые** из кода/git/`AGENTS.md`: предпочтения пользователя, обратную связь по стилю работы, контекст проекта, внешние референсы. Файлы — markdown с YAML-подобным frontmatter в `.data/memory/<slug>-<sha1[:10]>/` (изоляция по рабочей директории), а также **глобальная** кросс-проектная память `.data/memory/_global` (`config/paths.py global_memory_dir`).
 
 Четыре типа памяти: `user`, `feedback`, `project`, `reference`.
 
-Три механизма (`memory/memdir.py`, `memory/extract.py`):
+Три механизма (`memory/memdir.py`, `memory/extract.py`, `memory/insights.py`):
 
-- **Инжекция в промпт** — `format_memory_block()` собирает всю память проекта в блок `<persistent_memory>` системного промпта следующих сессий (`system_prompt._build_memory_block`, лимит ~6000 символов).
-- **Автоизвлечение** — `extract_memories(transcript, working_dir)` запускается фоново из интерактивного цикла каждые 6 сообщений: лёгкий one-shot вызов активной модели (изолированный provider, без tools, история сессии не трогается — как `api_recap`) читает транскрипт + манифест уже сохранённого и решает, какие новые устойчивые факты сохранить (или какие обновить по тому же имени). Fire-and-forget: UI не блокируется, ошибки проглатываются.
+- **Инжекция в промпт** — `format_memory_block()` собирает всю память проекта и глобальную в блок `<persistent_memory>` системного промпта следующих сессий (`system_prompt._build_memory_block`, лимит ~6000 символов).
+- **Автоизвлечение** — `extract_memories(transcript, working_dir)` запускается фоново из интерактивного цикла каждые ~6 сообщений: лёгкий one-shot вызов активной модели (изолированный provider, без tools, история сессии не трогается — как `api_recap`) читает транскрипт + манифест уже сохранённого и решает, какие новые устойчивые факты сохранить (или какие обновить по тому же имени). Fire-and-forget: UI не блокируется, ошибки проглатываются.
 - **Ручное редактирование моделью** — инструменты `memory_write` / `memory_list` / `memory_read` (`tools/memory_tool.py`): модель сама сохраняет факт, когда замечает что-то долговременное.
 
 ---
+
+## Хуки (hooks)
+
+`src/hooks/` (`runner.py`, `matcher.py`, `schema.py`) + конфиг `config/hooks.py` + файл `.data/hooks.json`.
+
+Что это: внешние команды/HTTP-запросы, которые вызываются на ключевых событиях жизненного цикла агента и могут блокировать или дополнять его действия (совместимо с claude-code).
+
+События (`HOOK_EVENTS`, `src/hooks/schema.py:36`):
+
+| Событие | Когда |
+|---------|-------|
+| `PreToolUse` | Перед выполнением инструмента — может `approve` / `block`. |
+| `PostToolUse` | После выполнения инструмента. |
+| `UserPromptSubmit` | При отправке пользовательского сообщения. |
+| `Stop` | Остановка хода агента. |
+| `SessionStart` | Старт сессии. |
+| `SessionEnd` | Завершение сессии. |
+
+Конфиг `.data/hooks.json` — маппинг событий на матчеры/хуки. Кэш по mtime файла (`config/hooks.py`, `has_hooks()`), правки подхватываются без рестарта.
+
+Контракт (совместим с claude-code):
+
+- На **stdin** подаётся JSON payload: `{event, tool_name, tool_input, ...}`.
+- Хук может вернуть **JSON в stdout** с полями: `decision` (`approve` | `block`), `reason`, `continue` (false → попросить остановиться), `systemMessage` (показать пользователю), `additionalContext` (подмешать в историю), `hookSpecificOutput.additionalContext`;
+- либо просто **exit code**: `0` = ок, `2` = block (stderr → reason), иное = ошибка (не блок).
+
+Типы хуков (`HookSpec`): `command` (shell-команда, таймаут по умолчанию 30 сек) и `http` (URL, опциональные `headers`). Поддерживаются matcher-обёртки и permission-style фильтр `if`.
+
+Точки вызова: `tools/registry.py` (`_run_pre_tool_hooks` / `_run_post_tool_hooks`), `config/hooks.py has_hooks()`.
+
+---
+
+## Сессионные заметки (session notes)
+
+`src/session/notes.py` — шаблон заметок о текущем состоянии и следующих шагах для длительной автономной работы. Файл: `<session.dir>/session_notes.md`, создаётся `ensure_session_notes()` при необходимости.
+
+Блок с заметками инжектится в контекст через `format_session_notes_block()` (вызывается из `agent/messages.py:117`) — модель видит актуальное состояние сессии между ходами.
+
+Шаблон (`_TEMPLATE`) содержит разделы: `# Session Title` (короткое описательное название сессии, 5-10 слов), `# Current State` (что активно делается, ближайшие шаги), `# Task specification` (что просил пользователь, ограничения и решения), `# Files and Functions` (важные файлы/функции и почему они важны), `# Workflow` (обычно запускаемые команды и как трактовать результат), `# Errors & Corrections` (ошибки, правки пользователя, неудачные подходы), `# Verification` (какие проверки запускались, вердикты), `# Worklog` (краткий пошаговый журнал работы).
+
+Лимиты: `_MAX_NOTE_CHARS = 12000` (весь файл), `_MAX_MESSAGE_CHARS = 1200` (одно сообщение/раздел в промпте).
+
+---
+
+## SSH
+
+`config/ssh.py` + меню `commands/menus/ssh.py`.
+
+- Хосты: `.data/ssh_hosts.json` — `{alias, host, user, port, identity_file, password?}`.
+- Меню `/ssh` управляет хостами: список со статусами, добавление, удаление, тест соединения.
+- **Агентского инструмента `ssh` больше нет** — он удалён в changelog 0.17.0 (SSH остался только как управление хостами через меню).
+- Мёртвые ssh-сокеты старше 1 дня вычищаются автоочисткой `.data/` (`data_cleanup.py`).
 
 ---
 
@@ -486,7 +560,7 @@ description: Полное руководство по работе с .docx че
 - Конфиг: `.data/mcp_servers.json` — `{servers: [{id, command, args, env, enabled, transport: "stdio"}]}`.
 - Транспорт — только **stdio** (через `mcp.client.stdio.stdio_client`). SSE/HTTP — точка расширения в `_connect_async`.
 - `MCPManager` — singleton с фоновым asyncio-loop в отдельном потоке (sync TOOL_REGISTRY вызовы → async SDK через `run_coroutine_threadsafe`).
-- При старте interactive вызывается `init_mcp_from_config()`: подключает enabled-сервера и регистрирует их tools в `TOOL_REGISTRY` под именами `mcp__<server_id>__<tool_name>`. JSON-схемы попадают в `get_tool_schemas("agent")` через `get_mcp_tool_schemas()`. В `planning` режиме НЕ подмешиваются.
+- При старте interactive вызывается `init_mcp_from_config()`: подключает enabled-сервера и регистрирует их tools в `TOOL_REGISTRY` под именами `mcp__<server_id>__<tool_name>`. JSON-схемы попадают в `get_tool_schemas("agent")` через `get_mcp_tool_schemas()`. В `planning` режиме **не** подмешиваются.
 - Меню `/mcp`: список со статусами (`●`/`○`/`✗`), добавление, enable/disable, удаление, реконнект.
 - `shutdown_mcp()` в `finally` корректно закрывает `AsyncExitStack`'и и останавливает фоновый loop.
 - `CallToolResult.content` нормализуется: text → как есть, image → плейсхолдер с MIME, resource → URI. `isError=True` → префикс `[MCP tool error]`.
@@ -499,25 +573,25 @@ description: Полное руководство по работе с .docx че
 
 - `LSPManager` — singleton с фоновым asyncio-loop в отдельном потоке (по аналогии с MCPManager).
 - Конфиг — `.data/lsp_servers.json`. Если файла нет, используются `DEFAULT_SERVERS`: `pyright` (Python), `typescript-language-server` (TS/JS), `gopls` (Go), `rust-analyzer` (Rust). Сервер включается только если есть бинарь в PATH.
-- Поддерживаемые методы: `textDocument/definition`, `textDocument/references`, `textDocument/hover`, диагностики после write/patch/create (если `auto_diagnostics=True`).
-- Инструменты `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_diagnostics` — read-only, доступны и в planning mode.
+- Инструменты — **только** `lsp_references` и `lsp_diagnostics` (`execute_lsp_references` / `execute_lsp_diagnostics`, `apis/lsp_client.py:655-665`). `lsp_definition` и `lsp_hover` **удалены**. Оба инструмента read-only, доступны и в planning mode.
+- Диагностики запускаются после write/patch/create (`auto_diagnostics`).
 - `shutdown_lsp()` в `finally` корректно гасит дочерние процессы.
 
 ---
 
 ## Telegram-мост
 
-`apis/telegram.py` + `agent/telegram_handler.py` + `agent/tg_menu.py`. Зеркалит события агента в Telegram-чат и принимает оттуда сообщения.
+`apis/telegram.py` + `agent/telegram_handler.py` + `agent/tg_menu.py` + `agent/tg_format.py`. Зеркалит события агента в Telegram-чат и принимает оттуда сообщения.
 
 - Singleton `TelegramBridge`. Запускается из `commands/interactive.py`, если `telegram_enabled` и заданы `telegram_bot_token` + `telegram_chat_id`.
 - Использует [aiogram 3](https://docs.aiogram.dev/). Реализует:
   - Очередь отправки с throttle (~30 msg/s) и автоматическим разбиением длинных сообщений (лимит 4000 символов).
-  - Параллельное чтение `stdin` и `incoming_queue` в `_read_user_with_tg` — что придёт раньше, то и обрабатывается.
+  - Параллельное чтение `stdin` и `incoming_queue` — что придёт раньше, то и обрабатывается.
   - Typing-индикатор (`send_chat_action` каждые 4 сек) во время стрима.
   - Thinking-плейсхолдер «💭 thinking…», редактируется в финальный ответ.
   - Зеркалирование reasoning_content и финального текста.
-  - Reply-клавиатуру и inline-меню (`/menu` → быстрые `/new`, `/compress`).
-  - Slash-команды от бота маршрутизируются в основной агент через `_apply_tg_action`.
+  - Reply-клавиатуру и inline-меню (`/menu` → быстрые действия, переключение режима agent/planning/swarm, stop агента).
+  - Slash-команды от бота маршрутизируются в основной агент.
 - `TelegramEventHandler` оборачивает обычный `RichEventHandler` и дополнительно шлёт в TG старт/итог tool-вызовов, обновления плана, статусы субагентов.
 - Меню `/tg`: токен / чат / тест соединения / on-off без рестарта CLI.
 
@@ -529,7 +603,7 @@ description: Полное руководство по работе с .docx че
 
 - Никакого prompt_toolkit и Rich Live: финальный текст в **stdout**, прогресс в **stderr**, exit code 0/1/2.
 - `stdin` подхватывается, если не tty: `git diff | python src/main.py run "коммит-сообщение"` приклеит diff в конец промпта.
-- Опции: `--api`, `--model`, `--workdir`, `--json` (структурированный вывод `{ok, text, model, workdir, elapsed_sec}`), `--quiet`, `--timeout`, `--allow-all` (wildcard `*=allow,process`).
+- Опции: `--api/-A`, `--model/-m`, `--workdir/-w`, `--json` (структурированный вывод `{ok, text, model, workdir, elapsed_sec}`), `--quiet/-q`, `--timeout`, `--allow-all` (wildcard `*=allow,process`).
 - Без `--allow-all` ставит `NECLI_HEADLESS=1` → инструменты в режиме `ask` авто-отказывают (а не зависают на TTY-меню), в stderr предупреждение.
 - Использует тот же `agent/loop.run_agent` (без LiveStream), что и интерактив.
 
@@ -538,7 +612,7 @@ description: Полное руководство по работе с .docx че
 ```bash
 uv run python src/main.py run "посчитай строки в проекте" --quiet
 git diff --staged | uv run python src/main.py run "напиши коммит" --json | jq -r .text
-uv run python src/main.py run --api onlysq --allow-all --timeout 300 "прогон линтеров и фикс"
+uv run python src/main.py run --api openai --allow-all --timeout 300 "прогон линтеров и фикс"
 ```
 
 ---
@@ -561,7 +635,7 @@ uv run python src/main.py run --api onlysq --allow-all --timeout 300 "прого
 
 1. `agent/executor._execute_single` перед запуском tool проверяет `get_decision(tool_name)`.
 2. При `deny` — сразу `ToolResult(status="error")` без выполнения.
-3. При `ask` — `commands/permission_prompt.confirm_tool_call` (интерактивный prompt с вариантами allow once / allow session / allow forever / deny / deny forever).
+3. При `ask` — компактный overlay (`ui/overlays.py`) с вариантами allow once / session / process / forever и deny once. Долгосрочные запреты меняются через `/permissions`.
 4. В headless `NECLI_HEADLESS=1` заставляет `confirm_tool_call` отказывать без зависания.
 
 Меню `/permissions` показывает все эффективные решения с указанием scope и позволяет менять/сбрасывать.
@@ -570,193 +644,159 @@ uv run python src/main.py run --api onlysq --allow-all --timeout 300 "прого
 
 ## UI и темы (CLI)
 
-`ui/prompt.py` — обёртка над **prompt_toolkit**:
+`ui/shell.py` — постоянный **prompt_toolkit Application**, который разделяет scrollback (статику) и динамическую зону; мост Rich→prompt_toolkit, в пути отрисовки **нет** `rich.live.Live`. `ui/prompt.py` добавляет вставку из буфера, изображения и эхо, а `ui/overlays.py` обслуживает интерактивные виджеты нижней зоны (`select_menu`, `panel_menu`, `ask_text`, `confirm`) — все меню оформлены как карточки/плоские списки с палитрой, колонками, прокруткой и подсказками.
+
+Очередь ходов агента — `commands/agent_queue.py`: **строго последовательная**; поле ввода доступно **всегда**, даже во время ответа агента; ожидающие сообщения показываются строками над полем; стрелка вверх снимает отложенный батч.
+
+Горячие клавиши и поведение:
 
 - **Enter** — отправить. **Esc+Enter** или `\\` в конце строки — перенос.
-- **Tab** — циклить mode (`agent ↔ planning`).
+- **Tab** — циклить mode: `agent ↔ planning ↔ swarm` (иконки 🚀 / 🧠 / 🔮).
 - **Ctrl+V** — вставить текст из буфера (через `xclip` / `xsel` / `wl-paste` / `pbpaste`).
-- **Ctrl+P** — вставить изображение из буфера: сохраняется в `.data/clipboard/`, в тексте — плейсхолдер `[imageN]`, передаётся в multimodal `HumanMessage`.
+- **Ctrl+P** — вставить изображение из буфера: сохраняется в `.data/clipboard_images/`, в тексте — плейсхолдер `[imageN]`, передаётся в multimodal `HumanMessage`.
 - **Ctrl+O** — toggle expanded/compact replay: перерисовывает весь вывод сессии из `agent/render_store.py` через `agent/render_replay.py` (полные превью без обрезки ↔ компактные).
-- **Ctrl+C** во время ввода — отмена строки; **Ctrl+D** — выход.
+- **Ctrl+C** обрабатывается как событие клавиши (прерывание хода/ввода), **Ctrl+D** — выход.
 - История ввода — `.data/history` (FileHistory + ThreadedHistory).
-- Автокомплит — `ui/completer.make_combined_completer`: slash-команды + файлы (`@`-prefix или после `/cd`).
-- Stream stats в нижней строке Live: TTFB, токены `↓ since_last / total`, оценка cost, `ctx N/limit (X%)`.
+- Автокомплит — `ui/completer.py`: slash-команды + файлы (`@`-prefix или после `/cd`).
+- Интерактивная панель субагентов (навигация стрелками, Enter — детали).
+- Интерактивный `/stats` с вкладками (session / hands / models / tools / history), спарклайны, бары.
+- Статус-строка под полем: TTFB, токены, оценка cost и заполнение контекста. Живые кадры рисуются Shell без `rich.live.Live`.
 
 `config/themes.py` — система тем по семантическим ролям (`accent`, `success`, `warning`, `error`, `info`, `magenta`, `purple`, `muted`, `dim_text`, `bar_filled`, `bg_code`, `bg_output`, `bg_select`).
 
 Встроенные темы: `dracula` (дефолт), `monokai`, `catppuccin`, `nord`, `gruvbox`, `tokyo-night`, `solarized`, `one-dark`. Любую роль можно переопределить через `set_custom_color(role, color)`. Доступ из кода — `from config.themes import t; t("accent")`. Меню — `/themes`.
 
----
+Языки интерфейса (`config/i18n.py`): `en`, `ru`, `de`, `fr`, `zh` (`SUPPORTED_LANGS`, дефолт `en`). Меню — `/lang`.
 
-## Тесты
-
-Pytest-набор в `tests/`. Покрывает ядро: парсеры, file ops, session, agent helpers, apis, config, ui, skills, planner.
-
-### Запуск
-
-```bash
-uv run pytest                        # все тесты
-uv run pytest tests/unit/tools/      # один подмодуль
-uv run pytest tests/unit/agent/test_sanitizer.py -v
-uv run pytest -k "fuzzy or patch"    # по имени
-uv run pytest -m "not slow"          # без медленных
-```
-
-### Маркеры (`pyproject.toml`)
-
-```toml
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = [
-    "slow: slow tests (>1s)",
-    "requires_pandoc: requires pandoc binary",
-    "requires_git: requires git binary",
-    "requires_node: requires node binary",
-    "requires_network: requires network access",
-    "integration: integration tests",
-    "e2e: end-to-end tests",
-]
-addopts = "-ra --strict-markers"
-asyncio_mode = "auto"
-```
-
-### Ключевые фикстуры (`tests/conftest.py`)
-
-| Фикстура | Назначение |
-|----------|------------|
-| `tmp_workdir` | Подменяет рабочую директорию через `tools._paths.set_working_dir` на `tmp_path`. |
-| `isolated_data` | Изолирует `.data/` (config.json, apis.json, sessions/, skills/) во временной папке + сбрасывает кэши `config.settings._config_cache` и `apis.config._apis_cache`. |
-| `clear_read_cache_between_tests` (autouse) | Чистит `tools/file_ops/read._READ_CACHE` до и после каждого теста. |
-| `make_tool_call` | Фабрика `ToolCall(name, args)`. |
-
-### Что покрывается / что нет
-
-**Покрыто:** все парсеры (call-блоки fenced/native, JSON-repair, HTML-unescape, plan-команды), file ops (включая fuzzy и read-cache), Session lifecycle и compress с бэкапом, токенайзеры (tiktoken / Gemini heuristic / multiplier-based), agent helpers (sanitizer, stream-parser, result_cache), APIs (AIMessageChunk merge, throttle-retry, реестр провайдеров, валидация JSON-дефиниций), Config (settings, permissions с тремя уровнями + wildcard, темы, MCP/LSP).
-
-**Намеренно слабо покрыто** (низкий ROI): `agent/loop.py`, `agent/stream.py` — heavy async pipeline; UI rendering (`agent/display.py`, `subagent_render.py`, `tg_menu.py`); `commands/interactive.py` — event loop; `apis/lsp_client.py`, `apis/mcp_client.py` — требуют живые subprocess-сервера.
-
-### Чеклист нового теста
-
-1. Изолируй сайд-эффекты: `tmp_workdir` / `isolated_data` / `monkeypatch`, а не запись в реальный `.data/` или cwd.
-2. Async-тесты помечай `@pytest.mark.asyncio` (auto-mode уже включён, но явный маркер — хороший тон).
-3. Требуется внешний бинарь / сеть — `@pytest.mark.requires_*` и `shutil.which()` / `pytest.importorskip`.
-4. `pytest -s` / `-v` для отладки, не `print`.
+Лимиты и подсказки — `config/ui.py` (`limits`): `max_width = 100`, `streaming_max_lines = 40`, `max_result_length = 15000`, `subagent.max_concurrency = 12`.
 
 ---
 
 ## Логирование
 
-`logger.py` использует **loguru**. Логи раскидываются по файлам в `logs/` с ротацией:
+`logger.py` использует **loguru**. Логи раскидываются по файлам с ротацией (в dev — `src/logs/`, в frozen-режиме — `~/.necli/logs`):
 
 | Файл | Что пишется |
 |------|-------------|
-| `logs/general.log` | Всё подряд (INFO+). |
-| `logs/agent.log` | События цикла: итерации, nudge, авто-компрессия. |
-| `logs/ai.log` | Превью запросов/ответов модели, usage, reasoning. |
-| `logs/api.log` | HTTP-уровень, retry, throttle, raw text preview. |
+| `logs/general.log` | Всё подряд (INFO+), что не попало в другие слои (config, session, main). |
+| `logs/agent.log` | Агентный цикл: итерации, nudge, авто-компрессия, субагенты, планировщик, system prompt, skills. |
+| `logs/ai.log` | Стриминг ответа, парсинг tool calls, sanitizer, рендеринг. |
+| `logs/api.log` | HTTP-уровень, retry, throttle, raw text preview, токены. |
 | `logs/tools.log` | Tool calls с аргументами (без больших payload'ов) и result-сводки. |
-| `logs/ui.log` | События UI / клавиатуры / меню. |
-| `logs/errors.log` | ERROR+ с traceback'ами. |
+| `logs/ui.log` | События UI / клавиатуры / меню / slash-команды. |
+| `logs/errors.log` | ERROR+ со всех слоёв (дублирование), краткий формат: тип и сообщение исключения одной строкой, **без полного трейсбека**. |
 
 Правила:
 
 - Большие payload'ы (content, b64, find/replace/insert) **исключаются** из preview-логирования.
-- HTML-сущности и подозрительные эскейпы логируются отдельным warning'ом.
-- `_LAYER_FILTERS` в `logger.py` использует точное префиксное матчинг: `name == p or name.startswith(p + ".")`. **`"agent.stream"` НЕ матчит `agent.stream_tool_exec`** — это подчёркивание, не точка. Новые `agent.stream_*` нужно явно перечислять в `_LAYER_FILTERS["ai"]`.
+- `_LAYER_FILTERS` в `logger.py` использует точный префиксный матчинг: `name == p or name.startswith(p + ".")`. **`"agent.stream"` НЕ матчит `agent.stream_tool_exec`** — это подчёркивание, не точка. Новые `agent.stream_*` нужно явно перечислять в `_LAYER_FILTERS["ai"]`.
+- Ротация 2 MB, retention 5 файлов, compression zip, `enqueue=True`, encoding utf-8.
+- Стандартный `logging` перехватывается в loguru через `InterceptHandler` — большинство модулей используют `logging.getLogger(__name__)`, и без перехвата их записи теряются.
+- Шумные сторонние библиотеки глушатся до WARNING.
+- `request_id` пробрасывается через `ContextVar` (`request_id_var`) и печатается в каждую запись (трейсинг одной операции через слои).
 
-Не читай логи целиком — только `tail -n` нужного файла либо `read_files` с `lines`.
+Не читай логи целиком — только `tail -n` нужного файла либо `read` с `lines`.
 
 ---
 
 ## Структура проекта
 
 ```
-necli-api/  (дерево ниже — содержимое src/, точка входа: src/main.py)
-├── main.py                       # Click CLI (interactive / run); поднимает RLIMIT_NOFILE
+src/  (точка входа: src/main.py)
+├── main.py                       # Click CLI (cli / run); поднимает RLIMIT_NOFILE
 ├── system_prompt.py              # сборка финального промпта + subagent/MCP/memory блоки
 ├── planner.py                    # Plan, :::call plan, .plan.md
 ├── models.py                     # каталог моделей, pricing, context limits
-├── logger.py                     # loguru конфигурация
-├── pyproject.toml                # uv-managed зависимости + pytest config
-├── AGENTS.md                     # детальные инструкции для AI-агента
+├── logger.py                     # loguru конфигурация (слои, ротация, request_id)
 │
-├── prompts/                      # системные промпты по формату вызовов
-│   ├── native.py                 # инструкции для native function calling
-│   └── fenced.py                 # инструкции для fenced :::call-блоков
+├── hooks/                        # хуки (совместимы с claude-code)
+│   ├── runner.py                 # исполнение hooks (subprocess/HTTP) + сведение результатов
+│   ├── matcher.py                # matcher-обёртки и permission-style фильтр if
+│   └── schema.py                 # HOOK_EVENTS, HookSpec, HookOutcome
+│
+├── prompts/                      # системные промпты по формату tool calls
+│   ├── fenced.py                 # fenced-вариант (:::call блоки)
+│   └── native.py                 # native function calling вариант
 │
 ├── agent/                        # агентный цикл
-│   ├── loop.py                   # run_agent / run_agent_interactive
+│   ├── loop.py                   # run_agent / run_agent_interactive (MAX_ITERATIONS=500)
 │   ├── stream.py                 # LiveStream c инлайн-выполнением tool блоков
 │   ├── stream_parser.py          # поиск partial/complete :::call блоков
 │   ├── stream_tool_exec.py       # выполнение блоков по мере появления
-│   ├── stream_render.py          # Rich Live composition
+│   ├── stream_render.py          # composition стрима
 │   ├── executor.py               # _execute_single + permission checks
 │   ├── events.py                 # AgentEventHandler protocol + RichEventHandler
 │   ├── context.py                # AgentContext (plan, mode, fs snapshot, ...)
-│   ├── messages.py               # build_first_message / nudge / fs delta
+│   ├── messages.py               # build_first_message / nudge / fs delta / session notes
 │   ├── sanitizer.py              # очистка ответа модели
 │   ├── think.py                  # THINK-блоки
-│   ├── subagent.py               # buffer / multiplexer
+│   ├── subagent.py               # buffer / multiplexer (до 100 задач)
 │   ├── subagent_api.py           # запуск sub-сессии (ApiSession per task) + роли/DAG
 │   ├── subagent_git.py           # git worktree-изоляция per task
 │   ├── subagent_render.py        # рендер прогресса субагентов
+│   ├── subagent_display.py       # дисплей-инструменты для панелей субагентов
 │   ├── agent_presets.py          # заготовки-роли из .data/agents/<name>/AGENT.md
-│   ├── telegram_handler.py / tg_menu.py
+│   ├── telegram_handler.py / tg_menu.py / tg_format.py
 │   ├── fs_watcher.py             # snapshot изменений рабочей директории
 │   ├── project_stats.py          # StepTracker для трекинга изменений
 │   ├── display.py / diff_render.py / syntax.py / theme_preview.py
 │   ├── block_stream.py           # BlockStreamer — поблочный markdown-стрим
+│   ├── markdown.py               # markdown-утилиты для рендера
 │   ├── render_store.py / render_replay.py  # буфер вывода + Ctrl+O replay
-│   ├── commit_agent.py           # генерация коммита для /commit
-│   ├── undo_store.py             # git-стор undo/redo (/undo), отдельный GIT_DIR
-│   └── result_cache.py           # кэш длинных tool результатов (expand_tool_result)
+│   ├── result_cache.py           # кэш длинных tool результатов (expand_tool_result)
+│   └── commit_agent.py           # генерация коммита для /commit
 │
 ├── apis/                         # API-провайдеры и интеграции (без LangChain)
 │   ├── registry.py               # load_all, get_provider, resolve_api_model
-│   ├── agent_adapter.py          # ApiSession, api_send_message, compress, restore
+│   ├── agent_adapter.py          # ApiSession, api_send_message, compress, api_recap
 │   ├── base.py                   # BaseProvider — httpx SSE + native tool calls
 │   ├── messages.py               # SystemMessage / HumanMessage / AIMessage / ToolMessage
 │   ├── _retry.py                 # throttle/retry поверх non-stream и стрима
 │   ├── _context_pruner.py        # pruning старых read/tool-результатов из истории
 │   ├── models.py                 # ApiProviderDefinition / ApiModelInfo
 │   ├── tool_schemas.py           # OpenAI-style schemas + agent/planning фильтр
-│   ├── config.py                 # apis.json / config.json["api_providers"]
+│   ├── config.py                 # apis.json / config.json
 │   ├── model_discovery.py        # автообнаружение моделей у провайдера
 │   ├── mcp_client.py             # MCPManager + регистрация в TOOL_REGISTRY
-│   ├── lsp_client.py             # LSPManager + lsp_* tools
+│   ├── lsp_client.py             # LSPManager + lsp_references/lsp_diagnostics
 │   ├── telegram.py               # TelegramBridge (aiogram)
 │   ├── definitions/*.json        # встроенные шаблоны провайдеров
 │   └── providers/                # openai_provider / anthropic_provider /
 │                                 # google_provider / custom_provider
 │
 ├── commands/                     # точки входа и slash-команды
-│   ├── interactive.py            # main loop CLI
+│   ├── interactive.py            # main loop CLI (включая _maybe_auto_compress)
 │   ├── headless.py               # `run` команда (CI)
 │   ├── slash.py / slash_handler.py
 │   ├── registry.py               # единый реестр slash-команд (метаданные → help/completer)
+│   ├── agent_queue.py            # строго последовательная очередь ходов агента
 │   ├── interactive_state.py / interactive_status.py
 │   ├── permission_prompt.py
 │   ├── helpers.py
-│   └── menus/                    # api, mcp, lsp, telegram, permissions,
-│                                 # themes, skills, params, history, lang, agents, insights
+│   └── menus/                    # agents, api, autoprune, help, history, insights,
+│                                 # lang, lsp, mcp, params, permissions, proxy, skills,
+│                                 # ssh, stats, telegram, themes, _editor, _style
 │
 ├── config/                       # настройки и пути
-│   ├── settings.py               # config.json get/set/cache
-│   ├── paths.py                  # .data/, .data/sessions/, .data/skills/, ...
+│   ├── settings.py               # config.json get/set/cache (+ tool_format_force_native)
+│   ├── paths.py                  # .data/, sessions/, skills/, memory/, ensure_dirs
 │   ├── constants.py              # READ_ONLY_TOOLS, IGNORE_DIRS, ...
 │   ├── data_cleanup.py           # автоочистка мусора из .data при старте (раз в сутки)
-│   ├── themes.py
-│   ├── permissions.py
-│   ├── mcp.py / lsp.py
-│   └── i18n.py                   # переводы интерфейса
+│   ├── themes.py                 # 8 встроенных тем + семантические роли
+│   ├── permissions.py            # scopes session/process/forever
+│   ├── mcp.py / lsp.py / ssh.py / hooks.py / pinned.py
+│   ├── ui.py                     # лимиты и подсказки (limits.*)
+│   └── i18n.py                   # переводы интерфейса (en/ru/de/fr/zh)
 │
 ├── session/                      # сессии и persistence
 │   ├── session.py                # Session, _compute_cost, compress_reset
 │   ├── storage.py                # save/load/list_sessions/get_statistics
 │   ├── message.py / tokens.py / _time.py
+│   └── notes.py                  # сессионные заметки (session_notes.md)
 │
 ├── skills/                       # обнаружение и управление скиллами
-│   └── manager.py
+│   ├── manager.py
+│   └── registry.py
 │
 ├── memory/                       # долговременная память агента (см. раздел Память)
 │   ├── memdir.py                 # CRUD memory-файлов + format_memory_block/manifest
@@ -764,27 +804,31 @@ necli-api/  (дерево ниже — содержимое src/, точка в�
 │   └── insights.py               # /insights: метрики + анализ моделью → HTML-отчёт + память
 │
 ├── tools/                        # все инструменты
-│   ├── registry.py               # TOOL_REGISTRY + planning/read-only режим
+│   ├── registry.py               # TOOL_REGISTRY + planning/swarm режимы + hooks
 │   ├── parser.py / call_parser.py # парсер fenced :::call блоков
-│   ├── shell.py / web_search.py / web_fetch.py
+│   ├── shell.py / web_search.py / web_fetch.py / image_search.py
 │   ├── subagent.py / subagent_specs.py / skill_tool.py / poll.py / expand_result.py
 │   ├── memory_tool.py            # memory_write / memory_list / memory_read
-│   ├── file_readers.py / file_checks.py
+│   ├── file_readers.py
 │   ├── arg_validation.py         # алиасы/коэрция/диагностика аргументов tool-call
+│   ├── background.py             # фоновый запуск тяжёлых команд (background=true)
 │   ├── _paths.py / _html_unescape.py / json_repair.py / models.py
-│   └── file_ops/                 # read.py, write.py, patch.py,
+│   └── file_ops/                 # read.py, write.py, patch.py, grep.py,
 │                                 # _fuzzy.py, docx_writer.py, docx_screenshot.py,
 │                                 # _html_preprocess.py, _docx_reference.py,
+│                                 # _docx_sources.py, _docx_whitespace.py,
 │                                 # _pandoc.py, project_check.py
 │
-├── ui/                           # терминальный ввод/вывод
-│   ├── prompt.py                 # InputPrompt + PT bindings
+├── ui/                           # терминальный ввод/вывод (prompt_toolkit)
+│   ├── shell.py                  # постоянный Application + static/dynamic зоны
+│   ├── overlays.py               # интерактивные виджеты нижней зоны
+│   ├── prompt.py                 # clipboard/images/echo поверх Shell
 │   ├── completer.py              # slash + файловый автокомплит
 │   ├── menu.py / poll.py / file_context.py
 │   ├── clipboard.py / clipboard_copy.py / formatting.py
 │   ├── _filters.py / _emoji_width.py / _keyreader.py
+│   └── terminal_title.py
 │
-├── tests/                        # pytest-набор (см. раздел Тесты)
 ├── logs/                         # ротация loguru-логов
 └── .data/                        # рантайм-состояние (см. раздел Конфигурация)
 ```

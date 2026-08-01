@@ -110,13 +110,6 @@ def list_api_configs() -> list[dict]:
     return _get_store()
 
 
-def get_api_config(provider_id: str) -> dict | None:
-    for p in _get_store():
-        if p.get("id") == provider_id:
-            return p
-    return None
-
-
 def add_api_config(
     provider_id: str,
     name: str,
@@ -344,11 +337,6 @@ def get_api_key(provider_id: str) -> str:
     """Возвращает первый доступный ключ. Для ротации используй get_api_credentials."""
     credentials = get_api_credentials(provider_id)
     return credentials[0]["key"] if credentials else ""
-
-
-def get_api_keys(provider_id: str) -> list[str]:
-    """Возвращает все ключи провайдера без proxy."""
-    return [entry["key"] for entry in get_api_credentials(provider_id)]
 
 
 def add_model_to_provider(

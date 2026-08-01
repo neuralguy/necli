@@ -4,7 +4,7 @@
 в ДВУХ архитектурах сразу:
 
   1. text-mode: tool_results вшиты в user-сообщения блоками
-     '$ read_files <path>\\n<content>', разделёнными '\\n---\\n'.
+     '$ read <path>\\n<content>', разделёнными '\\n---\\n'.
   2. native: каждый tool_result — отдельный ToolMessage(name=..., content=...)
      после AIMessage(tool_calls=...). Команда/путь восстанавливаются из
      соответствующего tool_call в предыдущем AIMessage.
@@ -44,10 +44,10 @@ def _is_real_user(msg: Any) -> bool:
     return not (getattr(msg, "additional_kwargs", None) or {}).get("synthetic")
 
 _BLOCK_SEP = "\n---\n"
-_READ_CMD_RE = re.compile(r"^\$ (read_files?|read_file)\s+(.+)$")
+_READ_CMD_RE = re.compile(r"^\$ (read)\s+(.+)$")
 _WRITE_CMD_RE = re.compile(r"^\$ (patch_file|create_file)\s+(.+)$")
 
-_READ_NAMES = {"read_files", "read_file"}
+_READ_NAMES = {"read"}
 _WRITE_NAMES = {"patch_file", "create_file"}
 # Инструменты, чей ВЫВОД (не файл) вытесняется по возрасту: снимок состояния,
 # перечитать «тем же» нельзя — только повторный вызов. Применяем C (крупный
@@ -59,6 +59,18 @@ _TOOL_EVICT_NAMES = {
 _TOOL_CMD_RE = re.compile(
     r"^\$ (shell|web_search|web_fetch|"
     r"lsp_references|lsp_hover|lsp_diagnostics)\b(.*)$"
+)
+
+# Паттерн диапазона строк в команде read: "path:120-200", "path:120-", "path".
+# Группа 1 = путь, группа 2 = опциональный диапазон (без двоеточия).
+_READ_RANGE_RE = re.compile(r"^(.+?):(\d+(?:-\d*)?)$")
+
+# Паттерн заголовка результата read: "[path lines A-B of N]" или "[path · N lines]".
+_READ_HEADER_RANGE_RE = re.compile(
+    r"^\[(.+?)\s+lines\s+(\d+)-(\d+)\s+of\s+(\d+)\]"
+)
+_READ_HEADER_FULL_RE = re.compile(
+    r"^\[(.+?)\s+·\s+(\d+)\s+lines"
 )
 
 # Скилл-результаты (вывод инструмента `skill` — тело SKILL.md). Вытесняются по
@@ -81,12 +93,12 @@ _EVICT_MARKER = "[content evicted to save tokens"
 
 
 def _extract_paths_from_cmd_tail(tail: str) -> list[str]:
-    """Из строки команды read_files выдёргивает пути.
+    """Из строки команды read выдёргивает пути.
 
     Форматы:
-      read_files agent/stream.py
-      read_files ['agent/stream.py', 'tools/x.py']
-      read_files agent/stream.py:120-200      (с lines)
+      read agent/stream.py
+      read ['agent/stream.py', 'tools/x.py']
+      read agent/stream.py:120-200      (с lines)
       patch_file agent/x.py
     Берём то что до первого пробела/двоеточия, либо распарсиваем repr-list.
     """
@@ -101,8 +113,76 @@ def _extract_paths_from_cmd_tail(tail: str) -> list[str]:
     return [first] if first else []
 
 
+def _extract_range_from_cmd_tail(tail: str) -> tuple[int, int] | None:
+    """Извлекает диапазон строк из команды read: 'path:120-200' → (120, 200).
+
+    Возвращает (start, end) инклюзивно или None если диапазона нет (полное чтение).
+    'path:120-' → (120, _EOF_SENTINEL). 'path:120' → (120, 120).
+    """
+    tail = tail.strip()
+    if not tail:
+        return None
+    if tail.startswith("["):
+        return None  # list-форма без диапазона
+    first = tail.split()[0] if tail.split() else ""
+    m = _READ_RANGE_RE.match(first)
+    if not m:
+        return None
+    rng = m.group(2)
+    if "-" not in rng:
+        return (int(rng), int(rng))
+    parts = rng.split("-", 1)
+    start = int(parts[0])
+    end_s = parts[1]
+    if not end_s:
+        return (start, _EOF_SENTINEL)
+    return (start, int(end_s))
+
+
+_EOF_SENTINEL = 10**9  # «до конца файла» — точный конец неизвестен без чтения
+
+
+def _extract_range_from_result(block: str) -> tuple[int, int] | None:
+    """Извлекает диапазон из заголовка результата read.
+
+    Форматы заголовков:
+      [path lines 120-200 of 500]  → (120, 200)
+      [path · 500 lines]           → (1, 500) — полное чтение
+      [path · 500 lines (showing first 1000)] → (1, 1000)
+    """
+    first_line = block.split("\n", 1)[0]
+    m = _READ_HEADER_RANGE_RE.match(first_line)
+    if m:
+        return (int(m.group(2)), int(m.group(3)))
+    m = _READ_HEADER_FULL_RE.match(first_line)
+    if m:
+        total = int(m.group(2))
+        # Проверим "(showing first N)" — усечённое чтение
+        trunc = re.search(r"showing first (\d+)", first_line)
+        if trunc:
+            return (1, int(trunc.group(1)))
+        return (1, total)
+    return None
+
+
+def _ranges_cover(
+    seen: list[tuple[int, int]], start: int, end: int,
+) -> bool:
+    """True если [start, end] полностью покрыт уже отправленными диапазонами.
+
+    _EOF_SENTINEL трактуем как «до конца» — покрывается любым диапазоном,
+    начинающимся не позже start. Частичное перекрытие НЕ считается покрытием
+    (по решению пользователя: новый read оставляем целиком).
+    """
+    if end == _EOF_SENTINEL:
+        # Полное чтение «до конца» покрывается только если уже видели
+        # диапазон, начинающийся не позже start и идущий до конца.
+        return any(s <= start and e == _EOF_SENTINEL for s, e in seen)
+    return any(s <= start and end <= e for s, e in seen)
+
+
 def _paths_from_args(args: Any) -> list[str]:
-    """Достаёт пути из native tool_call args (read_files/create_file/...)."""
+    """Достаёт пути из native tool_call args (read/create_file/...)."""
     if not isinstance(args, dict):
         return []
     p = args.get("path")
@@ -143,7 +223,7 @@ def _placeholder(cmd: str, cmd_tail: str, paths: list[str], reason: str) -> str:
     return (
         f"$ {cmd} {cmd_tail}\n"
         f"{_EVICT_MARKER} — {reason}. "
-        f"Re-read with read_files if needed: {path_disp}]"
+        f"Re-read with read if needed: {path_disp}]"
     )
 
 
@@ -209,6 +289,91 @@ def _scan_read_paths(messages: list) -> dict[str, int]:
     return reads
 
 
+def _range_from_read_args(args: Any) -> tuple[int, int] | None:
+    """Диапазон строк из native-аргументов read: {offset, limit} → (offset, offset+limit-1).
+
+    offset по умолчанию 1, limit по умолчанию 1000 (как в tools/file_ops/read.py).
+    Возвращает None если args не словарь или offset/limit не числа.
+    """
+    if not isinstance(args, dict):
+        return None
+    offset = args.get("offset", 1)
+    limit = args.get("limit", 1000)
+    if not isinstance(offset, int) or not isinstance(limit, int):
+        return None
+    if offset < 1:
+        offset = 1
+    if limit < 1:
+        limit = 1000
+    return (offset, offset + limit - 1)
+
+
+def _scan_read_ranges(messages: list) -> dict[str, list[tuple[int, tuple[int, int]]]]:
+    """path → список (round, (start, end)) для всех read-вызовов в хронологическом порядке.
+
+    Нужно для range-dedup (триггер E): уже прочитанный диапазон, файл не менялся,
+    повторно не передаётся — только напоминание. Round = индекс user-сообщения (1-based).
+    """
+    reads: dict[str, list[tuple[int, tuple[int, int]]]] = {}
+
+    def _add(paths: list[str], rng: tuple[int, int] | None) -> None:
+        if not rng:
+            return
+        for p in paths:
+            reads.setdefault(p, []).append((round_idx, rng))
+
+    round_idx = 0
+    for msg in messages:
+        if _is_real_user(msg):
+            round_idx += 1
+            text = _get_text_content(msg)
+            if text:
+                for block in text.split(_BLOCK_SEP):
+                    first_line = block.split("\n", 1)[0]
+                    m = _READ_CMD_RE.match(first_line)
+                    if m:
+                        paths = _extract_paths_from_cmd_tail(m.group(2))
+                        rng = _extract_range_from_result(block)
+                        if rng is None:
+                            rng = _extract_range_from_cmd_tail(m.group(2))
+                        _add(paths, rng)
+        elif isinstance(msg, AIMessage):
+            for tc in getattr(msg, "tool_calls", []) or []:
+                if (tc.get("name") or "") in _READ_NAMES:
+                    _add(_paths_from_args(tc.get("args")), _range_from_read_args(tc.get("args")))
+    return reads
+
+
+def _range_dedup_reason(
+    paths: list[str],
+    block_range: tuple[int, int] | None,
+    block_round: int,
+    read_ranges: dict[str, list[tuple[int, tuple[int, int]]]],
+    write_rounds: dict[str, int],
+) -> str | None:
+    """Триггер E — range-dedup: каждый путь уже полностью прочитан в более раннем раунде,
+    и файл с тех пор не менялся → контент не передаём, только напоминание.
+
+    Идентичный и вложенный (⊆) диапазоны не выдаются повторно. Частичное
+    перекрытие НЕ дедупится — новый read остаётся целиком (решение пользователя).
+    Полное чтение «до конца» (_EOF_SENTINEL) трактуется как покрывающее любой
+    диапазон, начинающийся не раньше него.
+    """
+    if not paths or block_range is None:
+        return None
+    covered = True
+    for p in paths:
+        if write_rounds.get(p, 0) >= block_round:
+            return None  # файл менялся в текущем/более позднем раунде — контент актуален
+        prior = [rng for (r, rng) in read_ranges.get(p, []) if r < block_round]
+        if not _ranges_cover(prior, block_range[0], block_range[1]):
+            covered = False
+            break
+    if not covered:
+        return None
+    return "range already read earlier (dedup)"
+
+
 def _should_evict(
     paths: list[str],
     block_round: int,
@@ -217,13 +382,16 @@ def _should_evict(
     write_rounds: dict[str, int],
     read_rounds: dict[str, int],
     age_eviction: bool = True,
+    read_ranges: dict[str, list[tuple[int, tuple[int, int]]]] | None = None,
+    block_range: tuple[int, int] | None = None,
 ) -> str | None:
-    """Возвращает причину eviction или None. Применяет триггеры A/B/C/D.
+    """Возвращает причину eviction или None. Применяет триггеры A/B/C/D/E.
 
     age_eviction=False отключает возрастные триггеры C/D (Fix 2: их гейтит
     порог контекста в caller — пока контекст мал, возрастное вытеснение не
     нужно и только дробит prompt-cache). A/B (устаревший/дедуп) применяются
     ВСЕГДА: это корректность, срабатывают редко (только при re-read/write).
+    E (range-dedup) работает только когда переданы read_ranges и block_range.
     """
     if not paths:
         return None
@@ -233,6 +401,13 @@ def _should_evict(
     # B. тот же путь прочитан позже — ранняя копия лишняя (дедуп)
     if any(read_rounds.get(p, 0) > block_round for p in paths):
         return "superseded by a later read of the same file"
+    # E. range-dedup — диапазон уже читали раньше, файл не менялся
+    if read_ranges is not None and block_range is not None:
+        reason = _range_dedup_reason(
+            paths, block_range, block_round, read_ranges, write_rounds,
+        )
+        if reason is not None:
+            return reason
     if not age_eviction:
         return None
     age = current_round - block_round
@@ -286,6 +461,36 @@ def _tool_placeholder(cmd_line: str, reason: str) -> str:
         f"{cmd_line}\n"
         f"{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
     )
+
+
+def _tool_fold_placeholder(cmd_line: str, reason: str) -> str:
+    """Мягкий плейсхолдер для свернутого tool-вывода: команда видна, вывод заменён.
+
+    В отличие от жёсткого _tool_placeholder, folding сохраняет саму команду
+    (что было вызвано) и даёт компактное summary вместо полного вывода —
+    чтобы в истории остался «след» вызова без объёма токенов.
+    """
+    return (
+        f"{cmd_line}\n"
+        f"{_EVICT_MARKER} — {reason}. (tool output folded, command kept)]"
+    )
+
+
+def _should_fold_tool(
+    block_round: int, current_round: int, tool_fold_rounds: int,
+) -> str | None:
+    """Fold-порог: вывод инструмента старше tool_fold_rounds раундов сворачивается.
+
+    Это МЯГКАЯ эвристика (не зависящая от age_eviction): она экономит токены
+    для стабильных длинных выводов (shell/web/lsp), которые иначе держались бы
+    дословно до жёсткого eviction.
+    """
+    if tool_fold_rounds <= 0:
+        return None
+    age = current_round - block_round
+    if age >= tool_fold_rounds:
+        return f"tool output folded ({age} rounds old)"
+    return None
 
 
 def _runtime_results_summary(text: str) -> str:
@@ -355,10 +560,14 @@ def _prune_user_text(
     read_rounds: dict[str, int],
     evicted_paths: set[str],
     age_eviction: bool = True,
+    read_ranges: dict[str, list[tuple[int, tuple[int, int]]]] | None = None,
+    tool_fold_rounds: int = 0,
 ) -> str:
     """Заменяет старые read-блоки на плейсхолдер. Возвращает новый text.
 
     Пути вытесненных блоков добавляются в evicted_paths (для сброса read-cache).
+    read_ranges/block_range включают range-dedup (триггер E); tool_fold_rounds
+    включает мягкое сворачивание tool-выводов.
     """
     blocks = text.split(_BLOCK_SEP)
     changed = False
@@ -372,9 +581,13 @@ def _prune_user_text(
         if m:
             cmd_tail = m.group(2)
             paths = _extract_paths_from_cmd_tail(cmd_tail)
+            block_range = _extract_range_from_result(block)
+            if block_range is None:
+                block_range = _extract_range_from_cmd_tail(cmd_tail)
             reason = _should_evict(
                 paths, user_round, current_round, len(block),
                 write_rounds, read_rounds, age_eviction,
+                read_ranges=read_ranges, block_range=block_range,
             )
             if reason is None:
                 new_blocks.append(block)
@@ -385,6 +598,13 @@ def _prune_user_text(
             continue
         mt = _TOOL_CMD_RE.match(first_line)
         if mt:
+            # Сначала мягкое folding (если включено и вывод достаточно старый),
+            # затем жёсткое age-eviction.
+            fold_reason = _should_fold_tool(user_round, current_round, tool_fold_rounds)
+            if fold_reason is not None:
+                new_blocks.append(_tool_fold_placeholder(first_line, fold_reason))
+                changed = True
+                continue
             reason = _should_evict_tool(user_round, current_round, len(block), age_eviction)
             if reason is None:
                 new_blocks.append(block)
@@ -415,11 +635,13 @@ def _prune_native(
     read_rounds: dict[str, int],
     evicted_paths: set[str],
     age_eviction: bool = True,
+    read_ranges: dict[str, list[tuple[int, tuple[int, int]]]] | None = None,
+    tool_fold_rounds: int = 0,
 ) -> tuple[list, int, int]:
     """Native-проход: вытесняет старые read-ToolMessage.
 
     Путь read-результата восстанавливается из tool_call_id в предыдущем
-    AIMessage (по имени read_files/read_file и совпадению id). Возвращает
+    AIMessage (по имени read и совпадению id). Возвращает
     (новый список, pruned_blocks, saved_chars).
     """
     # Карта tool_call_id → (round, paths) для read-вызовов + round для tool-вызовов.
@@ -454,11 +676,21 @@ def _prune_native(
         if content is None or _EVICT_MARKER in content:
             result.append(msg)
             continue
-        # Вывод тяжёлых инструментов — вытеснение по возрасту (C/D).
+        # Вывод тяжёлых инструментов — folding (мягко) затем вытеснение по возрасту (C/D).
         if msg_name in _TOOL_EVICT_NAMES:
             t_round = tool_meta.get(tc_id)
             if t_round is None or t_round >= current_round:
                 result.append(msg)
+                continue
+            fold_reason = _should_fold_tool(t_round, current_round, tool_fold_rounds)
+            if fold_reason is not None:
+                new_content = (
+                    f"{_EVICT_MARKER} — {fold_reason}. "
+                    f"(tool output folded, tool call kept)]"
+                )
+                saved += len(content) - len(new_content)
+                pruned += 1
+                result.append(_set_text_content(msg, new_content))
                 continue
             reason = _should_evict_tool(t_round, current_round, len(content), age_eviction)
             if reason is None:
@@ -501,9 +733,11 @@ def _prune_native(
         if block_round >= current_round:
             result.append(msg)
             continue
+        block_range = _extract_range_from_result(content)
         reason = _should_evict(
             paths, block_round, current_round, len(content),
             write_rounds, read_rounds, age_eviction,
+            read_ranges=read_ranges, block_range=block_range,
         )
         if reason is None:
             result.append(msg)
@@ -511,7 +745,7 @@ def _prune_native(
         path_disp = ", ".join(paths) if paths else "(unknown)"
         new_content = (
             f"{_EVICT_MARKER} — {reason}. "
-            f"Re-read with read_files if needed: {path_disp}]"
+            f"Re-read with read if needed: {path_disp}]"
         )
         saved += len(content) - len(new_content)
         pruned += 1
@@ -520,13 +754,22 @@ def _prune_native(
     return result, pruned, saved
 
 
-def prune_messages(messages: list, age_eviction: bool = True) -> tuple[list, dict]:
+def prune_messages(
+    messages: list,
+    age_eviction: bool = True,
+    tool_fold_rounds: int = 0,
+    enable_range_dedup: bool = True,
+) -> tuple[list, dict]:
     """Возвращает (новый список, stats). Оригинал не модифицируется.
 
     age_eviction (Fix 2): когда False — возрастные триггеры C/D и tool-age
     отключены, остаются только A/B (устаревшие/дедуп, корректность) и
     skill-вытеснение (синхрон с окном активности скилла). Caller выставляет
     False пока контекст мал, чтобы не дробить prompt-cache почти каждый раунд.
+
+    tool_fold_rounds > 0 включает мягкое сворачивание tool-выводов старше N
+    раундов (shell/web/lsp). enable_range_dedup=True включает range-dedup
+    (триггер E) — уже прочитанные диапазоны повторно не передаются.
 
     stats: {"pruned_blocks": N, "saved_chars": M, "frozen_until": idx}
       frozen_until — индекс ПОСЛЕ последнего «замороженного» (уже вытесненного)
@@ -546,6 +789,7 @@ def prune_messages(messages: list, age_eviction: bool = True) -> tuple[list, dic
 
     write_rounds = _scan_round_writes(messages)
     read_rounds = _scan_read_paths(messages)
+    read_ranges = _scan_read_ranges(messages) if enable_range_dedup else None
     evicted_paths: set[str] = set()
 
     # ── Pass 1: text-mode read-блоки внутри HumanMessage ──
@@ -566,6 +810,7 @@ def prune_messages(messages: list, age_eviction: bool = True) -> tuple[list, dic
             new_text = _prune_user_text(
                 text, round_idx, current_round, write_rounds, read_rounds,
                 evicted_paths, age_eviction,
+                read_ranges=read_ranges, tool_fold_rounds=tool_fold_rounds,
             )
             if new_text != text:
                 pruned_blocks += new_text.count(_EVICT_MARKER) - text.count(_EVICT_MARKER)
@@ -579,7 +824,7 @@ def prune_messages(messages: list, age_eviction: bool = True) -> tuple[list, dic
     # ── Pass 2: native read-ToolMessage ──
     result, native_pruned, native_saved = _prune_native(
         result, current_round, write_rounds, read_rounds, evicted_paths,
-        age_eviction,
+        age_eviction, read_ranges=read_ranges, tool_fold_rounds=tool_fold_rounds,
     )
     pruned_blocks += native_pruned
     saved += native_saved

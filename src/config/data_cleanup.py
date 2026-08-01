@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -34,7 +33,6 @@ KEEP_RECENT_SESSIONS = 100     # …но последние N по времен�
 RUNS_MAX_AGE_DAYS = 14         # subagents/
 TEMP_MAX_AGE_DAYS = 7          # clipboard_images/ docx_shots/ docx_sources/ uploads/
 SOCKET_MAX_AGE_DAYS = 1        # ssh_sockets/ — мёртвые сокеты
-UNDO_MAX_AGE_DAYS = 60         # чужие (не текущие) undo-репы старше — удалить
 MIN_INTERVAL_SECONDS = DAY     # не чаще раза в сутки
 
 _MARKER = BASE_DIR / ".last_cleanup"
@@ -59,12 +57,12 @@ def run_cleanup() -> int:
     """Выполняет очистку. Возвращает примерно сколько байт освобождено."""
     freed = 0
     freed += _clean_root_junk()
+    freed += _clean_empty_sessions()
     freed += _clean_sessions()
     freed += _clean_runs("subagents", RUNS_MAX_AGE_DAYS)
     for name in ("clipboard_images", "docx_shots", "docx_sources", "uploads"):
         freed += _clean_temp_files(name, TEMP_MAX_AGE_DAYS)
     freed += _clean_ssh_sockets()
-    freed += _clean_stale_undo()
     return freed
 
 
@@ -84,6 +82,37 @@ def _clean_root_junk() -> int:
     return freed
 
 # ── sessions ─────────────────────────────────────────────────────────────────
+
+def _clean_empty_sessions() -> int:
+    """Удаляет директории пустых сессий (нет history.json или 0 сообщений)."""
+    base = BASE_DIR / "sessions"
+    if not base.is_dir():
+        return 0
+    freed = 0
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        if _is_empty_session_dir(child):
+            logger.info("data_cleanup: removing empty session dir {}", child.name[:20])
+            freed += _rmtree(child)
+    return freed
+
+
+def _is_empty_session_dir(path: Path) -> bool:
+    """Проверяет, является ли директория пустой сессией (0 сообщений)."""
+    history_path = path / "history.json"
+    if not history_path.exists():
+        return True  # нет истории — мусор
+    try:
+        data = json.loads(history_path.read_text(encoding="utf-8"))
+        # Сжатая сессия (compressed_stats) — не пустая
+        if data.get("compressed_stats"):
+            return False
+        # Если нет ни одного user-сообщения — пустая
+        return all(msg.get("role") != "user" for msg in data.get("messages", []))
+    except (json.JSONDecodeError, OSError):
+        return True
+
 
 def _clean_sessions() -> int:
     base = BASE_DIR / "sessions"
@@ -183,40 +212,6 @@ def _clean_ssh_sockets() -> int:
         if (is_socket or child.is_file()) and st.st_mtime < cutoff:
             freed += _unlink(child)
     return freed
-
-
-# ── undo (git shadow-репозитории) ────────────────────────────────────────────
-
-def _clean_stale_undo() -> int:
-    base = BASE_DIR / "undo"
-    if not base.is_dir():
-        return 0
-    current = _current_undo_key()
-    cutoff = time.time() - UNDO_MAX_AGE_DAYS * DAY
-    freed = 0
-    for child in base.iterdir():
-        if not child.is_dir():
-            continue
-        if child.name == current:
-            continue  # активный undo текущего проекта — не трогаем
-        try:
-            # mtime каталога git/ как индикатор последней активности репо.
-            git_dir = child / "git"
-            ref = git_dir if git_dir.is_dir() else child
-            if ref.stat().st_mtime >= cutoff:
-                continue
-        except OSError:
-            continue
-        freed += _rmtree(child)
-    return freed
-
-
-def _current_undo_key() -> str:
-    try:
-        workdir = os.path.abspath(os.getcwd())
-        return hashlib.sha1(workdir.encode("utf-8")).hexdigest()[:12]
-    except Exception:
-        return ""
 
 
 # ── маркер «не чаще раза в сутки» ────────────────────────────────────────────

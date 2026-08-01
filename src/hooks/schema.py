@@ -33,8 +33,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-HookEvent = str
-
 HOOK_EVENTS: tuple[str, ...] = (
     "PreToolUse",
     "PostToolUse",

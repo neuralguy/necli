@@ -45,13 +45,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/sessions",    "session", "help.sessions"),
     SlashCommand("/history",     "session", "help.history",     args_hint="[N]"),
     SlashCommand("/compress",    "session", "help.compress"),
-    SlashCommand("/undo",        "session", "help.undo",        args_hint="[N]"),
     SlashCommand("/reflect",     "session", "help.reflect"),
 
     # ── model ───────────────────────────────────────────────
     SlashCommand("/api",         "model",   "help.api"),
     SlashCommand("/models",      "model",   "help.models"),
     SlashCommand("/params",      "model",   "help.params"),
+    SlashCommand("/autoprune",   "model",   "help.autoprune"),
     SlashCommand("/proxy",       "model",   "help.proxy",       args_hint="[URL|off]"),
 
     # ── tools ───────────────────────────────────────────────

@@ -17,24 +17,6 @@ _working_dir_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 
-class WorkingDirectory:
-    """Тонкая обёртка над ContextVar — для обратной совместимости.
-
-    Опциональный path в конструкторе сразу устанавливает рабочую директорию
-    (без аргумента — текущее значение ContextVar / cwd).
-    """
-
-    def __init__(self, path: str | None = None):
-        if path is not None:
-            _working_dir_var.set(path)
-
-    def get(self) -> str:
-        return _working_dir_var.get()
-
-    def set(self, path: str):
-        _working_dir_var.set(path)
-
-
 def set_working_dir(path: str):
     _working_dir_var.set(path)
 

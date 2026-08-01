@@ -1,14 +1,13 @@
 import re
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.text import Text
 
+from config.i18n import t as _
 from config.themes import t
 from session import Session
-
-console = Console()
-
+from ui.overlays import key_hints
+from ui.shell import Overlay, get_shell
 
 _TOOL_BLOCK_RE = re.compile(
     r'^[ \t]*:{2,3}call[ \t]+(?P<tool>\w+)(?P<header>[^\n]*)\n(?P<body>.*?)(?:\n|^)call:{2,3}[ \t]*(?:\n|$)'
@@ -53,7 +52,7 @@ def _render_assistant(content: str) -> Text:
         if prefix:
             if out.plain:
                 out.append("\n")
-            out.append(prefix)
+            out.append(_indent(prefix))
         # Извлекаем имя tool из шапки fence (включая path="…")
         head_line = m.group(0).split("\n", 1)[0]
         tool_name = m.group("tool") or m.group("old_tool")
@@ -65,14 +64,14 @@ def _render_assistant(content: str) -> Text:
             summary = _extract_tool_summary(body or "", tool_name)
         if out.plain:
             out.append("\n")
-        out.append("  → ", style=f"bold {t('accent')}")
+        out.append("     → ", style=f"bold {t('accent')}")
         out.append(summary, style="cyan")
         pos = m.end()
     suffix = content[pos:].strip()
     if suffix:
         if out.plain:
             out.append("\n")
-        out.append(suffix)
+        out.append(_indent(suffix))
     return out
 
 
@@ -84,7 +83,66 @@ def _render_tool_result(content: str) -> str:
     return first_line
 
 
-def show_history(session: Session, n: int) -> None:
+def _indent(text: str, prefix: str = "     ") -> str:
+    return "\n".join(prefix + line for line in str(text).splitlines())
+
+
+class HistoryOverlay(Overlay):
+    """Прокручиваемая история без записи в scrollback."""
+
+    def __init__(self, title: Text, body: Text) -> None:
+        super().__init__()
+        self.title = title
+        self.lines = list(body.split("\n", allow_blank=True))
+        self.top = 10**9  # первый кадр открывается на самых свежих строках
+        self.page = 1
+
+    def render(self, width: int) -> Text:
+        budget = self.shell.overlay_budget() if self.shell is not None else 20
+        self.page = max(1, budget - 2)  # заголовок + пустой ряд
+        max_top = max(0, len(self.lines) - self.page)
+        self.top = max(0, min(self.top, max_top))
+
+        out = self.title.copy()
+        out.append("\n\n")
+        visible = self.lines[self.top:self.top + self.page]
+        for i, source in enumerate(visible):
+            line = source.copy()
+            line.truncate(max(1, width - 2), overflow="ellipsis")
+            out.append_text(line)
+            if i + 1 < len(visible):
+                out.append("\n")
+        return out
+
+    def hint(self) -> str:
+        return key_hints(
+            ("↑↓", _("stats.hint_scroll")),
+            ("pgup/pgdn", _("stats.hint_page")),
+            ("esc", _("stats.hint_close")),
+        )
+
+    def version(self):
+        return self.top
+
+    def handle_key(self, key: str, event) -> bool:
+        if key in ("escape", "c-c", "q", "Q", "enter"):
+            self.finish(None)
+        elif key in ("up", "k"):
+            self.top -= 1
+        elif key in ("down", "j"):
+            self.top += 1
+        elif key == "pageup":
+            self.top -= self.page
+        elif key == "pagedown":
+            self.top += self.page
+        elif key == "home":
+            self.top = 0
+        elif key == "end":
+            self.top = 10**9
+        return True
+
+
+async def show_history(session: Session, n: int) -> None:
     """Отображает последние N действий агента (user + assistant + tool_result group)."""
     if n <= 0:
         n = 10
@@ -93,32 +151,31 @@ def show_history(session: Session, n: int) -> None:
     # Действие = одно сообщение (user/assistant/tool_result), отображаем раздельно.
     msgs = [m for m in session.messages if m.role in ("user", "assistant", "tool_result")]
     if not msgs:
-        console.print("  [dim]History is empty[/dim]")
         return
 
     selected = msgs[-n:]
 
+    # Блок без рамки и линеек-разделителей показывается как динамическое notice.
+    title = Text("  " + _("history.title", n=len(selected), total=len(msgs)),
+                 style=f"bold {t('accent')}")
     body = Text()
     for i, msg in enumerate(selected):
         if i > 0:
-            body.append("\n\n")
-            body.append("─" * 60, style="dim")
-            body.append("\n\n")
+            body.append("\n")
+        body.append("\n")
 
         if msg.role == "user":
-            body.append("👤 USER\n", style=f"bold {t('user')}")
-            body.append(msg.content)
+            body.append(f"  👤 {_('history.user')}\n", style=f"bold {t('user')}")
+            body.append(_indent(msg.content))
         elif msg.role == "assistant":
-            body.append("🤖 ASSISTANT\n", style=f"bold {t('accent')}")
+            body.append(f"  🤖 {_('history.assistant')}\n", style=f"bold {t('accent')}")
             body.append(_render_assistant(msg.content))
         elif msg.role == "tool_result":
-            body.append("⚙ TOOL → ", style=f"bold {t('success')}")
+            body.append(f"  ⚙ {_('history.tool')} → ", style=f"bold {t('success')}")
             body.append(_render_tool_result(msg.content), style="dim")
 
-    title = f"History · last {len(selected)} of {len(msgs)}"
-    console.print(Panel(
-        body,
-        title=title,
-        border_style=t("accent"),
-        padding=(1, 2),
-    ))
+    shell = get_shell()
+    if shell is None:
+        Console().print(title, body)
+        return
+    await shell.run_overlay(HistoryOverlay(title, body))

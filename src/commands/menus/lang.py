@@ -1,5 +1,9 @@
-from rich.console import Console
+"""Меню /lang: выбор языка интерфейса.
 
+Выбор языка — терминальное действие: применяем и закрываем меню.
+"""
+
+from commands.menus._style import card_menu
 from config.i18n import (
     LANG_DISPLAY,
     SUPPORTED_LANGS,
@@ -7,29 +11,24 @@ from config.i18n import (
     set_lang,
     t,
 )
-from ui.menu import select_menu
-
-console = Console()
 
 
-def lang_interactive() -> None:
+async def lang_interactive() -> None:
     current = get_lang()
-    items = []
-    for code in SUPPORTED_LANGS:
-        items.append({  # noqa: PERF401
-            "label": LANG_DISPLAY.get(code, code),
-            "hint": code,
-            "active": code == current,
-        })
-    items.append({"label": t("common.back"), "hint": ""})
+    items = [
+        {"label": LANG_DISPLAY.get(code, code), "hint": code, "active": code == current}
+        for code in SUPPORTED_LANGS
+    ]
+    items.append({"label": t("common.back")})
 
-    choice = select_menu(items, title=t("lang.subtitle"))
+    choice = await card_menu(
+        items,
+        title=t("lang.subtitle"),
+        current=SUPPORTED_LANGS.index(current) if current in SUPPORTED_LANGS else 0,
+    )
     if choice is None or choice == len(SUPPORTED_LANGS):
         return
 
     code = SUPPORTED_LANGS[choice]
     if code != current:
         set_lang(code)
-        console.print(
-            f"  [green]✓[/green] {t('lang.changed', name=LANG_DISPLAY.get(code, code))}"
-        )

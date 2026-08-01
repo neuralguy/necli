@@ -180,15 +180,6 @@ def handle_complete_tool(stream, complete) -> bool:
         stream.inline_call_keys.append(_tool_call_identity(call))
         return True
 
-    if complete.tool_name in ("web_search", "web_fetch"):
-        res = execute_and_show(
-            [call], event_handler=stream.ctx.event_handler,
-            subtitle=subtitle, subtitle_factory=_mk_subtitle,
-        )
-        stream.inline_results.extend(res)
-        stream.inline_call_keys.append(_tool_call_identity(call))
-        return True
-
     res = execute_and_show(
         [call], event_handler=stream.ctx.event_handler,
         subtitle=subtitle, subtitle_factory=_mk_subtitle,

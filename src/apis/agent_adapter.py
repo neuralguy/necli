@@ -109,20 +109,6 @@ def _build_multimodal_content(text: str, image_paths: list) -> list[dict]:
 # TOOL_FORMAT_TEXT_BLOCK по native_tools). Единый источник правды.
 
 
-def _debug_message_summary(messages: list, limit: int = 6) -> list[dict]:
-    out: list[dict] = []
-    for msg in messages[-limit:]:
-        role = getattr(msg, "role", type(msg).__name__)
-        content = getattr(msg, "content", "")
-        text = _content_to_text(content) if not isinstance(content, str) else content
-        out.append({
-            "role": role,
-            "len": len(text),
-            "preview": text[:300].replace("\n", "\\n"),
-        })
-    return out
-
-
 def _content_to_text(content: Any) -> str:
     if isinstance(content, str):
         return _unescape_html_entities(content)
@@ -181,11 +167,6 @@ class ApiSession:
             )
         return self._llm
 
-    def reset(self) -> None:
-        self.messages.clear()
-        self._llm = None
-        self._llm_kwargs = {}
-
     def add_system(self, content: str, compressed: bool = False) -> None:
         kw = {"compressed": True} if compressed else None
         self.messages.append(SystemMessage(content=content, additional_kwargs=kw))
@@ -204,17 +185,30 @@ class ApiSession:
             kwargs["additional_kwargs"] = {"reasoning_content": reasoning_content}
         self.messages.append(AIMessage(**kwargs))
 
-    def add_tool_result(self, tool_call_id: str, content: str, name: str = "") -> None:
-        self.messages.append(ToolMessage(
-            content=content, tool_call_id=tool_call_id, name=name or "tool",
-        ))
-
-
 _api_session: ApiSession | None = None
 
 
 def get_api_session() -> ApiSession | None:
     return _api_session
+
+
+def invalidate_api_llm() -> None:
+    """Сбрасывает закешированный LLM в активной ApiSession и общем реестре,
+    чтобы новые параметры (temperature, max_tokens, proxy) применились
+    при следующем запросе.
+    """
+    try:
+        sess = get_api_session()
+        if sess is not None:
+            sess._llm = None
+            sess._llm_kwargs = {}
+    except Exception:
+        logger.debug("invalidate api session llm failed", exc_info=True)
+    try:
+        from apis import registry as _reg
+        _reg._instances.clear()
+    except Exception:
+        logger.debug("clear api registry instances failed", exc_info=True)
 
 
 def current_active_skills(tool_results: list | None = None) -> set:
@@ -602,6 +596,36 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
         session.add_user(text, synthetic=True)
         if images_message is not None:
             session.messages.append(images_message)
+
+    # ── Autoprune (режим без prompt-cache): пруним историю перед отправкой.
+    # Активируется когда у активного провайдера выключен prompt cache
+    # (не поддерживает cache_control) — ползунок кэша в настройках провайдера
+    # и есть мастер-переключатель. При включённом кэше поведение прежнее.
+    try:
+        if not llm._supports_anthropic_cache_control():
+            from apis._context_pruner import prune_messages as _prune
+            from config.settings import get as _settings_get
+
+            tool_fold_rounds = int(_settings_get("autoprune_tool_fold_rounds", 5) or 0)
+            enable_range_dedup = bool(_settings_get("autoprune_file_dedup", True))
+            # Прун CPU-затратный (несколько проходов по всей истории) — выносим
+            # в фоновый поток, чтобы не блокировать event loop (инпут, фоновые
+            # задачи, стрим) на время сканирования.
+            _messages, _prune_stats = await asyncio.to_thread(
+                _prune,
+                messages,
+                age_eviction=True,
+                tool_fold_rounds=tool_fold_rounds if _settings_get("autoprune_tool_folding", True) else 0,
+                enable_range_dedup=enable_range_dedup,
+            )
+            if _prune_stats.get("pruned_blocks"):
+                logger.info(
+                    "autoprune: pruned %s blocks, saved %s chars before API call",
+                    _prune_stats.get("pruned_blocks"), _prune_stats.get("saved_chars"),
+                )
+            messages = _messages
+    except Exception:
+        logger.debug("autoprune prune failed, sending full context", exc_info=True)
 
     t0 = time.monotonic()
     raw_text = ""

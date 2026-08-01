@@ -1,22 +1,158 @@
-"""Интерактивное меню со стрелками в стиле Rovo Dev."""
+"""Интерактивные меню.
 
-import re
+Панельные виджеты (`select_session_menu`, `select_api_model_menu`) живут в
+нижней зоне постоянного Application — см. `ui/shell.py`.
+
+Здесь же лежат текстовые примитивы безрамочных виджетов (`cell`, `pad`, `fit`,
+`row_line`, `section_line`). Они нужны и меню в `commands/menus/*`, поэтому
+живут в ui-слое: обратная зависимость `ui → commands` закольцевала бы импорты,
+так как `ui/overlays.py` откатывается на этот модуль в headless-режиме.
+
+Синхронные `select_menu` и `_panel_menu_direct` остаются рабочими: пока
+Application не поднят (headless, не-TTY, ранний старт, онбординг), рисовать
+некому, и `ui/overlays.py` сознательно падает обратно на них.
+"""
+
+import asyncio
+import logging
 import shutil
 import sys
-import unicodedata
-from io import StringIO
+import time
 
 from rich.console import Console
-from rich.panel import Panel
-from rich.style import Style
-from rich.table import Table
-from rich.text import Text
 
+from config.i18n import t as tr
 from config.themes import t
 from session._time import format_relative
 from ui._keyreader import drain_keys as _drain_keys
 from ui._keyreader import drain_text_keys as _drain_text_keys
 from ui._keyreader import raw_mode
+from ui.overlays import (
+    BOLD,
+    DIM,
+    RESET,
+    WHITE,
+    cell_width,
+    clip,
+    key_hints,
+    more_note,
+    pad,
+    paint,
+    role_fg,
+    row,
+    scroll_window,
+    section,
+    two_column,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ─────────────── мост «синхронный вызывающий → асинхронный виджет» ───────────
+# Виджеты стали корутинами, но два пути к ним остались синхронными и переписать
+# их здесь нельзя: исполнение инструментов (`executor._execute_single`) и первый
+# запуск (click-команда `interactive` зовёт онбординг ДО `asyncio.run`).
+# Поэтому мост, а не «await» через силу. Как только `_execute_single` станет
+# корутиной — вызовы через `run_ui_sync` заменяются на прямой await, и всё это
+# уходит целиком.
+
+def _shell_loop():
+    """Event loop, в котором крутится Application, либо None."""
+    try:
+        from ui.shell import get_shell
+        shell = get_shell()
+    except Exception:
+        return None
+    app = getattr(shell, "app", None) if shell is not None else None
+    loop = getattr(app, "loop", None)
+    if loop is None or loop.is_closed():
+        return None
+    return loop
+
+
+def _drive_without_loop(coro):
+    """Прокрутить корутину, которая обязана завершиться без единого await.
+
+    Так и происходит, когда `get_shell()` пуст: оверлеи внутри уходят на
+    синхронный путь и ничего не ждут. Если корутина всё же ушла в await —
+    честно падаем, а не вешаемся: без работающего loop'а её никто не разбудит.
+    """
+    try:
+        coro.send(None)
+    except StopIteration as stop:
+        return stop.value
+    coro.close()
+    raise RuntimeError("виджет ушёл в await, а event loop недоступен")
+
+
+def _run_detached(coro):
+    """Синхронный вызывающий сидит В loop'е Application — отдать оверлей нельзя.
+
+    Так исполняются fenced-инструменты: `apis/_retry` зовёт `on_chunk`
+    синхронно из корутины стрима, дальше `stream.on_text_update` →
+    `executor._execute_single`. Пока мы здесь, loop стоит, клавиш Application не
+    разбирает, и оверлей никогда не получит ответ. Докрутить loop руками asyncio
+    не даёт («Cannot enter into task … while another task is being executed»).
+
+    Поэтому на этот один вызов честно откатываемся к прежнему поведению: гасим
+    отрисовку Application, снимаем singleton (виджеты уходят синхронным путём),
+    возвращаем настоящие stdout/stderr вместо прокси patch_stdout — тот
+    складывает вывод в буфер и сливает его через loop, который стоит. После
+    ответа singleton возвращается, Application перерисовывается.
+
+    Уйдёт вместе с этой функцией, как только `_execute_single` станет корутиной.
+    """
+    from ui.shell import Shell
+    shell = Shell.instance()
+    app = getattr(shell, "app", None) if shell is not None else None
+    logger.info("виджет вызван из loop'а — рисуем синхронно, минуя Application")
+    if app is not None:
+        try:
+            app.renderer.erase()
+        except Exception:
+            logger.debug("renderer.erase failed", exc_info=True)
+    out, err = sys.stdout, sys.stderr
+    if shell is not None:
+        Shell.set_instance(None)
+    sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
+    try:
+        return _drive_without_loop(coro)
+    finally:
+        sys.stdout, sys.stderr = out, err
+        if shell is not None:
+            Shell.set_instance(shell)
+            shell.invalidate()
+
+
+def run_ui_sync(coro):
+    """Выполнить корутину виджета из синхронного кода и вернуть её результат."""
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+
+    if running is not None:
+        return _run_detached(coro)
+
+    loop = _shell_loop()
+    if loop is not None and loop.is_running():
+        # Рабочий поток executor'а: блокируем только его, loop живёт дальше и
+        # спокойно рисует оверлей.
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
+    # Loop'а нет вовсе — обычный ранний старт (онбординг) или headless.
+    # Если singleton Shell'а всё ещё висит, но его loop уже мёртв (выход из
+    # приложения), оверлеи ждали бы клавиш от несуществующего Application,
+    # поэтому на время прогона снимаем singleton.
+    from ui.shell import Shell
+    stale = Shell.instance()
+    if stale is not None:
+        Shell.set_instance(None)
+    try:
+        return asyncio.run(coro)
+    finally:
+        if stale is not None:
+            Shell.set_instance(stale)
 
 
 def _format_context_limit(limit: int) -> str:
@@ -27,47 +163,139 @@ def _format_context_limit(limit: int) -> str:
     return str(limit)
 
 
-def _cell_width(value: str) -> int:
-    width = 0
-    for ch in value:
-        if unicodedata.combining(ch):
-            continue
-        width += 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
-    return width
+# ──────────────── примитивы безрамочных виджетов нижней зоны ─────────────────
+# Стиль задаёт ui/overlays.py: оттуда берутся и цвета (role_fg/paint), и кирпичи
+# разметки (row/section/two_column/scroll_window/more_note). Своего набора
+# ANSI-констант здесь нет намеренно — два набора неизбежно разъехались бы.
+# Ниже только то, чего в overlays нет: многоколоночная строка и окно списка,
+# посчитанное по бюджету Shell.
 
-def _clean_menu_text(value: str) -> str:
-    cleaned = []
-    for ch in str(value):
-        category = unicodedata.category(ch)
-        if category[0] == "C" or category == "So":
-            continue
-        if ord(ch) >= 0x1F000 or ch in ("\ufe0e", "\ufe0f"):
-            continue
-        cleaned.append(ch)
-    return " ".join("".join(cleaned).split())
+#: Отступ до текста строки: два пробела + курсор + пробел (как в overlays.row).
+ROW_INDENT = 4
 
 
-def _safe_menu_text(value: str, max_width: int) -> str:
-    text = _clean_menu_text(value)
-    if _cell_width(text) <= max_width:
-        return text
-    out = []
-    width = 0
-    limit = max(0, max_width - 3)
-    for ch in text:
-        ch_width = 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
-        if width + ch_width > limit:
-            break
-        out.append(ch)
-        width += ch_width
-    return "".join(out).rstrip() + "..."
+def cell(value: str, width: int, align: str = "left") -> str:
+    """Ячейка колонки: обрезать по ширине, затем добить пробелами."""
+    return pad(clip(str(value), width), width, align)
 
-def _pad_menu_text(value: str, width: int, justify: str = "left") -> str:
-    value_width = _cell_width(value)
-    pad = max(0, width - value_width)
-    if justify == "right":
-        return " " * pad + value
-    return value + " " * pad
+
+def row_avail(width: int, mark: str = "") -> int:
+    """Сколько ячеек остаётся под содержимое строки после курсора и глифа."""
+    return max(4, width - 1 - ROW_INDENT - (cell_width(mark) + 1 if mark else 0))
+
+
+def columns(cells, *, plain: bool = False) -> str:
+    """Склеить ячейки `(текст, цвет)` в содержимое строки для `overlays.row`.
+
+    На выделенной строке собственные цвета колонок гасим: `row()` красит всю
+    полосу (bold white на `bg_select`), и локальные оттенки сделали бы её пёстрой.
+    """
+    if plain:
+        return "".join(text for text, _style in cells)
+    return "".join(f"{style}{text}{RESET}" if style else text for text, style in cells)
+
+
+class Palette:
+    """Цвета темы одним объектом на кадр отрисовки.
+
+    Тема переключается на ходу (`/themes`), поэтому кэшировать её между кадрами
+    нельзя — но и звать `role_fg` на каждую ячейку списка незачем.
+    """
+
+    __slots__ = ("accent", "bold", "dim", "error", "muted", "reset",
+                 "success", "warning", "white")
+
+    def __init__(self) -> None:
+        self.reset = RESET
+        self.dim = DIM
+        self.bold = BOLD
+        self.white = WHITE
+        self.accent = role_fg("accent")
+        self.success = role_fg("success")
+        self.warning = role_fg("warning")
+        self.error = role_fg("error")
+        self.muted = role_fg("muted")
+
+
+def row_line(cells, width: int, *, selected: bool = False, active: bool = False,
+             mark: str = "", mark_role: str = "", pal: Palette | None = None) -> str:
+    """Строка списка с колонками поверх `overlays.row`.
+
+    `overlays.row` умеет метку, подсказку и правый значок, но не произвольные
+    выровненные колонки, которые нужны /models и /sessions. Колонки собираем
+    здесь, а курсор, подсветку и обрезку по ширине отдаём общему кирпичу.
+    """
+    return row(
+        columns(cells, plain=selected),
+        selected=selected, width=width,
+        mark=mark, mark_role=mark_role,
+        right="◄" if active else "", right_role="success",
+    )
+
+
+def section_line(text: str, width: int, *, right: str = "",
+                 pal: Palette | None = None, bold: bool = False) -> str:
+    """Заголовок секции/шапки внутри виджета — приглушённый, без рамок.
+
+    Правая приписка (счётчик, подпись) исчезает целиком, если на узком экране
+    для неё нет места: обрезанный счётчик хуже отсутствующего.
+    """
+    room = width - ROW_INDENT - 1
+    if right and cell_width(right) > room - 8:
+        right = ""
+    left = clip(text, max(4, room - (cell_width(right) + 2 if right else 0)))
+    if not bold:
+        return section(left, right=right, width=width)
+    return two_column(paint(left, "accent", bold=True),
+                      f"{DIM}{right}{RESET}" if right else "", width=width)
+
+
+def search_line(query: str, width: int, placeholder: str = "",
+                pal: Palette | None = None) -> str:
+    """Строка поиска панельных меню: `/ запрос▌` либо приглушённая подсказка."""
+    room = max(4, width - ROW_INDENT - 3)
+    if query:
+        return ("  " + paint("/", "accent") + " " + BOLD + WHITE
+                + clip(query, room) + RESET + paint("▌", "accent"))
+    return f"  {DIM}/ {clip(placeholder or 'type to search', room)}{RESET}"
+
+
+def overlay_rows(reserve: int = 0) -> int:
+    """Сколько строк доступно телу виджета (минус `reserve` на шапку).
+
+    Бюджет спрашиваем у Shell: он знает высоту динамической зоны, рамки и
+    подсказки. Без Shell (headless) считаем по размеру терминала.
+    """
+    try:
+        from ui.shell import get_shell
+        shell = get_shell()
+        if shell is not None:
+            return max(1, shell.overlay_budget() - reserve)
+    except Exception:
+        logger.debug("overlay_budget unavailable", exc_info=True)
+    return max(1, shutil.get_terminal_size((80, 24)).lines - 8 - reserve)
+
+
+def render_width(default: int = 100) -> int:
+    """Ширина тела виджета в колонках.
+
+    `render_fn(selected)` ширину не получает (протокол панельных меню не
+    меняем), поэтому спрашиваем её у того же источника, что и Shell, — иначе
+    колонки разъедутся с линиями рамки.
+    """
+    try:
+        from ui.shell import get_shell
+        shell = get_shell()
+        app = getattr(shell, "app", None) if shell is not None else None
+        if app is not None:
+            return max(24, app.output.get_size().columns)
+    except Exception:
+        logger.debug("render_width via shell failed", exc_info=True)
+    try:
+        return max(24, shutil.get_terminal_size((default, 24)).columns)
+    except Exception:
+        return default
+
 
 def clear_lines(n: int):
     """Очищает n строк вверх."""
@@ -78,11 +306,6 @@ def clear_lines(n: int):
     sys.stdout.flush()
 
 
-def _strip_ansi(text: str) -> str:
-    """Удаляет ANSI-escape последовательности для подсчёта видимой ширины."""
-    return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', text)
-
-
 def _physical_rows(line: str, term_width: int) -> int:
     """Сколько физических строк терминала займёт одна логическая строка.
 
@@ -91,7 +314,7 @@ def _physical_rows(line: str, term_width: int) -> int:
     """
     if term_width <= 0:
         return 1
-    visible_w = _cell_width(_strip_ansi(line))
+    visible_w = cell_width(line)
     if visible_w == 0:
         return 1
     return (visible_w + term_width - 1) // term_width
@@ -153,6 +376,43 @@ def _clear_stream_lines(stream, n: int):
         stream.write('\x1b[A')
         stream.write('\x1b[2K')
     stream.flush()
+
+
+def _normalize_panel_key(key: str) -> str:
+    """Сводит имена клавиш двух источников к одному словарю.
+
+    Оверлей Shell'а присылает имена prompt_toolkit ("c-p", "space"), а legacy
+    `drain_text_keys` — свои ("ctrl-p", " "). Один и тот же `on_key` работает в
+    обоих режимах, поэтому названия приводим здесь, а не в двух рендерерах.
+    """
+    if key == "c-p":
+        return "ctrl-p"
+    if key == "space":
+        return " "
+    return key
+
+
+async def _run_panel(render_fn, hint_text: str, total: int, initial_selected: int,
+                     on_key=None) -> int | None:
+    """Показать панельный виджет с поиском по вводу.
+
+    Есть Shell → оверлей в нижней зоне. Нет Shell → прежний прямой вывод в
+    stderr. Флаг `text_input` тут НЕ пробрасывается в overlays.panel_menu
+    специально: в Shell он делает буфер ptk владельцем печатных клавиш, и они
+    перестают доходить до `on_key`, где живёт строка поиска этих панелей.
+    Legacy-циклу тот же флаг нужен ровно наоборот — иначе `drain_keys`
+    переиначит q/j/k в команды навигации вместо букв запроса.
+    """
+    from ui.shell import get_shell
+    if get_shell() is None:
+        return _panel_menu_direct(
+            render_fn, sys.stderr, hint_text, total, initial_selected,
+            on_key=on_key, text_input=True,
+        )
+    from ui import overlays
+    return await overlays.panel_menu(
+        render_fn, hint_text, total, initial_selected, on_key=on_key,
+    )
 
 
 def select_menu(
@@ -284,13 +544,36 @@ def select_menu(
 
 
 
-def select_session_menu(
+def _tokens_short(n: int) -> str:
+    if n < 1000:
+        return str(n)
+    if n < 1_000_000:
+        return f"{n // 1000}K"
+    return f"{n / 1_000_000:.1f}M"
+
+
+def _short_ago(ts: float) -> str:
+    """Компактное «когда»: колонка не должна съедать треть ширины экрана."""
+    if not ts:
+        return "—"
+    diff = max(0.0, time.time() - ts)
+    if diff < 60:
+        return "now"
+    if diff < 3600:
+        return f"{int(diff // 60)} min"
+    if diff < 86400:
+        return f"{int(diff // 3600)} h"
+    if diff < 86400 * 7:
+        return f"{int(diff // 86400)} d"
+    return format_relative(ts)
+
+
+async def select_session_menu(
     sessions: list[dict],
     current_id: str = "",
 ) -> int | None:
-    """
-    Интерактивное меню сессий в стиле панели с таблицей.
-    Pinned sessions всегда сверху. P — toggle pin для выделенной сессии.
+    """Меню выбора сессии: поиск, пины, плоский список без рамок.
+
     Возвращает индекс ВЫБРАННОЙ сессии в ИСХОДНОМ списке sessions, или None.
     """
     if not sessions:
@@ -299,219 +582,235 @@ def select_session_menu(
     from config.pinned import get_pinned
     from config.pinned import toggle as toggle_pin
 
-    # Работаем по индексам исходного списка; внутри сортируем по pin.
-    # original_indices_sorted — массив исходных индексов в порядке отображения.
+    # Пины лежат в JSON на диске, а get_pinned() читает файл КАЖДЫЙ раз.
+    # Прежний рендер звал его из render_fn, то есть перечитывал диск ~20 раз в
+    # секунду. Держим набор в памяти и обновляем только по ctrl+p.
+    pinned_ids = get_pinned()
     query = ""
 
-    def _sort_indices() -> list[int]:
-        pinned_ids = get_pinned()
-        pinned_idx = [i for i, s in enumerate(sessions) if s.get("id") in pinned_ids]
-        rest_idx = [i for i, s in enumerate(sessions) if s.get("id") not in pinned_ids]
-        return pinned_idx + rest_idx
-
-    def _matches_query(orig_idx: int) -> bool:
-        if not query:
-            return True
-        s = sessions[orig_idx]
-        haystack = " ".join(
-            str(s.get(k, ""))
-            for k in ("title", "id", "site", "last_model")
-        ).casefold()
-        return query.casefold() in haystack
+    # Текст ячеек не зависит ни от курсора, ни от ширины — считаем один раз.
+    static: list[tuple[str, str, str, str, str]] = []
+    for s in sessions:
+        folder = str(s.get("working_dir", "")).rstrip("/").rsplit("/", 1)[-1]
+        static.append((
+            str(s.get("title", "") or tr("menu.untitled_session")),
+            _short_ago(s.get("updated_at", 0)),
+            f"{s.get('messages', 0)} msg",
+            _tokens_short(int(s.get("tokens", 0) or 0)),
+            folder,
+        ))
+    haystacks = [
+        " ".join(str(s.get(k, "")) for k in ("title", "id", "site", "last_model")).casefold()
+        for s in sessions
+    ]
 
     def _filtered_order() -> list[int]:
-        return [i for i in _sort_indices() if _matches_query(i)]
+        q = query.casefold()
+        pinned_pos, rest = [], []
+        for i, s in enumerate(sessions):
+            if q and q not in haystacks[i]:
+                continue
+            (pinned_pos if s.get("id") in pinned_ids else rest).append(i)
+        return pinned_pos + rest
 
     order = _filtered_order()
+    total = len(order)
 
-    # Курсор начинается на current_id
     initial_selected = 0
     for pos, orig_idx in enumerate(order):
         if sessions[orig_idx].get("id") == current_id:
             initial_selected = pos
             break
 
-    total = len(order)
-    _probe = Console()
-    cols, rows = _probe.size
-    render_width = max(20, cols - 1)
+    version = 0                 # растёт при смене запроса или пинов
+    layout_cache: dict = {}     # ширины колонок: (ширина, версия) → tuple
 
-    term_h = rows
-    max_visible = max(3, (term_h - 8) // 2)
-    need_scroll = total > max_visible
+    def _layout(width: int) -> tuple[int, int, int, int, int]:
+        """Ширины колонок под текущую ширину экрана.
 
-    def _format_tokens_short(n: int) -> str:
-        if n < 1000:
-            return str(n)
-        if n < 1_000_000:
-            return f"{n // 1000}K"
-        return f"{n / 1_000_000:.1f}M"
-
-    def _viewport(sel: int, scroll_off: int) -> tuple[int, int, int]:
-        """Вычисляет viewport (start, end) и новый scroll_offset."""
-        need_scroll_now = total > max_visible
-        if not need_scroll_now:
-            return 0, total, 0
-        if sel < scroll_off:
-            scroll_off = sel
-        elif sel >= scroll_off + max_visible:
-            scroll_off = sel - max_visible + 1
-        scroll_off = max(0, min(scroll_off, total - max_visible))
-        return scroll_off, scroll_off + max_visible, scroll_off
-
-    scroll_offset = 0
-    if need_scroll and initial_selected >= max_visible:
-        scroll_offset = min(initial_selected, total - max_visible)
+        Считаем по видимому списку и кэшируем: пересчёт нужен только когда
+        поменялся фильтр или размер окна, а не на каждом кадре.
+        """
+        key = (width, version)
+        cached = layout_cache.get(key)
+        if cached is not None:
+            return cached
+        when_w = msgs_w = tok_w = dir_w = 0
+        for i in order:
+            _t, when, msgs, tok, folder = static[i]
+            when_w = max(when_w, cell_width(when))
+            msgs_w = max(msgs_w, cell_width(msgs))
+            tok_w = max(tok_w, cell_width(tok))
+            dir_w = max(dir_w, cell_width(folder))
+        dir_w = min(dir_w, 16)
+        # Узкий терминал: сначала уходит папка, потом токены, потом счётчик
+        # сообщений. Заголовок не сокращаем никогда — без него список слепой.
+        free = width - ROW_INDENT - 1 - 3       # 3 — колонка состояния (пин/активна)
+        for drop in range(4):
+            widths = [when_w, msgs_w, tok_w, dir_w]
+            for d in range(drop):
+                widths[3 - d] = 0
+            used = sum(w + 2 for w in widths if w)
+            if free - used >= 18 or drop == 3:
+                res = (max(8, min(free - used, 72)), *widths)
+                layout_cache[key] = res
+                return res
+        return (18, when_w, msgs_w, tok_w, dir_w)  # pragma: no cover
 
     def render_fn(sel: int) -> str:
-        nonlocal scroll_offset
-        vp_start, vp_end, scroll_offset = _viewport(sel, scroll_offset)
-        pinned_ids = get_pinned()
-        inner_width = max(20, render_width - 4)
-        body = Text()
-        shown = sel + 1 if total else 0
-        body.append(f"Session management ({shown} of {total})\n\n", style="bold #9bbcff")
-        search_text = query if query else "Search..."
-        body.append("  / " + _safe_menu_text(search_text, inner_width - 4) + "\n", style="" if query else "dim")
-        body.append("─" * inner_width, style="dim")
+        pal = Palette()
+        width = render_width()
+        title_w, when_w, msgs_w, tok_w, dir_w = _layout(width)
+        budget = max(3, overlay_rows(reserve=2))
+        start, end, above, below = scroll_window(total, sel, budget)
 
+        lines = [
+            section_line(tr("menu.sessions_title"), width, bold=True, pal=pal,
+                         right=f"{sel + 1}/{total}" if total else ""),
+            search_line(query, width, "type to search by title, id or model", pal),
+        ]
         if total == 0:
-            body.append("\n  No sessions found", style="dim")
+            lines.append(f"  {pal.dim}{tr('common.no_data')}{pal.reset}")
+            return "\n".join(lines)
 
-        for pos in range(vp_start, vp_end):
-            orig_idx = order[pos]
-            s = sessions[orig_idx]
-            sid = s.get("id", "")
-            is_pinned = sid in pinned_ids
-            msgs = s.get("messages", 0)
-            updated_at = s.get("updated_at", 0)
-            tokens = s.get("tokens", 0)
-            activity = format_relative(updated_at) if updated_at else "—"
+        if above:
+            lines.append(more_note(above, up=True))
+        for pos in range(start, end):
+            orig = order[pos]
+            title, when, msgs, tok, folder = static[orig]
+            sid = sessions[orig].get("id", "")
             is_current = sid == current_id
-            is_selected = pos == sel
-            marker = "› " if is_selected else "  "
-            pin = "✱ " if is_pinned else ""
-            prefix_w = _cell_width(marker + pin)
-            title = _safe_menu_text(
-                s.get("title", "") or "Untitled Session",
-                max(1, inner_width - prefix_w),
-            )
-
-            row_bg = Style(bgcolor=t("bg_select")) if is_selected else Style.null()
-            if is_current and is_selected:
-                title_style = row_bg + Style.parse("bold green")
-            elif is_current:
-                title_style = row_bg + Style.parse("green")
-            elif is_selected:
-                title_style = row_bg + Style.parse("bold white")
-            else:
-                title_style = row_bg + Style.parse("green")
-
-            folder = str(s.get("working_dir", "")).rstrip("/").rsplit("/", 1)[-1]
-            meta = f"{activity} · {msgs} msgs · {_format_tokens_short(tokens)}"
-            if folder:
-                meta += f" · {folder}"
-            meta_style = row_bg + Style.parse("bold white") if is_selected else row_bg + Style(dim=True)
-            body.append("\n")
-            body.append(_pad_menu_text(marker + pin + title, inner_width), style=title_style)
-            body.append("\n")
-            body.append(_pad_menu_text("  " + _safe_menu_text(meta, inner_width - 2), inner_width), style=meta_style)
-
-        buf = StringIO()
-        render_console = Console(file=buf, highlight=False, force_terminal=True, width=render_width)
-        render_console.print(body)
-        return buf.getvalue()
+            cells = [
+                ("✱" if sid in pinned_ids else " ", pal.warning),
+                ("● " if is_current else "  ", pal.success),
+                (cell(title, title_w), pal.success if is_current else ""),
+            ]
+            if when_w:
+                cells.append(("  " + cell(when, when_w, "right"), pal.dim))
+            if msgs_w:
+                cells.append(("  " + cell(msgs, msgs_w, "right"), pal.dim))
+            if tok_w:
+                cells.append(("  " + cell(tok, tok_w, "right"), pal.dim))
+            if dir_w:
+                cells.append(("  " + cell(folder, dir_w), pal.muted))
+            lines.append(row_line(cells, width, selected=pos == sel, pal=pal))
+        if below:
+            lines.append(more_note(below, up=False))
+        return "\n".join(lines)
 
     def on_key(key: str, sel: int):
-        nonlocal order, query, scroll_offset, total
+        nonlocal order, query, total, version, pinned_ids
+        key = _normalize_panel_key(key)
+
+        def _refilter(keep: int):
+            nonlocal order, total, version
+            order = _filtered_order()
+            total = len(order)
+            version += 1
+            return (True, min(keep, max(0, total - 1)), total)
+
         if key == "backspace":
             if query:
                 query = query[:-1]
-            order = _filtered_order()
-            total = len(order)
-            scroll_offset = 0
-            return (True, min(sel, max(0, total - 1)), total)
+            return _refilter(sel)
         if key == "escape":
             if query:
                 query = ""
-                order = _filtered_order()
-                total = len(order)
-                scroll_offset = 0
-                return (True, min(sel, max(0, total - 1)), total)
+                return _refilter(sel)
             return (False, sel, total)
-        if len(key) == 1 and key.isprintable():
-            query += key
-            order = _filtered_order()
-            total = len(order)
-            scroll_offset = 0
-            return (True, 0, total)
         if key == "ctrl-p" and 0 <= sel < len(order):
             sid = sessions[order[sel]].get("id", "")
             if sid:
                 toggle_pin(sid)
-                order = _filtered_order()
-                total = len(order)
-                scroll_offset = 0
-                return (True, 0, total)
+                pinned_ids = get_pinned()
+                return _refilter(0)
+            return None
+        if len(key) == 1 and key.isprintable():
+            query += key
+            return _refilter(0)
         return None
 
-    result_pos = _panel_menu_direct(
-        render_fn, sys.stderr,
-        "type to search · ↑↓ navigate · enter select · ctrl+p pin · backspace delete · esc clear/cancel",
+    result_pos = await _run_panel(
+        render_fn,
+        # Подсказка живёт под рамкой одной строкой: на узком терминале длинный
+        # текст обрезался бы посреди слова, поэтому формат компактный.
+        key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "open"),
+                  ("^p", "pin"), ("esc", "close")),
         total, initial_selected,
         on_key=on_key,
-        text_input=True,
     )
-    if result_pos is None:
+    if result_pos is None or not order:
         return None
-    return order[result_pos]
+    return order[min(result_pos, len(order) - 1)]
 
 
-def select_api_model_menu(
+async def select_api_model_menu(
     api_models: list,
     current_id: str = "",
     provider_name: str = "",
     group_labels: list[str] | None = None,
 ) -> int | None:
-    """Меню выбора API-модели с поиском/фильтрацией по названию и ID.
+    """Меню выбора API-модели с поиском по названию и ID.
 
     group_labels: если задан (параллельно api_models), секции формируются по
     этим меткам (напр. провайдерам) с сохранением исходного порядка. Иначе —
     группировка по семейству модели с сортировкой.
+
+    Возвращает индекс в ИСХОДНОМ списке api_models либо None.
     """
     if not api_models:
         return None
 
     from models import model_group, model_group_order
 
-    def _group_of_idx(i: int) -> str:
-        if group_labels is not None:
-            return group_labels[i]
-        m = api_models[i]
-        return model_group(m.display_name or m.id)
-
-    def _sorted_indices() -> list[int]:
-        if group_labels is not None:
-            return list(range(len(api_models)))
-        return sorted(
+    # Всё, что не зависит от курсора, считаем один раз. Прежний рендер собирал
+    # плоский список строк и Rich-таблицу заново на КАЖДОМ кадре (тикер даёт
+    # 10 fps, а кадр зовёт рендер дважды) — отсюда и тормоза на больших списках.
+    if group_labels is not None:
+        groups = list(group_labels)
+    else:
+        groups = [model_group(m.display_name or m.id) for m in api_models]
+    static = [
+        (m.display_name, f"${m.input_price:.2f}", f"${m.output_price:.2f}",
+         _format_context_limit(m.context_window), m.id)
+        for m in api_models
+    ]
+    haystacks = [f"{m.display_name} {m.id}".casefold() for m in api_models]
+    if group_labels is not None:
+        base_order = list(range(len(api_models)))
+    else:
+        base_order = sorted(
             range(len(api_models)),
-            key=lambda i: (model_group_order(_group_of_idx(i)),
-                           api_models[i].display_name),
+            key=lambda i: (model_group_order(groups[i]), api_models[i].display_name),
         )
 
     query = ""
+    order: list[int] = []
+    flat: list[int] = []        # >= 0 — индекс модели, -1 — заголовок группы
+    flat_group: list[str] = []  # текст заголовка для строк-групп
+    row_of_pos: list[int] = []  # позиция модели в order → строка в flat
+    total = 0
+    version = 0                 # растёт при смене запроса: сбрасывает кэши
 
-    def _matches(orig_idx: int) -> bool:
-        if not query:
-            return True
-        m = api_models[orig_idx]
-        haystack = f"{m.display_name} {m.id}".casefold()
-        return query.casefold() in haystack
+    def _rebuild() -> None:
+        """Пересчёт фильтра и плоского списка строк — только при смене запроса."""
+        nonlocal order, flat, flat_group, row_of_pos, total, version
+        q = query.casefold()
+        order = [i for i in base_order if not q or q in haystacks[i]]
+        flat, flat_group, row_of_pos = [], [], []
+        prev = None
+        for i in order:
+            if groups[i] != prev:
+                flat.append(-1)
+                flat_group.append(groups[i])
+                prev = groups[i]
+            row_of_pos.append(len(flat))
+            flat.append(i)
+            flat_group.append("")
+        total = len(order)
+        version += 1
 
-    def _filtered_order() -> list[int]:
-        return [i for i in _sorted_indices() if _matches(i)]
-
-    order = _filtered_order()
+    _rebuild()
 
     initial_selected = 0
     for pos, orig in enumerate(order):
@@ -519,200 +818,137 @@ def select_api_model_menu(
             initial_selected = pos
             break
 
-    total = len(order)
-    out_console = Console(file=sys.stderr, highlight=False)
-    render_width = max(20, out_console.width - 1)
+    layout_cache: dict = {}
 
-    term_h = shutil.get_terminal_size((80, 24)).lines
-    max_visible = max(3, term_h - 12)
+    def _layout(width: int) -> tuple[int, int, int, int, int]:
+        """Ширины колонок: (name, in, out, ctx, id); 0 — колонка не влезла.
 
-    def _build_rows() -> list:
-        """Плоский список строк таблицы: ('group', name) и ('model', order_idx).
-        Заголовки групп учитываются как реальные строки — окно скролла берётся
-        по этому списку, а не по позициям моделей, чтобы не вылезать за экран.
+        На узком терминале первым уходит ID, затем Ctx, затем цены: имя модели
+        не жертвуем никогда, без него список нечитаем.
         """
-        rows = []
-        prev_group = None
-        for orig_idx in order:
-            grp = _group_of_idx(orig_idx)
-            if grp != prev_group:
-                rows.append(("group", grp))
-                prev_group = grp
-            rows.append(("model", orig_idx))
-        return rows
-
-    def _row_of_model_pos(model_pos: int, rows: list) -> int:
-        seen = -1
-        for ridx, row in enumerate(rows):
-            if row[0] == "model":
-                seen += 1
-                if seen == model_pos:
-                    return ridx
-        return 0
-
-    def _viewport(sel: int, scroll_off: int, n_rows: int) -> tuple[int, int, int]:
-        if n_rows <= max_visible:
-            return 0, n_rows, 0
-        if sel < scroll_off:
-            scroll_off = sel
-        elif sel >= scroll_off + max_visible:
-            scroll_off = sel - max_visible + 1
-        scroll_off = max(0, min(scroll_off, n_rows - max_visible))
-        return scroll_off, scroll_off + max_visible, scroll_off
-
-    # Фиксированная ширина колонок: считаем единожды по всем строкам,
-    # чтобы при скролле viewport'а ширина не пересчитывалась и не дёргалась.
-    _marker = "> "
-    _model_w = _cell_width("Model")
-    _in_w = _cell_width("In")
-    _out_w = _cell_width("Out")
-    _ctx_w = _cell_width("Ctx")
-    _id_w = _cell_width("ID")
-    for orig in order:
-        m = api_models[orig]
-        _model_w = max(_model_w, _cell_width(m.display_name) + len(_marker))
-        _in_w = max(_in_w, _cell_width(f"${m.input_price:.2f}"))
-        _out_w = max(_out_w, _cell_width(f"${m.output_price:.2f}"))
-        _ctx_w = max(_ctx_w, _cell_width(_format_context_limit(m.context_window)))
-        _id_w = max(_id_w, _cell_width(m.id))
-        grp = _group_of_idx(orig)
-        _model_w = max(_model_w, _cell_width(grp.upper()))
-
-    scroll_offset = 0
-    flat_rows = _build_rows()
-    flat_total = len(flat_rows)
+        key = (width, version)
+        cached = layout_cache.get(key)
+        if cached is not None:
+            return cached
+        # Колонка не уже своего заголовка: обрезанный «Con…» читается хуже,
+        # чем пара лишних пробелов под коротким значением.
+        name_w = cell_width(tr("menu.col_model")) + 2
+        in_w = cell_width(tr("menu.col_input"))
+        out_w = cell_width(tr("menu.col_output"))
+        ctx_w = cell_width(tr("menu.col_context"))
+        id_w = cell_width(tr("menu.col_id"))
+        for i in order:
+            name, price_in, price_out, ctx, mid = static[i]
+            name_w = max(name_w, cell_width(name) + 2)
+            in_w = max(in_w, cell_width(price_in))
+            out_w = max(out_w, cell_width(price_out))
+            ctx_w = max(ctx_w, cell_width(ctx))
+            id_w = max(id_w, cell_width(mid))
+        free = width - ROW_INDENT - 1
+        for drop in range(5):
+            widths = [in_w, out_w, ctx_w, min(id_w, 34)]
+            for d in range(drop):
+                widths[3 - d] = 0
+            used = sum(w + 2 for w in widths if w)
+            if free - used >= 16 or drop == 4:
+                res = (max(10, min(name_w, free - used)), *widths)
+                layout_cache[key] = res
+                return res
+        return (16, 0, 0, 0, 0)  # pragma: no cover — цикл всегда возвращает раньше
 
     def render_fn(sel: int) -> str:
-        nonlocal scroll_offset, flat_rows, flat_total
-        flat_rows = _build_rows()
-        flat_total = len(flat_rows)
-        sel_row = _row_of_model_pos(sel, flat_rows)
-        vp_start, vp_end, scroll_offset = _viewport(sel_row, scroll_offset, flat_total)
+        pal = Palette()
+        width = render_width()
+        name_w, in_w, out_w, ctx_w, id_w = _layout(width)
+        budget = max(3, overlay_rows(reserve=3))
+        sel_row = row_of_pos[sel] if 0 <= sel < len(row_of_pos) else 0
+        start, end, above, below = scroll_window(len(flat), sel_row, budget)
 
-        table = Table(
-            show_header=True,
-            header_style="bold dim",
-            border_style="dim",
-            padding=(0, 1),
-            show_edge=False,
-            show_lines=False,
-            width=render_width,
-        )
-        table.add_column("Model", width=_model_w, max_width=_model_w, min_width=_model_w, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("In", justify="right", width=_in_w, max_width=_in_w, min_width=_in_w, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("Out", justify="right", width=_out_w, max_width=_out_w, min_width=_out_w, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("Ctx", justify="right", width=_ctx_w, max_width=_ctx_w, min_width=_ctx_w, no_wrap=True, header_style="bold dim yellow")
-        table.add_column("ID", no_wrap=True, min_width=_id_w, max_width=_id_w, header_style="bold dim yellow")
+        title = tr("menu.models_for", name=provider_name) if provider_name \
+            else tr("menu.model_title")
+        head = [
+            section_line(title, width, bold=True, pal=pal,
+                         right=f"{sel + 1}/{total}" if total else ""),
+            search_line(query, width, "type to search by name or id", pal),
+        ]
+        if not order:
+            head.append(f"  {pal.dim}{tr('common.no_data')}{pal.reset}")
+            return "\n".join(head)
 
-        for ridx in range(vp_start, vp_end):
-            row = flat_rows[ridx]
-            if row[0] == "group":
-                table.add_row(
-                    Text(row[1].upper(), style="bold dim yellow"),
-                    Text(""), Text(""), Text(""), Text(""),
-                )
+        cols = [("  " + cell(tr("menu.col_model"), name_w - 2), pal.dim)]
+        if in_w:
+            cols.append(("  " + cell(tr("menu.col_input"), in_w, "right"), pal.dim))
+        if out_w:
+            cols.append(("  " + cell(tr("menu.col_output"), out_w, "right"), pal.dim))
+        if ctx_w:
+            cols.append(("  " + cell(tr("menu.col_context"), ctx_w, "right"), pal.dim))
+        if id_w:
+            cols.append(("  " + cell(tr("menu.col_id"), id_w), pal.dim))
+        head.append(row_line(cols, width, pal=pal))
+
+        lines = head
+        if above:
+            lines.append(more_note(above, up=True))
+        for ridx in range(start, end):
+            orig = flat[ridx]
+            if orig < 0:
+                lines.append(row_line(
+                    [(clip(flat_group[ridx].upper(), name_w), pal.bold + pal.accent)],
+                    width, pal=pal))
                 continue
-            orig_idx = row[1]
-            m = api_models[orig_idx]
-            is_current = m.id == current_id
-            is_selected = ridx == sel_row
-            marker = "> " if is_selected else "  "
-
-            input_str = f"${m.input_price:.2f}"
-            output_str = f"${m.output_price:.2f}"
-            ctx_str = _format_context_limit(m.context_window)
-
-            row_bg = Style(bgcolor=t("bg_select")) if is_selected else Style.null()
-            if is_current and is_selected:
-                style = "bold green"
-            elif is_current:
-                style = "green"
-            elif is_selected:
-                style = "bold white"
-            else:
-                style = ""
-
-            table.add_row(
-                Text(marker + m.display_name, style=style),
-                Text(input_str, style=style or "cyan"),
-                Text(output_str, style=style or "yellow"),
-                Text(ctx_str, style=style or "dim"),
-                Text(m.id, style=style or "dim"),
-                style=row_bg,
-            )
-
-        scroll_hint = ""
-        if flat_total > max_visible:
-            scroll_hint = f"({sel + 1}/{total})"
-            if vp_start > 0 and vp_end < flat_total:
-                scroll_hint = f"↑{vp_start} ↓{flat_total - vp_end} " + scroll_hint
-            elif vp_start > 0:
-                scroll_hint = f"↑{vp_start} " + scroll_hint
-            elif vp_end < flat_total:
-                scroll_hint = f"↓{flat_total - vp_end} " + scroll_hint
-
-        search_text = f"🔍 {query}▌" if query else "🔍 type to search by name or id..."
-        search_style = "bold cyan" if query else "dim"
-        title = f"Models: {provider_name}" if provider_name else "Model selection"
-        panel = Panel(
-            table,
-            title=title,
-            subtitle=("prices per 1M tokens · " + scroll_hint) if scroll_hint else "prices per 1M tokens",
-            title_align="left",
-            subtitle_align="right",
-            border_style="dim",
-            padding=(0, 1),
-        )
-        search_panel = Panel(
-            Text(search_text, style=search_style),
-            title="Search",
-            title_align="left",
-            border_style="cyan" if query else "dim",
-            padding=(0, 1),
-        )
-
-        buf = StringIO()
-        render_console = Console(file=buf, highlight=False, force_terminal=True, width=render_width)
-        render_console.print(search_panel)
-        render_console.print(panel)
-        return buf.getvalue()
+            name, price_in, price_out, ctx, mid = static[orig]
+            is_current = mid == current_id
+            # Колонка состояния фиксированной ширины: иначе активная модель
+            # съезжала бы вправо относительно соседних строк.
+            cells = [("● " if is_current else "  ", pal.success),
+                     (cell(name, name_w - 2), pal.success if is_current else "")]
+            if in_w:
+                cells.append(("  " + cell(price_in, in_w, "right"), pal.dim))
+            if out_w:
+                cells.append(("  " + cell(price_out, out_w, "right"), pal.dim))
+            if ctx_w:
+                cells.append(("  " + cell(ctx, ctx_w, "right"), pal.dim))
+            if id_w:
+                cells.append(("  " + cell(mid, id_w), pal.muted))
+            lines.append(row_line(cells, width, selected=ridx == sel_row, pal=pal))
+        if below:
+            lines.append(more_note(below, up=False))
+        return "\n".join(lines)
 
     def on_key(key: str, sel: int):
-        nonlocal order, query, scroll_offset, total
+        nonlocal query
+        key = _normalize_panel_key(key)
+
+        def _refilter(keep: int):
+            _rebuild()
+            layout_cache.clear()
+            return (True, min(keep, max(0, total - 1)), total)
+
         if key == "backspace":
             if query:
                 query = query[:-1]
-                order = _filtered_order()
-                total = len(order)
-                scroll_offset = 0
-                return (True, min(sel, max(0, total - 1)), total)
+                return _refilter(sel)
             return None
         if key == "escape":
             if query:
                 query = ""
-                order = _filtered_order()
-                total = len(order)
-                scroll_offset = 0
-                return (True, min(sel, max(0, total - 1)), total)
+                return _refilter(sel)
             return (False, sel, total)
         if len(key) == 1 and key.isprintable():
             query += key
-            order = _filtered_order()
-            total = len(order)
-            scroll_offset = 0
-            return (True, 0, total)
+            return _refilter(0)
         return None
 
-    result_pos = _panel_menu_direct(
-        render_fn, sys.stderr,
-        "type to search · ↑↓ navigate · enter select · backspace delete · esc clear/cancel",
+    result_pos = await _run_panel(
+        render_fn,
+        key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "select"),
+                  ("esc", "close")),
         total, initial_selected,
         on_key=on_key,
-        text_input=True,
     )
-    if result_pos is None:
+    if result_pos is None or not order:
         return None
-    return order[result_pos]
+    return order[min(result_pos, len(order) - 1)]
 
 
 def _panel_menu_direct(

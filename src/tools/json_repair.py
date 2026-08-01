@@ -354,9 +354,6 @@ def extract_field_value(text: str, field: str) -> str | None:
         end_pos = m.end()
         quote_char = text[end_pos - 1] if end_pos > 0 else '"'
 
-        if field == "content":
-            return _extract_content_value_greedy(text, end_pos, quote_char)
-
         value_chars = []
         i = end_pos
         while i < len(text):
@@ -386,34 +383,6 @@ def extract_field_value(text: str, field: str) -> str | None:
             i += 1
 
     return None
-
-
-def _extract_content_value_greedy(
-    text: str, value_start: int, quote_char: str
-) -> str | None:
-    remaining = text[value_start:]
-
-    best_end = None
-    i = len(remaining) - 1
-    while i >= 0:
-        if remaining[i] == quote_char:
-            num_bs = 0
-            j = i - 1
-            while j >= 0 and remaining[j] == "\\":
-                num_bs += 1
-                j -= 1
-            if num_bs % 2 != 0:
-                i -= 1
-                continue
-            after = remaining[i + 1 :].strip()
-            if not after or after[0] in (",", "}", "]"):
-                best_end = i
-                break
-        i -= 1
-
-    raw_value = remaining if best_end is None else remaining[:best_end]
-
-    return decode_json_string_value(raw_value)
 
 
 def decode_json_string_value(raw: str) -> str:

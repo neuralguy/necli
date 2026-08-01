@@ -7,17 +7,25 @@ import subprocess
 import sys
 
 from logger import logger
-from tools._paths import (
-    get_working_dir,
-    set_working_dir,  # noqa: F401 (re-exported)
-)
-from tools._paths import resolve_path as _resolve_path  # noqa: F401 (re-exported)
+from tools._paths import get_working_dir
 from tools.models import ToolCall, ToolResult
 
 _EXECUTION_TIMEOUT = 60
 
+# Regex для rm -rf / (корень, не /path) — блокируем только когда / является
+# отдельным аргументом, а не началом пути.
+_RM_RF_ROOT_RE = re.compile(
+    r'\brm\b\s+.*?(?:-rf|-r\s+-f)\s+/(?:\s|$|[;&|>`\n#])',
+    re.IGNORECASE,
+)
+
+# sudo — блокируем в любом месте команды (начало строки, после &&, ||, ;, |, и т.д.)
+_SUDO_RE = re.compile(
+    r'(?:^|[;&|`\n(])\s*sudo\b',
+    re.IGNORECASE,
+)
+
 _BLOCKED_COMMANDS = [
-    "rm -rf /",
     "rm -rf /*",
     "mkfs",
     "dd if=/dev/zero",
@@ -59,6 +67,12 @@ def _is_blocked(command: str) -> str | None:
     for blocked in _BLOCKED_COMMANDS:
         if blocked in cmd_stripped:
             return f"Заблокировано: '{blocked}'"
+    # rm -rf / (корень, не /path) — проверяем через regex, чтобы не блокировать
+    # безопасные команды вроде rm -rf /tmp
+    if _RM_RF_ROOT_RE.search(command.strip()):
+        return "Заблокировано: 'rm -rf /'"
+    if _SUDO_RE.search(command.strip()):
+        return "Заблокировано: sudo — запрещено. Используйте инструменты necli напрямую без sudo."
     return None
 
 
