@@ -23,8 +23,6 @@ from tools.models import ToolCall, ToolResult
 
 _resolve = resolve_path
 
-MAX_READ_FILES = 20
-
 _READ_CACHE: dict[str, dict[str, dict]] = {}
 
 

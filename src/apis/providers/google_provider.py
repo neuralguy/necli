@@ -495,6 +495,7 @@ def create_google_provider(
         max_retries=definition.max_retries or 3,
     )
     provider._provider_name = definition.name
+    provider._provider_id = definition.id
     provider._proxy = definition.proxy
     provider._api_credentials = get_api_credentials(definition.id)
     provider._base_url = (definition.base_url or "https://generativelanguage.googleapis.com").rstrip("/")

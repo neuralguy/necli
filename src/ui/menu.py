@@ -31,12 +31,12 @@ from ui.overlays import (
     BOLD,
     DIM,
     RESET,
-    WHITE,
     cell_width,
     clip,
     key_hints,
     more_note,
     pad,
+    white_fg,
     paint,
     role_fg,
     row,
@@ -209,7 +209,7 @@ class Palette:
         self.reset = RESET
         self.dim = DIM
         self.bold = BOLD
-        self.white = WHITE
+        self.white = white_fg()
         self.accent = role_fg("accent")
         self.success = role_fg("success")
         self.warning = role_fg("warning")
@@ -255,7 +255,7 @@ def search_line(query: str, width: int, placeholder: str = "",
     """Строка поиска панельных меню: `/ запрос▌` либо приглушённая подсказка."""
     room = max(4, width - ROW_INDENT - 3)
     if query:
-        return ("  " + paint("/", "accent") + " " + BOLD + WHITE
+        return ("  " + paint("/", "accent") + " " + BOLD + white_fg()
                 + clip(query, room) + RESET + paint("▌", "accent"))
     return f"  {DIM}/ {clip(placeholder or 'type to search', room)}{RESET}"
 
@@ -456,7 +456,7 @@ def select_menu(
     BOLD_BLUE = '\x1b[1m' + _hex_to_ansi_fg(t('accent'))  # noqa: N806
     GREEN = _hex_to_ansi_fg(t('success'))  # noqa: N806
     BOLD = '\x1b[1m'  # noqa: N806
-    WHITE = '\x1b[38;2;255;255;255m'  # noqa: N806
+    WHITE = _hex_to_ansi_fg(t('fg_primary'))  # noqa: N806
     BG_SELECT = _hex_to_ansi_bg(t('bg_select'))  # noqa: N806
 
     def _render():

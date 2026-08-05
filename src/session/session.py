@@ -28,16 +28,8 @@ class Session:
         self.created_at = time.time()
         self.updated_at = time.time()
         self.messages: list[Message] = []
-        # Дерево альтернатив: для каждого parent_id — список Message-вариантов.
-        # Активный путь хранится в self.messages (по одному ребёнку на родителя),
-        # а в _branch_alternatives живут НЕ выбранные альтернативы.
-        # Корень — синтетический parent_id=""; первые user-message получают parent_id="".
-        self._branch_alternatives: dict[str, list[Message]] = {}
-        # Цепочки сообщений альтернативных веток по id первого сообщения хвоста.
-        self._branch_tails: dict[str, list[Message]] = {}
         self._cost_cache: dict | None = None
         self._compressed_stats: dict | None = None
-        self.chat_url: str = ""
         self.dir = config.SESSIONS_DIR / self.id
 
     def ensure_dir(self):
@@ -231,7 +223,6 @@ class Session:
         )
         self.add_system_message(meta, model=model)
         self.add_system_message(compressed_text, model=model)
-        self.chat_url = ""
 
     def compress_reset_partial(
         self, compressed_text: str, tail_index: int, model: str = "",
@@ -404,7 +395,6 @@ class Session:
             "title": self.title,
             "site": self.site,
             "working_dir": self.working_dir,
-            "chat_url": self.chat_url,
             "created_at": self.created_at,
             "created": format_msk(self.created_at),
             "updated_at": self.updated_at,

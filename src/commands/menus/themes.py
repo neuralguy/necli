@@ -18,6 +18,7 @@ from commands.menus._style import card_menu
 from config.i18n import t as _
 from config.themes import (
     BUILTIN_THEMES,
+    FALLBACK,
     ROLE_LABELS,
     ROLES,
     get_active_theme_name,
@@ -29,7 +30,7 @@ from config.themes import (
     set_theme,
 )
 from ui import overlays
-from ui.menu import overlay_rows, render_width
+from ui.menu import render_width
 
 _HEX_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 
@@ -39,21 +40,20 @@ _SWATCH_ROLES = ("accent", "success", "warning", "error", "info", "magenta", "pu
 _preview_cache: dict[tuple, str] = {}
 
 
-def _preview(colors: dict, key: str, width: int, rows_left: int) -> str:
-    """Превью темы, обрезанное под остаток высоты экрана.
+def _preview(colors: dict, key: str, width: int) -> str:
+    """Превью темы целиком.
 
     Отступ такой же, как у строк списка: превью — продолжение виджета, а не
-    отдельный блок, и левый край должен совпадать.
+    отдельный блок, и левый край должен совпадать. Обрезку по высоте делает
+    виджет (превью приоритетнее списка), а не этот хелпер, — иначе на узких
+    экранах превью резалось первым, оставляя в меню один блок Shell.
     """
-    if rows_left < 5:
-        return ""
     cached = _preview_cache.get((key, width))
     if cached is None:
         body = render_theme_preview(colors, width=width).rstrip("\n")
         cached = "\n".join("  " + ln for ln in body.split("\n"))
         _preview_cache[(key, width)] = cached
-    lines = cached.split("\n")
-    return "\n".join(["", *lines[:rows_left - 1]])
+    return "\n".join(["", *cached.split("\n")])
 
 
 def _preview_width() -> int:
@@ -93,8 +93,7 @@ async def themes_interactive():
                 colors, key = BUILTIN_THEMES[names[sel]], names[sel]
             else:
                 colors, key = get_theme(), "current"
-            width = _preview_width()
-            return _preview(colors, key, width, overlay_rows() - len(names) - 4)
+            return _preview(colors, key, _preview_width())
 
         choice = await card_menu(
             items,
@@ -102,6 +101,7 @@ async def themes_interactive():
             current=initial,
             hint_text=_("themes.hint_apply"),
             footer_fn=footer,
+            expand=True,
         )
 
         if choice is None:
@@ -141,7 +141,7 @@ async def _theme_customize():
         roles_list = list(ROLES)
         items = []
         for role in roles_list:
-            color = current_colors.get(role, "#E8E8E8")
+            color = current_colors.get(role, FALLBACK)
             items.append({
                 "icon": "✎" if role in custom_overrides else " ",
                 "icon_style": "warning",
@@ -152,9 +152,8 @@ async def _theme_customize():
             })
         items.append({"label": _("common.back")})
 
-        def footer(_sel: int, colors=current_colors, n=len(roles_list)) -> str:
-            return _preview(colors, "current", _preview_width(),
-                            overlay_rows() - n - 4)
+        def footer(_sel: int, colors=current_colors) -> str:
+            return _preview(colors, "current", _preview_width())
 
         choice = await card_menu(
             items,
@@ -162,6 +161,7 @@ async def _theme_customize():
             facts=[_("themes.cust_subtitle")],
             hint_text=_("themes.hint_edit"),
             footer_fn=footer,
+            expand=True,
         )
 
         if choice is None or choice == len(roles_list):
@@ -169,7 +169,7 @@ async def _theme_customize():
 
         role = roles_list[choice]
         role_label = ROLE_LABELS.get(role, role)
-        current_val = current_colors.get(role, "#E8E8E8")
+        current_val = current_colors.get(role, FALLBACK)
 
         new_val = await overlays.ask_text(
             f"{role_label} · {_('themes.cust_new_color')} ({current_val}):",

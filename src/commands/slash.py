@@ -153,6 +153,7 @@ async def _handle_slash(
         if not active_api:
             return r
         from apis.registry import get_definitions
+        from apis.config import get_provider_balance
         defns = get_definitions()
         # Активный провайдер идёт первым, затем остальные включённые.
         ordered_ids = [active_api] + [
@@ -165,10 +166,12 @@ async def _handle_slash(
             defn = defns.get(pid)
             if not defn or not defn.models:
                 continue
+            balance = get_provider_balance(pid)
+            label = f"{defn.name} · {balance:g}$" if balance else defn.name
             for m in defn.models:
                 api_models.append(m)
                 model_providers.append(pid)
-                group_labels.append(defn.name)
+                group_labels.append(label)
         if not api_models:
             return r
         current_api_model = config.get_active_api_model()
@@ -246,11 +249,6 @@ async def _handle_slash(
         if target is None:
             return r
         r.change_dir = target
-        return r
-
-    if head == "/ssh":
-        from commands.menus.ssh import ssh_interactive
-        await _call_menu(ssh_interactive)
         return r
 
     if head == "/skills":

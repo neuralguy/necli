@@ -24,6 +24,7 @@ import inspect
 import logging
 import os
 import sys
+from collections.abc import Callable
 
 import click
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -49,6 +50,7 @@ from commands.interactive_status import build_status_line
 from commands.slash import _handle_slash
 from commands.slash_handler import handle_slash_result
 from config.i18n import t as tr
+from config.themes import t
 from session import Session
 from ui.clipboard import cleanup_old_images
 from ui.file_context import expand_at_references
@@ -141,11 +143,37 @@ def _status_extra(state: InteractiveState) -> str:
     return ""
 
 
+def _make_status_refresher(state: InteractiveState) -> Callable[[], None]:
+    """Хук «после действия агента» — потокобезопасная обёртка над refresh.
+
+    Инструменты исполняются в executor-потоке (run_in_executor), а прямое
+    выполнение _refresh_status оттуда читало бы очередь параллельно с
+    loop-потоком. Перекидываем refresh на loop приложения.
+    """
+    def _refresh() -> None:
+        shell = get_shell()
+        loop = getattr(shell, "_loop", None) if shell is not None else None
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if loop is not None and running is not loop:
+            try:
+                loop.call_soon_threadsafe(_refresh_status, state)
+            except Exception:
+                logger.debug("status refresh reschedule failed", exc_info=True)
+            return
+        _refresh_status(state)
+    return _refresh
+
+
 def _refresh_status(state: InteractiveState) -> None:
     """Обновляет верхнюю линию рамки и перевязывает ctx для Ctrl+O replay.
 
     Зовётся там, где прежний код печатал separator: после хода, после
-    slash-команды и на каждое изменение очереди.
+    slash-команды и на каждое изменение очереди. Дополнительно вешает на ctx
+    хук refresh_status — по нему loop агента обновляет панель после каждого
+    инструмента, ответа и субагента.
     """
     shell = get_shell()
     if shell is not None:
@@ -165,6 +193,7 @@ def _refresh_status(state: InteractiveState) -> None:
             # ctx пересоздаётся внутри run_agent — привязки надо обновлять,
             # иначе Ctrl+O увидит ctx без prompt_input.
             ctx.prompt_input = state.prompt_input
+            ctx.refresh_status = _make_status_refresher(state)
     except Exception:
         logger.debug("rebind ctx status failed", exc_info=True)
 
@@ -209,7 +238,7 @@ def interactive(model, workdir, resume, api_provider):
         reload_providers()
         defn = get_definition(api_provider)
         if not defn:
-            console.print(f"[red]{tr('boot.api_not_found', name=api_provider)}[/red]")
+            console.print(f"[{t('error')}]{tr('boot.api_not_found', name=api_provider)}[/{t('error')}]")
             console.print(f"[dim]{tr('boot.add_via_api')}[/dim]")
             return
         saved_model = config.get_active_api_model() if config.get_active_api() == api_provider else ""
@@ -218,7 +247,7 @@ def interactive(model, workdir, resume, api_provider):
         else:
             api_model = defn.default_model or (defn.models[0].id if defn.models else "")
         if not api_model:
-            console.print(f"[red]{tr('boot.no_models_for', name=api_provider)}[/red]")
+            console.print(f"[{t('error')}]{tr('boot.no_models_for', name=api_provider)}[/{t('error')}]")
             return
         config.set_active_api(api_provider)
         config.set_active_api_model(api_model)
@@ -264,7 +293,7 @@ def interactive(model, workdir, resume, api_provider):
             from session import storage as _storage
             session = _storage.load(resume)
             if not session:
-                console.print(f"[red]{tr('boot.session_not_found', name=resume)}[/red]")
+                console.print(f"[{t('error')}]{tr('boot.session_not_found', name=resume)}[/{t('error')}]")
                 return
         else:
             session = Session(working_dir=workdir)
@@ -344,9 +373,9 @@ def interactive(model, workdir, resume, api_provider):
                                 reply_markup=_build_reply_keyboard(),
                             )
                         else:
-                            tg_warn = f"  [yellow]⚠ Telegram: {escape(info)}[/yellow]"
+                            tg_warn = f"  [{t('warning')}]⚠ Telegram: {escape(info)}[/{t('warning')}]"
                     except Exception as e:
-                        tg_warn = f"  [yellow]⚠ Telegram: {escape(str(e))}[/yellow]"
+                        tg_warn = f"  [{t('warning')}]⚠ Telegram: {escape(str(e))}[/{t('warning')}]"
                         logger.error("tg start failed: %s", e, exc_info=True)
                 else:
                     tg_warn = f"[dim]{tr('boot.telegram_enabled_not_configured')}[/dim]"
@@ -365,7 +394,7 @@ def interactive(model, workdir, resume, api_provider):
                 logger.debug("store welcome capture failed", exc_info=True)
 
             for _sid, _err in mcp_errors:
-                console.print(f"  [yellow]⚠ MCP/{_sid}:[/yellow] [dim]{escape(_err)}[/dim]")
+                console.print(f"  [{t('warning')}]⚠ MCP/{_sid}:[/{t('warning')}] [dim]{escape(_err)}[/dim]")
 
             if tg_warn:
                 console.print(tg_warn)
@@ -492,6 +521,7 @@ def interactive(model, workdir, resume, api_provider):
                                 await task
                     await queue.stop()
                     await _stop_recap_tasks(state)
+                    await _stop_round_compress_task(state)
                     await shell.stop()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await asyncio.wait_for(app_task, timeout=3)
@@ -541,6 +571,12 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     печатать его в момент нажатия Enter, оно вклинится в середину ответа на
     предыдущее сообщение — воркер и главный цикл работают одновременно.
     """
+    # Долгий API-запрос автопруна выполняется отдельно от очереди. Если его
+    # summary уже готов, применяем его здесь — до добавления нового user и до
+    # запуска следующего API-хода. Сама операция занимает только локальную
+    # замену префикса истории и не задерживает ввод на время генерации summary.
+    await _apply_pending_round_compress(state)
+
     status = build_status_line(state)
     for text in texts:
         state.prompt_input.echo_submitted(text)
@@ -597,6 +633,13 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     except Exception:
         import logging as _lg
         _lg.getLogger("agent.render_store").exception("add_user failed")
+
+    # Панель над вводом обновляется на старте хода (счётчик сообщений уже
+    # вырос), а главное — здесь на ctx вешается хук refresh_status, по которому
+    # loop агента обновляет панель после каждого инструмента и ответа. До этого
+    # места ctx может ещё не существовать (первый ход), и привязка потерялась
+    # бы, оставив промежуточные обновления молчаливыми no-op.
+    _refresh_status(state)
 
     agent_message = user
     # Маппинг [imageN] → реальный путь, чтобы агент мог открыть
@@ -664,7 +707,20 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
         _set_activity_status(state, "idle" if _cancelled else "done")
     except Exception as e:
         _set_activity_status(state, "idle")
-        _static(f"\n  [red]{tr('send.error_run', error=str(e))}[/red]")
+        _static(f"\n  [{t('error')}]{tr('send.error_run', error=str(e))}[/{t('error')}]")
+
+    # Если фото не прошло (модель без поддержки изображений или файл
+    # повреждён) — убираем его из истории сессии, чтобы после /resume оно не
+    # прикрепилось снова и не уронило следующий запрос.
+    if message_images:
+        try:
+            from apis.agent_adapter import get_api_session
+            api_sess = get_api_session()
+            if api_sess is not None and getattr(api_sess, "image_fallback", False):
+                user_message.attachments = []
+                logger.info("image fallback: photo removed from session history")
+        except Exception:
+            logger.debug("image fallback history cleanup failed", exc_info=True)
 
     _print_response_separator()
 
@@ -675,6 +731,11 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
 
     # ── Autoprune round-compression (режим без кэша): каждые N раундов / порог токенов ──
     await _maybe_round_compress(state)
+
+    # Очень быстрый провайдер мог успеть вернуть summary до конца этого хода.
+    # Применяем его сейчас; обычно эта ветка пустая, а завершившаяся позже
+    # задача применит результат сама, когда очередь станет idle.
+    await _apply_pending_round_compress(state)
 
     # ── Отложенные запросы из Telegram-меню ──
     if getattr(state, "_tg_compress_requested", False):
@@ -687,7 +748,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
 async def _run_slash(state: InteractiveState, text: str) -> None:
     """Выполняет slash-команду (и служебные команды очереди)."""
     if text == _CMD_BG_RESUME:
-        if await _resume_agent_for_background(state, _get_tg_bridge()):
+        if await _resume_agent_for_background(state):
             _print_response_separator()
             _schedule_recap_output(state)
         _refresh_status(state)
@@ -757,7 +818,7 @@ async def _tg_pump(state: InteractiveState, tg_bridge) -> None:
         if shell is None:
             continue
         _static(
-            f"\n  [bold magenta]📱 TG[/bold magenta]"
+            f"\n  [bold {t('magenta')}]📱 TG[/bold {t('magenta')}]"
             f" [dim]@{escape(msg.username or str(msg.user_id))}:[/dim]"
             f" {escape(text[:200])}"
         )
@@ -956,6 +1017,18 @@ async def _stop_recap_tasks(state: InteractiveState) -> None:
             await task
 
 
+async def _stop_round_compress_task(state: InteractiveState) -> None:
+    """Не оставлять запрос автопруна жить после закрытия интерактивной сессии."""
+    task = getattr(state, "_round_compress_task", None)
+    state._round_compress_task = None
+    state._round_compress_pending = None
+    if task is None or task.done():
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
+
 def _autoprune_active() -> bool:
     """True когда autoprune режим активен: у активного провайдера ВЫКЛЮЧЕН prompt cache.
 
@@ -1003,8 +1076,13 @@ async def _maybe_round_compress(state: InteractiveState) -> None:
     hit_tokens = sess.context_tokens >= at_tokens
     if not (hit_rounds or hit_tokens):
         return
-    # Запоминаем обработанное число раундов ДО сжатия.
-    state._round_compress_rounds = rounds
+    # Не запускаем два summary одновременно. Новый триггер проверится после
+    # следующего раунда, когда текущий результат уже будет применён.
+    task = getattr(state, "_round_compress_task", None)
+    if task is not None and not task.done():
+        return
+    if getattr(state, "_round_compress_pending", None) is not None:
+        return
 
     # Сжимаем всё, кроме последнего раунда (последний остаётся дословно).
     tail_index = sess.tail_split_index(1)
@@ -1016,39 +1094,138 @@ async def _maybe_round_compress(state: InteractiveState) -> None:
     if not history_text.strip():
         return
 
+    # Запоминаем обработанное число раундов ДО запуска, чтобы один и тот же
+    # порог не создавал повторные фоновые запросы.
+    state._round_compress_rounds = rounds
+    compress_prompt = ROUND_COMPRESS_PROMPT + "\n\n" + history_text
+    _static(f"[dim]⚙ {tr('autoprune.round_compress_start', n=rounds)}[/dim]")
+    state._round_compress_task = asyncio.create_task(
+        _generate_round_compress(
+            state,
+            session_id=sess.id,
+            rounds=rounds,
+            tail_index=tail_index,
+            history_text=history_text,
+            compress_prompt=compress_prompt,
+            model=state.cur_model,
+        ),
+        name=f"autoprune-compress-{rounds}",
+    )
+
+
+async def _generate_round_compress(
+    state: InteractiveState,
+    *,
+    session_id: str,
+    rounds: int,
+    tail_index: int,
+    history_text: str,
+    compress_prompt: str,
+    model: str,
+) -> None:
+    """Сгенерировать summary, не занимая последовательную очередь агента."""
     try:
-        from apis.agent_adapter import (
-            api_compress_history,
-            api_new_chat,
-            restore_api_session_history,
-        )
-        compress_prompt = ROUND_COMPRESS_PROMPT + "\n\n" + history_text
-        _static(f"[dim]⚙ {tr('autoprune.round_compress_start', n=rounds)}[/dim]")
-        compressed = await api_compress_history(compress_prompt)
-        compressed = compressed.strip()
+        from apis.agent_adapter import api_compress_history
+
+        compressed = (await api_compress_history(compress_prompt)).strip()
         if not compressed:
             logger.warning("round compress: empty summary, skipping")
             return
+        # Никаких мутаций Session во время активного хода: готовый результат
+        # лежит отдельно и применяется только на безопасной границе.
+        state._round_compress_pending = {
+            "session_id": session_id,
+            "rounds": rounds,
+            "tail_index": tail_index,
+            "history_text": history_text,
+            "compressed": compressed,
+            "model": model,
+        }
+        # Если очередь уже простаивает, следующего хода для commit может не
+        # быть. Даём worker один тик завершить текущий _run_turn и применяем
+        # summary сами только после перехода в idle.
+        await asyncio.sleep(0)
+        queue = getattr(state, "agent_queue", None)
+        if queue is None or not queue.busy:
+            await _apply_pending_round_compress(state)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error("round compress failed: %s", e, exc_info=True)
+        _static(
+            f"  [{t('error')}]✗ "
+            f"{tr('autoprune.round_compress_failed', error=str(e))}"
+            f"[/{t('error')}]"
+        )
+    finally:
+        current = asyncio.current_task()
+        if getattr(state, "_round_compress_task", None) is current:
+            state._round_compress_task = None
+
+
+async def _apply_pending_round_compress(state: InteractiveState) -> bool:
+    """Быстро применить готовый summary, сохранив добавленные после него ходы."""
+    pending = getattr(state, "_round_compress_pending", None)
+    if not pending:
+        return False
+
+    sess = state.session
+    tail_index = int(pending["tail_index"])
+    same_source = (
+        sess.id == pending["session_id"]
+        and tail_index > 0
+        and len(sess.messages) >= tail_index
+        and sess.build_compress_text(upto_index=tail_index) == pending["history_text"]
+    )
+    # /new, ручной /compress или другая перестройка истории могли заменить
+    # исходный префикс. В таком случае старый summary применять опасно.
+    if not same_source:
+        state._round_compress_pending = None
+        logger.info("round compress: source history changed, dropping stale summary")
+        return False
+
+    state._round_compress_pending = None
+    try:
+        rounds = int(pending["rounds"])
         from session import storage as _storage
-        sess.compress_reset_partial(compressed, tail_index, model=state.cur_model)
+
+        sess.compress_reset_partial(
+            str(pending["compressed"]),
+            tail_index,
+            model=str(pending["model"]),
+        )
         _storage.save(sess)
         from tools.file_ops.read import clear_read_cache
+
         clear_read_cache()
-        # Пересобрать API-сессию из обновлённой necli-истории.
+        from apis.agent_adapter import api_new_chat, restore_api_session_history
+
         await api_new_chat()
         restore_api_session_history(sess)
         state.pending_context = None
-        logger.info("round compress: %s → summary (rounds=%s, tokens=%s)", rounds, rounds, sess.context_tokens)
-        _static(f"[green]✓[/green] {tr('autoprune.round_compress_done', rounds=rounds)}")
+        logger.info(
+            "round compress applied: rounds=%s tokens=%s",
+            rounds,
+            sess.context_tokens,
+        )
+        _static(
+            f"[{t('success')}]✓[/{t('success')}] "
+            f"{tr('autoprune.round_compress_done', rounds=rounds)}"
+        )
         _static("")
+        return True
     except Exception as e:
-        logger.error("round compress failed: %s", e, exc_info=True)
-        _static(f"  [red]✗ {tr('autoprune.round_compress_failed', error=str(e))}[/red]")
+        logger.error("round compress apply failed: %s", e, exc_info=True)
+        _static(
+            f"  [{t('error')}]✗ "
+            f"{tr('autoprune.round_compress_failed', error=str(e))}"
+            f"[/{t('error')}]"
+        )
+        return False
 
 
 async def _maybe_auto_compress(state: InteractiveState) -> None:
-    """Если контекст занят на ≥90% от лимита модели — автоматически сжимает историю."""
-    from commands.slash_handler import _handle_compress
+    """Запустить safety-сжатие ≥90% в фоне, не занимая очередь агента."""
     from models import get_context_limit
 
     try:
@@ -1063,20 +1240,49 @@ async def _maybe_auto_compress(state: InteractiveState) -> None:
         last_at = getattr(state, "_auto_compress_last_msg", -1)
         if last_at == state.session.message_count:
             return
+        task = getattr(state, "_round_compress_task", None)
+        if task is not None and not task.done():
+            return
+        if getattr(state, "_round_compress_pending", None) is not None:
+            return
         logger.info(
-            "auto-compress trigger: session={} ctx={}/{} ({:.0%})",
-            state.session.id[:16], ctx_tokens, ctx_limit, ratio,
+            "auto-compress trigger: session=%s ctx=%s/%s (%.0f%%)",
+            state.session.id[:16], ctx_tokens, ctx_limit, ratio * 100,
         )
         _static(
-            f"  [yellow]⚠[/yellow] {tr('send.auto_compress', used=f'{ctx_tokens:,}', limit=f'{ctx_limit:,}', pct=f'{int(ratio*100)}')}"
+            f"  [{t('warning')}]⚠[/{t('warning')}] {tr('send.auto_compress', used=f'{ctx_tokens:,}', limit=f'{ctx_limit:,}', pct=f'{int(ratio*100)}')}"
         )
-        # Каскад: сначала инкрементальная компрессия (сжать старое, последние
-        # раунды оставить дословно). Если раундов мало — полный compress.
-        from commands.slash_handler import _handle_compress_incremental
-        did_incremental = await _handle_compress_incremental(state)
-        if not did_incremental:
-            await _handle_compress(state)
+
+        sess = state.session
+        # Обычно оставляем последние четыре раунда дословно. Если история ещё
+        # короткая, summary строится по всему текущему снимку; сообщения,
+        # пришедшие во время генерации, всё равно останутся хвостом при commit.
+        tail_index = sess.tail_split_index(4)
+        if tail_index <= 0:
+            tail_index = len(sess.messages)
+        if tail_index <= 0:
+            return
+        history_text = sess.build_compress_text(upto_index=tail_index)
+        if not history_text.strip():
+            return
+
+        from system_prompt import COMPRESS_PROMPT
+
+        rounds = sess.message_count
+        state._round_compress_rounds = rounds
         state._auto_compress_last_msg = state.session.message_count
+        state._round_compress_task = asyncio.create_task(
+            _generate_round_compress(
+                state,
+                session_id=sess.id,
+                rounds=rounds,
+                tail_index=tail_index,
+                history_text=history_text,
+                compress_prompt=COMPRESS_PROMPT + history_text,
+                model=state.cur_model,
+            ),
+            name=f"autoprune-safety-compress-{rounds}",
+        )
 
         try:
             tg = _get_tg_bridge()
@@ -1086,10 +1292,10 @@ async def _maybe_auto_compress(state: InteractiveState) -> None:
             logger.debug("tg notify auto-compress failed", exc_info=True)
     except Exception as e:
         logger.error("auto-compress failed: %s", e, exc_info=True)
-        _static(f"  [red]✗ {tr('send.auto_compress_failed', error=str(e))}[/red]")
+        _static(f"  [{t('error')}]✗ {tr('send.auto_compress_failed', error=str(e))}[/{t('error')}]")
 
 
-async def _resume_agent_for_background(state: InteractiveState, tg_bridge) -> bool:
+async def _resume_agent_for_background(state: InteractiveState) -> bool:
     """Будит агента, когда фоновая задача завершилась.
 
     Дренирует уведомления о завершённых задачах и запускает ход агента с ними
@@ -1102,15 +1308,6 @@ async def _resume_agent_for_background(state: InteractiveState, tg_bridge) -> bo
     notice = _format_background_notice(drain_finished_results())
     if not notice:
         return False
-
-    _static("")
-    _static(f"[dim]⚙ {tr('background.autoresume')}[/dim]")
-
-    if tg_bridge.is_running:
-        try:
-            tg_bridge.send("⚙ <i>background task finished — resuming…</i>")
-        except Exception:
-            logger.debug("tg notify bg-resume failed", exc_info=True)
 
     _set_activity_status(state, "working")
     state.msg_num += 1
@@ -1130,13 +1327,14 @@ async def _resume_agent_for_background(state: InteractiveState, tg_bridge) -> bo
         is_continuation=True,
         session=state.session,
         mode=state.mode_state["mode"],
+        background_resume=True,
     )
     try:
         state.last_elapsed, _cancelled = await _run_with_interrupt(coro, state.session)
         _set_activity_status(state, "idle" if _cancelled else "done")
     except Exception as e:
         _set_activity_status(state, "idle")
-        _static(f"\n  [red]{tr('send.error_run', error=str(e))}[/red]")
+        _static(f"\n  [{t('error')}]{tr('send.error_run', error=str(e))}[/{t('error')}]")
     return True
 
 

@@ -20,8 +20,6 @@ from agent.stream_parser import (
 )
 from agent.stream_render import (
     THINKING_FRAMES,
-    WRITING_FRAMES,
-    make_interrupt_indicator,
     render_live_group,
 )
 from agent.think import _THINK_BLOCK_RE, ThinkLog, parse_partial_thought, parse_think_blocks
@@ -36,7 +34,6 @@ from planner import (
     save_plan_file,
 )
 from session.tokens import count_tokens
-from tools.parser import MAX_TOOL_CALLS_PER_MESSAGE
 from ui.formatting import format_cost, format_tokens
 from ui.shell import ensure_static_blank, get_shell
 
@@ -124,6 +121,7 @@ class LiveStream:
         self.reasoning_buffer = ""
         self._reasoning_printed = False
         self._reasoning_store_item = None
+        self._reasoning_started_at: float | None = None
         self.start_time = time.monotonic()
         self._first_chunk_time: float | None = None
         self._plan_processed_count = 0
@@ -132,15 +130,13 @@ class LiveStream:
         self._think_processed_count = 0
         self.inline_results: list[tools.ToolResult] = []
         self.inline_call_keys: list[tuple[str, str]] = []
-        self._executed_tool_count = 0
         #: Занята ли динамическая зона _STREAM_ZONE нашим кадром. Раньше здесь
         #: лежал объект Live; наличие кадра проверяется в тех же местах.
         self._dyn = False
         self._current_text_start = 0
         self._printed_text_end = 0
         self._tcycle = cycle(THINKING_FRAMES)
-        self._wcycle = cycle(WRITING_FRAMES)
-        self._interrupt_tick = 0
+        self._wcycle = cycle(THINKING_FRAMES)
         self._last_block_end_time = time.monotonic()
         self._spin_last_tick = 0.0
         self._spin_tframe = next(self._tcycle)
@@ -182,10 +178,6 @@ class LiveStream:
             self._spin_tframe = next(self._tcycle)
             self._spin_wframe = next(self._wcycle)
             self._spin_last_tick = now
-
-    def _interrupt_dots(self) -> int:
-        self._interrupt_tick += 1
-        return (self._interrupt_tick // 3) % 3 + 1
 
     def _scan_tool_start(self, text: str, offset: int):
         return None if self._native_tools else _find_next_tool_start(text, offset)
@@ -254,51 +246,28 @@ class LiveStream:
             response_streaming=not self._finalizing,
             partial_elapsed=partial_elapsed,
         )
-        if self.ctx.interrupted:
-            group = Group(group, make_interrupt_indicator(self._interrupt_dots()))
         # Ведущая пустая строка: кадр стрима (initial thinking / partial-tool
         # превью) всегда отделяется одной пустой от того, что выше — и от
         # введённого prompt'а (первый кадр), и от напечатанных блоков.
         return Group(Text(""), group)
 
     def _start_live(self):
-        """Показать кадр стрима в динамической зоне Shell.
-
-        Раньше это был rich Live с get_renderable=self._render_live. Shell
-        принимает тот же самый callable и вызывает его на каждом кадре своего
-        ticker'а (~10 fps), поэтому спиннер тикает сам и вид не изменился ни на
-        символ. Разница только в том, кто владеет строками экрана: теперь
-        prompt_toolkit, и он же их стирает — дублей в scrollback быть не может.
-        """
+        """Показать только реальный raw-reasoning/think, без второго Working."""
         if getattr(self.ctx, "silent_console", False):
             return
         sh = get_shell()
-        if sh is None:
-            # Headless / не-TTY / -p: Application нет, анимировать негде. Кадр
-            # был transient и в scrollback ничего не оставлял, поэтому пропуск
-            # анимации ничего не теряет — финальные панели печатает stop().
+        if sh is None or self._block_streamer.has_active:
             return
-        # Кадр стрима включается в двух случаях:
-        #   1) initial thinking — модель ещё ничего не написала и нет
-        #      ни одного активного/закрытого блока текста;
-        #   2) partial-tool превью — модель пишет fence :::call ...
-        # Если BlockStreamer уже держит кадр активного блока — свой не
-        # поднимаем: иначе над ответом крутился бы ещё и thinking-спиннер.
-        if self._block_streamer.has_active:
-            return
-        hp, _, _, _ = self._get_partial_tool_info()
-        has_any_text = bool(self.buffer.strip())
-        # Незакрытый :::call think (мысль ещё пишется) — особый partial:
-        # он исключён из _scan_partial_tool (hp=False), но кадр для него нужен,
-        # чтобы стримить мысль через render_live_group(partial_thought=...).
-        has_partial_thought = (
+        has_reasoning = (
+            not self._reasoning_printed
+            and bool((self.reasoning_buffer or "").strip())
+        )
+        has_thought = (
             not self._native_tools
             and not getattr(self, "_think_static_printed", False)
             and bool(parse_partial_thought(self.buffer))
         )
-        if not hp and has_any_text and not has_partial_thought:
-            # Текст уже идёт/закончился, partial-tool нет — кадр стрима
-            # не нужен (иначе крутил бы thinking между блоками).
+        if not has_reasoning and not has_thought:
             return
         sh.set_dynamic(_STREAM_ZONE, self._render_live)
         self._dyn = True
@@ -345,9 +314,14 @@ class LiveStream:
             return
         from agent.stream_render import render_reasoning_panel
         try:
-            # Пустая строка и панель — одним print_static: раздельно они дали бы
-            # два run_in_terminal, между которыми рамка успевает перерисоваться.
-            print_static(Group(Text(""), render_reasoning_panel(rb, streaming=False)))
+            elapsed = (
+                (time.monotonic() - self._reasoning_started_at)
+                if self._reasoning_started_at is not None else None
+            )
+            print_static(Group(
+                Text(""),
+                render_reasoning_panel(rb, streaming=False, elapsed=elapsed),
+            ))
         except Exception:
             logger.debug("render_reasoning_panel failed", exc_info=True)
         self._reasoning_printed = True
@@ -469,6 +443,7 @@ class LiveStream:
         self.reasoning_buffer = ""
         self._reasoning_printed = False
         self._reasoning_store_item = None
+        self._reasoning_started_at = None
         self.inline_results = []
         self.inline_call_keys = []
         self.ctx.step_tracker.reset()
@@ -478,18 +453,18 @@ class LiveStream:
         self.think_log = ThinkLog()
         self._think_static_printed = False
         self._think_store_item = None
-        self._executed_tool_count = 0
         self._current_text_start = 0
         self._printed_text_end = 0
         self._tcycle = cycle(THINKING_FRAMES)
-        self._wcycle = cycle(WRITING_FRAMES)
-        self._interrupt_tick = 0
+        self._wcycle = cycle(THINKING_FRAMES)
         self._last_block_end_time = time.monotonic()
         self._tg_typing_started = False
         self._finalizing = False
         self._block_streamer.reset()
         self._stored_text_end = 0
         self._native_tool_chunks = {}
+        from agent.working import continue_working_round
+        continue_working_round(self.ctx, self.model, self.message_num)
         self._start_tg_thinking()
         self._start_live()
 
@@ -497,14 +472,23 @@ class LiveStream:
         """Called when reasoning_content chunk arrives. text — full accumulated reasoning."""
         if text == self.reasoning_buffer:
             return
+        if self._reasoning_started_at is None and (text or "").strip():
+            self._reasoning_started_at = time.monotonic()
         self.reasoning_buffer = text
         self._store_reasoning_raw()
+        current = getattr(self.ctx, "working_round", None)
+        if current is not None:
+            current.update_stream(text)
         eh = getattr(self.ctx, "event_handler", None)
         if eh is not None and hasattr(eh, "emit_stream_chunk"):
             try:
                 eh.emit_stream_chunk(text, "reasoning")
             except Exception as _e:
                 logger.warning("emit_stream_chunk(reasoning) failed: %s", _e)
+        if not self._dyn:
+            self._start_live()
+        else:
+            self._update_live()
 
     def on_native_tool_update(self, chunks: list[dict]) -> None:
         """Accumulate native tool-call deltas for progressive terminal rendering."""
@@ -528,6 +512,13 @@ class LiveStream:
                 import json
                 current["args"] += json.dumps(args, ensure_ascii=False)
         if self._native_tool_chunks:
+            current = getattr(self.ctx, "working_round", None)
+            if current is not None:
+                active = self._native_tool_chunks[min(self._native_tool_chunks)]
+                current.update_stream(
+                    active.get("args", ""),
+                    current_call=str(active.get("name") or "tool"),
+                )
             self._block_streamer.finalize()
             if not self._dyn:
                 self._start_live()
@@ -541,6 +532,13 @@ class LiveStream:
         if self._first_chunk_time is None:
             self._first_chunk_time = time.monotonic() - self.start_time
         self.buffer = text
+        current = getattr(self.ctx, "working_round", None)
+        if current is not None:
+            has_partial, _body, partial_name, _attrs = self._get_partial_tool_info()
+            current.update_stream(
+                text,
+                current_call=partial_name if has_partial else "",
+            )
         eh = getattr(self.ctx, "event_handler", None)
         if eh is not None and hasattr(eh, "emit_stream_chunk"):
             try:
@@ -671,8 +669,6 @@ class LiveStream:
             )
             if not complete:
                 break
-            if self._executed_tool_count >= MAX_TOOL_CALLS_PER_MESSAGE:
-                break
             self._stop_live()
             self._print_think_static_once()
             if complete.start > self._printed_text_end:
@@ -698,7 +694,6 @@ class LiveStream:
                 except Exception:
                     logger.warning("emit tool_prefix failed", exc_info=True)
             handle_complete_tool(self, complete)
-            self._executed_tool_count += 1
             self._current_text_start = complete.end
             self._printed_text_end = complete.end
             # Новая «страница» текста после tool-блока — сбрасываем.

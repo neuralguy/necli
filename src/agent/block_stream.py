@@ -23,7 +23,7 @@ import re
 from rich.console import Console, Group
 from rich.text import Text
 
-from agent.display import print_static
+from agent.display import mark_compact_assistant_output, print_static
 from agent.markdown import ResponseMarkdown
 
 #: Ключ динамической зоны под активный (ещё растущий) блок ответа. Отдельный от
@@ -144,6 +144,7 @@ class BlockStreamer:
         # Разделитель и блок — одним print_static: два вызова означали бы два
         # run_in_terminal, между которыми рамка перерисовывается впустую.
         block = Text.from_ansi(body)
+        mark_compact_assistant_output()
         print_static(Group(Text(""), block) if self._emitted_any else block)
         self._emitted_any = True
 

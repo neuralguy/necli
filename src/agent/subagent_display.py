@@ -55,9 +55,9 @@ def show_subagent_done(index: int, result=None):
     done_emoji = ui.get("subagent.done_emoji", "\u2713")
     if result.error:
         text = Text()
-        text.append(f"  {err_emoji} Subagent {index + 1} ", style="bold red")
-        text.append(f"FAILED: {result.error[:200]}", style="red")
-        console.print(Panel(text, border_style="red", padding=pad, width=_w()))
+        text.append(f"  {err_emoji} Subagent {index + 1} ", style=f"bold {t('error')}")
+        text.append(f"FAILED: {result.error[:200]}", style=t("error"))
+        console.print(Panel(text, border_style=t("error"), padding=pad, width=_w()))
     else:
         elapsed = f"{result.elapsed:.1f}s" if result.elapsed else ""
         iters = f"{result.iterations} iter" if result.iterations else ""

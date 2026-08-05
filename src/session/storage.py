@@ -7,7 +7,7 @@ import time
 import config
 import models as app_models
 from logger import logger
-from session._time import format_msk, format_msk_short
+from session._time import format_msk
 from session.message import Message
 from session.session import Session
 
@@ -66,7 +66,6 @@ def _save_history(session: Session):
         "title": session.title,
         "site": session.site,
         "working_dir": session.working_dir,
-        "chat_url": session.chat_url,
         "created_at": session.created_at,
         "created": format_msk(session.created_at),
         "updated_at": session.updated_at,
@@ -74,20 +73,6 @@ def _save_history(session: Session):
         "messages": [m.to_dict() for m in session.messages],
         "compressed_stats": session._compressed_stats,
     }
-    # Branches: _branch_alternatives хранит первые сообщения альтернативных
-    # веток, _branch_tails хранит цепочки сообщений каждой ветки.
-    alts = getattr(session, "_branch_alternatives", {}) or {}
-    tails = getattr(session, "_branch_tails", {}) or {}
-    if alts:
-        data["branch_alternatives"] = {
-            parent_id: [m.to_dict() for m in msgs]
-            for parent_id, msgs in alts.items()
-        }
-    if tails:
-        data["branch_tails"] = {
-            head_id: [m.to_dict() for m in chain]
-            for head_id, chain in tails.items()
-        }
     path = session.dir / "history.json"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -141,25 +126,9 @@ def _load_from_dir(session_dir) -> Session | None:
     session.title = data.get("title", "")
     session.created_at = data.get("created_at", time.time())
     session.updated_at = data.get("updated_at", session.created_at)
-    session.chat_url = data.get("chat_url", "")
     session.messages = [Message.from_dict(m) for m in data.get("messages", [])]
     session._compressed_stats = data.get("compressed_stats")
 
-    # Branches
-    alts_raw = data.get("branch_alternatives") or {}
-    if isinstance(alts_raw, dict):
-        session._branch_alternatives = {
-            parent_id: [Message.from_dict(m) for m in msgs]
-            for parent_id, msgs in alts_raw.items()
-            if isinstance(msgs, list)
-        }
-    tails_raw = data.get("branch_tails") or {}
-    if isinstance(tails_raw, dict):
-        session._branch_tails = {
-            head_id: [Message.from_dict(m) for m in chain]
-            for head_id, chain in tails_raw.items()
-            if isinstance(chain, list)
-        }
     return session
 
 
@@ -228,9 +197,9 @@ def _read_summary(session_dir) -> dict | None:
             "site": data.get("site", ""),
             "working_dir": data.get("working_dir", ""),
             "created_at": created,
-            "created": data.get("created", format_msk_short(created)),
+            "created": data.get("created", format_msk(created, short=True)),
             "updated_at": updated,
-            "updated": data.get("updated", format_msk_short(updated)),
+            "updated": data.get("updated", format_msk(updated, short=True)),
             "messages": data.get("messages", 0),
             "tokens": _get_context_tokens(data, session_dir),
             "cost": _recalc_summary_total_cost(data),
@@ -281,9 +250,9 @@ def _read_summary_from_history(session_dir) -> dict | None:
             "site": data.get("site", ""),
             "working_dir": data.get("working_dir", ""),
             "created_at": created,
-            "created": format_msk_short(created) if created else "—",
+            "created": format_msk(created, short=True) if created else "—",
             "updated_at": updated,
-            "updated": format_msk_short(updated) if updated else "—",
+            "updated": format_msk(updated, short=True) if updated else "—",
             "messages": msg_count,
             "tokens": total_tokens,
             "cost": 0.0,

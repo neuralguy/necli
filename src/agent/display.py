@@ -15,10 +15,7 @@ from config.themes import t
 from config.ui import ui
 from tools._html_unescape import unescape_nested as _unescape_for_display
 
-
-def is_compact() -> bool:
-    """Компактный режим — единственный поддерживаемый (рамочный режим удалён)."""
-    return True
+is_compact = True
 
 console = Console()
 
@@ -28,6 +25,12 @@ console = Console()
 #: перерисовывалась бы столько раз, сколько в сессии сообщений.
 _STATIC_CAPTURE: Console | None = None
 
+# Последний семантический compact-блок в live scrollback. Инструмент сразу
+# после текста агента продолжает ход без пустой строки, а соседние инструменты
+# должны быть разделены одной пустой строкой. Replay ведёт spacing сам и в это
+# состояние не вмешивается.
+_LAST_LIVE_COMPACT_KIND: str | None = None
+
 
 def set_static_capture(target: Console | None) -> None:
     global _STATIC_CAPTURE
@@ -36,6 +39,23 @@ def set_static_capture(target: Console | None) -> None:
 
 def get_static_capture() -> Console | None:
     return _STATIC_CAPTURE
+
+
+def mark_compact_assistant_output() -> None:
+    """Отметить, что последним live-блоком был текст ответа агента."""
+    global _LAST_LIVE_COMPACT_KIND
+    if _STATIC_CAPTURE is None:
+        _LAST_LIVE_COMPACT_KIND = "assistant"
+
+
+def _space_compact_tool(parts: list) -> list:
+    """Добавить spacer только между двумя соседними live-инструментами."""
+    global _LAST_LIVE_COMPACT_KIND
+    if _STATIC_CAPTURE is not None:
+        return parts
+    adjacent_tool = _LAST_LIVE_COMPACT_KIND == "tool"
+    _LAST_LIVE_COMPACT_KIND = "tool"
+    return [Text(""), *parts] if adjacent_tool else parts
 
 
 def print_static(renderable) -> None:
@@ -178,7 +198,7 @@ _TOOL_TITLE_ARG = {
 }
 
 _SILENT_OK_TOOLS = frozenset({
-    "create_file", "patch_file",
+    "patch_file",
     "create_docx",
 })
 
@@ -208,12 +228,6 @@ class _SpinnerFramesProxy:
 
 SPINNER_FRAMES = _SpinnerFramesProxy()
 
-
-def exec_spinner_frames() -> list[str]:
-    frames = ui.get("spinner.exec_frames", None)
-    if isinstance(frames, list) and frames:
-        return [str(f) for f in frames]
-    return ["\u25F4", "\u25F7", "\u25F6", "\u25F5"]
 
 def _resolve_color(entry: dict, default_role: str) -> str:
     """Прямой 'color' (HEX/имя) перебивает 'color_role'."""
@@ -348,7 +362,14 @@ def prepare_display_args(args: dict, tool_name: str) -> dict:
     return display_args
 
 
-def show_command(cmd: str, tool_name: str = "shell", args: dict | None = None, subtitle: str = ""):
+def show_command(
+    cmd: str,
+    tool_name: str = "shell",
+    args: dict | None = None,
+    subtitle: str = "",
+    *,
+    skipped: bool = False,
+):
     """Standalone command panel.
 
     Используется для web_search (нет результата для объединения) и для
@@ -357,7 +378,15 @@ def show_command(cmd: str, tool_name: str = "shell", args: dict | None = None, s
     """
     args = args or {}
     _store_command(cmd, tool_name, args, subtitle=subtitle)
-    _show_tool_compact(None, None, cmd, tool_name, args, subtitle=subtitle)
+    _show_tool_compact(
+        None,
+        None,
+        cmd,
+        tool_name,
+        args,
+        subtitle=subtitle,
+        skipped=skipped or "skipped" in subtitle.lower(),
+    )
 
 
 def _file_uri(raw_path: str) -> str:
@@ -448,11 +477,22 @@ def _compact_title_text(
     combined_read_count = args.get("_combined_read_count")
     if tool_name == "read" and combined_read_count:
         arg_disp = f"{combined_read_count} files" if _EXPANDED_PREVIEW else ""
+    # Несколько поисковых запросов отображаются как grouped Read: в свёрнутом
+    # заголовке не перечисляем их (счётчик будет в summary), а в раскрытом
+    # оставляем компактный счётчик — сами запросы идут отдельными строками.
+    search_queries = args.get("queries")
+    grouped_search = (
+        tool_name == "web_search"
+        and isinstance(search_queries, list)
+        and len(search_queries) > 1
+    )
+    if grouped_search:
+        arg_disp = f"{len(search_queries)} queries" if _EXPANDED_PREVIEW else ""
     if tool_name == "grep" and args.get("pattern"):
         pat = str(args["pattern"])[:60]
         arg_disp = f"{pat} -> {path_disp}" if path_disp else pat
     is_file_path = bool(path_disp) and tool_name != "grep"
-    if not arg_disp:
+    if not arg_disp and not grouped_search:
         _title_arg_key = _TOOL_TITLE_ARG.get(tool_name)
         if _title_arg_key:
             val = args.get(_title_arg_key)
@@ -641,7 +681,7 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
         head = lines if limit is None else lines[:limit]
         num_w = len(str(total))
         for i, ln in enumerate(head, start=1):
-            num = Text(f"      {str(i).rjust(num_w)} ", style="white")
+            num = Text(f"      {str(i).rjust(num_w)} ", style=t("fg_primary"))
             try:
                 code = Syntax(
                     ln or " ", lexer, theme="monokai", line_numbers=False,
@@ -683,11 +723,38 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
         if offset > 0:
             out.append(Text("        " + _i18n("compact.more_lines", n=offset), style="dim italic"))
         for i, ln in enumerate(head, start=offset + 1):
-            num = Text(f"      {str(i).rjust(num_w)} ", style="white")
+            num = Text(f"      {str(i).rjust(num_w)} ", style=t("fg_primary"))
             out.append(num + Text(ln))
         if offset == 0 and total > len(head):
             rest = total - len(head)
             out.append(Text("        " + _i18n("compact.more_lines", n=rest), style="dim italic"))
+        return out
+
+    # Web search — тот же grouped UX, что у Read: в свёрнутом виде счётчик,
+    # в раскрытом — все запросы. Раньше generic summary брала первую строку
+    # output и всегда показывала только ``[Query 1: ...]``.
+    if tool_name == "web_search" and result is not None and result.status == "ok":
+        queries = args.get("queries")
+        if isinstance(queries, list):
+            queries = [str(query).strip() for query in queries if str(query).strip()]
+        else:
+            queries = []
+        if not queries:
+            queries = re.findall(r"(?m)^\[Query \d+: (.*)\]$", result.output or "")
+        if len(queries) < 2:
+            return None
+
+        indent = "   "
+        if not _EXPANDED_PREVIEW:
+            return [Text(
+                f"{indent}\u23bf {_i18n('compact.queries_n', n=len(queries))}",
+                style=f"italic {t('dim_text')}",
+            )]
+
+        out: list = []
+        for i, query in enumerate(queries):
+            prefix = "\u23bf " if i == 0 else "  "
+            out.append(Text(f"{indent}{prefix}{query}", style=t("info")))
         return out
 
     # grep_files / lsp_* — первые 3 результата + "… +N строк"
@@ -990,10 +1057,10 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
         except Exception:
             return Text(ln)
 
-    bg_del = ui.get("diff_colors.bg_delete", "#2a0808")
-    bg_add = ui.get("diff_colors.bg_add", "#082a08")
-    fg_del = ui.get("diff_colors.fg_delete", "#ff6b6b")
-    fg_add = ui.get("diff_colors.fg_add", "#6bff6b")
+    bg_del = ui.get("diff_colors.bg_delete") or t("diff_del_bg")
+    bg_add = ui.get("diff_colors.bg_add") or t("diff_add_bg")
+    fg_del = ui.get("diff_colors.fg_delete") or t("diff_del_fg")
+    fg_add = ui.get("diff_colors.fg_add") or t("diff_add_fg")
     pref_del = ui.get("diff_colors.prefix_delete", "- ")
     pref_add = ui.get("diff_colors.prefix_add", "+ ")
 
@@ -1005,7 +1072,7 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
     def _emit(rows: list[tuple[int, str]], sign: str, fg: str, bg: str) -> None:
         for num_val, text_ln in rows:
             num_str = str(num_val).rjust(num_w)
-            prefix = Text(f"      {num_str} ", style="white")
+            prefix = Text(f"      {num_str} ", style=t("fg_primary"))
             sign_t = Text(sign, style=f"bold {fg} on {bg}")
             body = _hl(text_ln)
             if len(body.plain) > body_w:
@@ -1033,6 +1100,8 @@ def _show_tool_compact(
     tool_name: str,
     args: dict,
     subtitle: str = "",
+    *,
+    skipped: bool = False,
 ):
     """Компактный режим: заголовок Tool(path) ✓ 1.2s + preview/сводка."""
     raw_args = args or {}
@@ -1048,7 +1117,10 @@ def _show_tool_compact(
     is_ok = True
     icon = ""
     status_color = "green"
-    if result is not None:
+    if skipped:
+        icon = "■ skipped (interrupted)"
+        status_color = t("warning")
+    elif result is not None:
         is_ok = result.status == "ok"
         if is_ok:
             icon = "✓"
@@ -1060,12 +1132,20 @@ def _show_tool_compact(
 
     elapsed = (result.elapsed if result else 0.0) or 0.0
     time_str = _format_elapsed(elapsed)
-    status_full = f"{icon}{time_str}{_format_tool_tokens(call, result)}" if icon else ""
+    if skipped:
+        status_full = icon
+    else:
+        status_full = f"{icon}{time_str}{_format_tool_tokens(call, result)}" if icon else ""
 
     # Весь блок инструмента печатается ОДНИМ print_static. Построчная печать
     # давала бы по run_in_terminal на строку: рамка снималась и возвращалась
     # десять раз на один результат, и между строками мог вклиниться чужой вывод.
-    parts: list = [Text(""), _compact_title_text(tool_name, args, status_full, status_color)]
+    # После текста агента инструмент идёт без пустой строки. Если предыдущим
+    # видимым блоком тоже был инструмент, _space_compact_tool добавит ровно
+    # один separator, чтобы соседние вызовы не слипались.
+    parts: list = _space_compact_tool([
+        _compact_title_text(tool_name, args, status_full, status_color),
+    ])
 
     # Сначала пробуем богатое превью контента (только если успех).
     # Используем НЕурезанные raw_args — _compact_preview_content сам ограничивает
@@ -1168,11 +1248,11 @@ def show_read_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> 
 
     # Рендер заголовка — без скобок (paths в теле блока). Блок целиком уходит
     # одним print_static: см. _show_tool_compact.
-    parts: list = [Text(""), _compact_title_text(
+    parts: list = _space_compact_tool([_compact_title_text(
         "read", {"_combined_read_count": n},
         f"{icon}{time_str} ↑{format_tokens(total_tk)}",
         status_color,
-    )]
+    )])
 
     if not info_items:
         print_static(Group(*parts))

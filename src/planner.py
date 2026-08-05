@@ -21,6 +21,8 @@ from enum import Enum
 
 from rich.text import Text
 
+from config.themes import t
+
 logger = logging.getLogger(__name__)
 
 class StepStatus(str, Enum):
@@ -506,9 +508,9 @@ def apply_plan_commands(
 
 _STATUS_STYLES = {
     StepStatus.PENDING: ("[ ]", "dim"),
-    StepStatus.IN_PROGRESS: ("[•]", "bold cyan"),
-    StepStatus.DONE: ("[✓]", "green"),
-    StepStatus.SKIPPED: ("[–]", "dim yellow"),
+    StepStatus.IN_PROGRESS: ("[•]", f"bold {t('info')}"),
+    StepStatus.DONE: ("[✓]", t("success")),
+    StepStatus.SKIPPED: ("[–]", f"dim {t('warning')}"),
 }
 
 
@@ -554,11 +556,11 @@ def render_plan_panel(
 
         # Текст шага
         if step.status == StepStatus.IN_PROGRESS:
-            lines.append(step.title, style="bold cyan")
+            lines.append(step.title, style=f"bold {t('info')}")
         elif step.status == StepStatus.DONE:
-            lines.append(step.title, style="green")
+            lines.append(step.title, style=t("success"))
         elif step.status == StepStatus.SKIPPED:
-            lines.append(step.title, style="dim yellow strikethrough")
+            lines.append(step.title, style=f"dim {t('warning')} strikethrough")
         else:
             lines.append(step.title, style="dim")
 
@@ -573,11 +575,11 @@ def render_plan_panel(
     title = f"📋 Plan [{plan.progress_str}]"
     if plan.is_complete:
         title += " ✓"
-        border_style = "green"
+        border_style = t("success")
     elif plan.current_step:
-        border_style = "cyan"
+        border_style = t("info")
     else:
-        border_style = "dim cyan"
+        border_style = f"dim {t('info')}"
 
     # Подзаголовок — цель
     subtitle = _truncate_goal(plan.goal)

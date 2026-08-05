@@ -11,6 +11,7 @@ import time
 import tools
 from agent.display import show_command, show_tool_combined
 from agent.executor import execute_and_show
+from config.themes import t
 from tools.call_parser import parse_call_block as _parse_call_block
 from tools.registry import build_blocked_result, is_tool_allowed
 
@@ -74,17 +75,27 @@ def handle_complete_tool(stream, complete) -> bool:
     if complete.tool_name in ("think", "plan"):
         return False
 
-    # Skipped из-за interrupt
-    if complete.body and stream.ctx.interrupted:
+    # Soft interrupt не обрывает стрим: модель дописывает ответ,
+    # а каждый последующий tool-блок остаётся в UI, но не исполняется.
+    if stream.ctx.interrupted:
         call = _parse_call_block(
             complete.tool_name, complete.attrs_header,
             complete.body, complete.raw,
         )
-        if call:
-            show_command(
-                call.command, tool_name=call.tool_name, args=call.args,
-                subtitle="[bold yellow]\u25a0 skipped (interrupted)[/bold yellow]",
+        if call is None:
+            call = tools.ToolCall(
+                command=complete.tool_name,
+                tool_name=complete.tool_name,
+                args={},
+                raw=complete.raw,
             )
+        show_command(
+            call.command,
+            tool_name=call.tool_name,
+            args=call.args,
+            subtitle="skipped (interrupted)",
+            skipped=True,
+        )
         return False
 
     # Пустое тело допустимо для shorthand с attrs в шапке
@@ -100,7 +111,7 @@ def handle_complete_tool(stream, complete) -> bool:
                 args={}, raw=complete.raw,
             ),
             err,
-            subtitle="[bold red]\u25a0 parse error[/bold red]",
+            subtitle=f"[bold {t('error')}]\u25a0 parse error[/bold {t('error')}]",
         )
         stream.inline_results.append(err)
         stream.inline_call_keys.append((complete.tool_name, "{}"))
@@ -134,7 +145,7 @@ def handle_complete_tool(stream, complete) -> bool:
                     args={}, raw=complete.raw,
                 ),
                 err,
-                subtitle="[bold red]\u25a0 parse error[/bold red]",
+                subtitle=f"[bold {t('error')}]\u25a0 parse error[/bold {t('error')}]",
             )
             stream.inline_results.append(err)
             stream.inline_call_keys.append((complete.tool_name, "{}"))
@@ -162,7 +173,7 @@ def handle_complete_tool(stream, complete) -> bool:
                 args={}, raw=complete.raw,
             ),
             err,
-            subtitle="[bold red]\u25a0 parse error[/bold red]",
+            subtitle=f"[bold {t('error')}]\u25a0 parse error[/bold {t('error')}]",
         )
         stream.inline_results.append(err)
         stream.inline_call_keys.append((complete.tool_name, "{}"))

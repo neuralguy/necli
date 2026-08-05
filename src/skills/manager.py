@@ -21,7 +21,7 @@ SKILL_FILENAME = "SKILL.md"
 _active_skills: set[str] = set()
 _pending_messages: list[str] = []
 
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+from _frontmatter import parse_frontmatter as _parse_frontmatter
 
 
 @dataclass
@@ -43,18 +43,7 @@ def get_skills_dir() -> Path:
     return USER_SKILLS_DIR
 
 
-def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    m = _FRONTMATTER_RE.match(text)
-    if not m:
-        return {}, text
-    raw_yaml = m.group(1)
-    body = text[m.end():]
-    meta: dict[str, str] = {}
-    for line in raw_yaml.splitlines():
-        if ":" in line:
-            key, _, val = line.partition(":")
-            meta[key.strip().lower()] = val.strip()
-    return meta, body
+
 
 
 def _load_body(skill_path: Path) -> str:

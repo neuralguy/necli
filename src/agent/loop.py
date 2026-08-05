@@ -8,6 +8,7 @@ from pathlib import Path
 
 import config
 import tools
+from agent._common import build_repeat_tool_notice, native_tool_calls_to_calls
 from agent.context import AgentContext
 from agent.events import RichEventHandler
 from agent.executor import execute_and_show_async
@@ -15,6 +16,7 @@ from agent.messages import (
     _build_result_extras,
     _build_result_message,
     build_first_message,
+    truncate_history_content,
 )
 from agent.messages import (
     build_continue_message as _build_continue_message,
@@ -51,6 +53,10 @@ from tools.background import drain_finished_results
 from tools.registry import build_blocked_result, is_tool_allowed
 from tools.subagent import set_subagent_context
 
+# Сильные ссылки нужны до завершения: asyncio loop не обязан удерживать
+# fire-and-forget Task. Готовые задачи сами удаляются callback'ом.
+_subagent_background_tasks: set[asyncio.Task] = set()
+
 
 def _api_uses_native_tools() -> bool:
     """True если активная API-сессия доставляет результаты как native ToolMessage."""
@@ -61,9 +67,6 @@ def _api_uses_native_tools() -> bool:
     except Exception:
         logger.debug("native-tools detection failed", exc_info=True)
         return False
-
-MAX_ITERATIONS = 500
-
 
 def _format_history_block(history) -> str:
     """Форматирует список {role,content} в блок CONVERSATION CONTEXT.
@@ -77,9 +80,7 @@ def _format_history_block(history) -> str:
     parts = [header]
     for h_msg in history:
         role = h_msg["role"].upper()
-        cnt = h_msg["content"]
-        if len(cnt) > 2000:
-            cnt = cnt[:1000] + "\n...(truncated)...\n" + cnt[-500:]
+        cnt = truncate_history_content(h_msg["content"])
         parts.append(f"{role}:\n{cnt}")
     parts.append(CONVERSATION_CONTEXT_FOOTER)
     return "\n".join(parts)
@@ -134,6 +135,16 @@ def _handle_hard_interrupt(session, full_response, model, last_usage) -> str:
             )
     except Exception:
         logger.debug("save partial on hard interrupt failed", exc_info=True)
+    try:
+        from apis.agent_adapter import close_pending_native_tool_calls
+        close_pending_native_tool_calls()
+    except Exception:
+        logger.debug("close pending native calls after hard interrupt failed", exc_info=True)
+    try:
+        from agent.working import finish_working_round
+        finish_working_round(get_current_ctx(), force=True)
+    except Exception:
+        logger.debug("finish Working after interrupt failed", exc_info=True)
     return "[Interrupted]"
 
 
@@ -182,13 +193,27 @@ def set_current_ctx(ctx: AgentContext | None) -> None:
     _current_ctx = ctx
 
 
+def _refresh_agent_status(ctx: AgentContext | None) -> None:
+    """Обновить статус-панель над вводом после действия агента.
+
+    Хук ставит интерактивный цикл; вне интерактива (headless, тесты) он None,
+    и вызов — дешёвый no-op.
+    """
+    if ctx is None or ctx.refresh_status is None:
+        return
+    try:
+        ctx.refresh_status()
+    except Exception:
+        logger.debug("status refresh failed", exc_info=True)
+
+
 def _format_background_notice(results: list[tools.ToolResult]) -> str:
-    """Текстовый блок-уведомление о завершённых фоновых shell-задачах."""
+    """Текстовый блок результатов фоновых процессов и субагентов."""
     if not results:
         return ""
     parts = [r.output for r in results if r.output]
     return (
-        "[BACKGROUND TASKS FINISHED]\n"
+        "[BACKGROUND WORK FINISHED]\n"
         + "\n---\n".join(parts)
     )
 
@@ -201,16 +226,6 @@ def _collect_image_paths(results: list[tools.ToolResult]) -> list[Path]:
             if p and p.exists():
                 paths.append(p)  # noqa: PERF401
     return paths
-
-
-def _native_tool_calls_to_calls(native_calls: list[dict] | None) -> list[tools.ToolCall]:
-    calls: list[tools.ToolCall] = []
-    for tc in native_calls or []:
-        name = tc.get("name") or "shell"
-        args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
-        command = str(args.get("command") or "shell") if name == "shell" else name
-        calls.append(tools.ToolCall(command=command, tool_name=name, args=args, raw=""))
-    return calls
 
 
 def _tool_call_identity(call: tools.ToolCall) -> tuple[str, str]:
@@ -233,24 +248,6 @@ def _dedupe_tool_calls(calls: list[tools.ToolCall]) -> list[tools.ToolCall]:
         seen.add(key)
         deduped.append(call)
     return deduped
-
-
-def _build_repeat_tool_notice(
-    last_tool_name: str | None,
-    calls: list[tools.ToolCall],
-) -> tuple[str, str | None]:
-    if not calls:
-        return "", None
-    tool_name = calls[0].tool_name
-    if tool_name != last_tool_name:
-        return "", tool_name
-    return (
-        "[repeat-tool notice]\n"
-        f"You called `{tool_name}` in two consecutive tool rounds. "
-        "Before calling it again, check whether the previous result already "
-        "answers the task, or explain why repeating the same tool is necessary.",
-        tool_name,
-    )
 
 
 async def _stream_send(text, model, ctx, session=None, images=None, message_num=1,
@@ -321,6 +318,8 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         partial = strip_tool_calls(stream.buffer).strip() or "[Interrupted]"
         if session:
             session.add_assistant_message(partial, model=model or "", usage=usage or None, thoughts=_extract_thoughts(stream.buffer))
+        from agent.working import finish_working_round
+        finish_working_round(ctx)
         raise
     except StreamEarlyAbort:
         logger.info("stream aborted early (precheck failed)")
@@ -328,12 +327,27 @@ async def _stream_send(text, model, ctx, session=None, images=None, message_num=
         response = stream.buffer
     except Exception:
         stream.stop(cancelled=True)
+        from agent.working import finish_working_round
+        finish_working_round(ctx)
         raise
     else:
         stream.stop(show_final=True)
     if _resolve_native_tools() and native_tool_calls:
         _process_plan_commands(response, ctx, native_tool_calls=native_tool_calls)
         stream._plan_processed_count = len(parse_native_plan_commands(native_tool_calls))
+    working = getattr(ctx, "working_round", None)
+    if working is not None:
+        working.set_usage(usage)
+        if _resolve_native_tools():
+            call_names = [
+                str(call.get("name") or "")
+                for call in native_tool_calls
+                if isinstance(call, dict)
+            ]
+        else:
+            call_names = [call.tool_name for call in tools.parse_tool_calls(response)]
+        working.observe_calls(call_names)
+    _refresh_agent_status(ctx)
     return _sanitize_agent_response(response), stream.inline_results, stream.inline_call_keys, stream._plan_processed_count, usage, native_tool_calls
 
 
@@ -519,7 +533,7 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
     _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
 
     last_tool_name: str | None = None
-    for _ in range(MAX_ITERATIONS):
+    while True:
         if _is_api_proxy_error(full_response):
             if ctx.event_handler:
                 ctx.event_handler.on_status(
@@ -532,11 +546,11 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
             continue
 
         if _api_uses_native_tools():
-            calls = _dedupe_tool_calls(_native_tool_calls_to_calls(native_tool_calls))
+            calls = _dedupe_tool_calls(native_tool_calls_to_calls(native_tool_calls))
         else:
             calls = _dedupe_tool_calls(tools.parse_tool_calls(full_response))
         calls = [c for c in calls if c.tool_name not in ("think", "plan")]
-        repeat_tool_notice, last_tool_name = _build_repeat_tool_notice(last_tool_name, calls)
+        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(last_tool_name, calls)
         if not calls:
             if _is_control_only_response(full_response, native_tool_calls=native_tool_calls):
                 extras = _build_result_extras(
@@ -547,7 +561,7 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
                 if _api_uses_native_tools():
                     api_result = await _send_via_api(
                         "", on_chunk, None,
-                        tool_results=[], extras=extras or None,
+                        tool_results=None, extras=extras or None,
                         return_result=True,
                     )
                 else:
@@ -578,7 +592,10 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
 
         indexed_results: list[tuple[int, tools.ToolResult]] = []
         for idx, sa_call in subagent_calls:
-            indexed_results.append((idx, await _execute_subagent_call(sa_call, model, ctx)))
+            indexed_results.append((
+                idx,
+                await _execute_subagent_call(sa_call, model, ctx, background=False),
+            ))
 
         if ws_calls:
             ws_results = await execute_and_show_async([c for _, c in ws_calls], event_handler=ctx.event_handler)
@@ -632,16 +649,15 @@ async def run_agent(user_message, model=None, on_chunk=None, working_dir=None, h
         full_response = _sanitize_agent_response(full_response)
         _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
 
-    logger.warning("run_agent: MAX_ITERATIONS={} reached", MAX_ITERATIONS)
-    return strip_tool_calls(strip_plan_commands(full_response)) + "\n\n[Iteration limit]"
-
 
 async def _execute_subagent_call(
     call: tools.ToolCall,
     model: str,
     ctx: AgentContext,
+    *,
+    background: bool = True,
 ) -> tools.ToolResult:
-    """Выполняет вызов subagent с мультиплексным отображением."""
+    """Запускает subagent в фоне и сразу возвращает управление главному агенту."""
     from agent.subagent import SubagentOrchestrator, SubagentTask, format_subagent_results
     from agent.subagent_render import SubagentBuffer, SubagentTracker
     from tools.subagent_specs import build_subagent_task_specs
@@ -694,7 +710,18 @@ async def _execute_subagent_call(
         for i, t in enumerate(tasks)
     ]
 
-    tracker = SubagentTracker(buffers)
+    raw_args = call.args or {}
+    tracker = SubagentTracker(
+        buffers,
+        name=str(raw_args.get("name") or raw_args.get("goal") or ""),
+        phased=(
+            isinstance(raw_args.get("phases"), list)
+            or (
+                isinstance(raw_args.get("items"), list)
+                and isinstance(raw_args.get("stages"), list)
+            )
+        ),
+    )
 
     orchestrator = SubagentOrchestrator(
         model=model or config.TARGET_MODEL,
@@ -703,42 +730,112 @@ async def _execute_subagent_call(
         isolate=bool((call.args or {}).get("isolate", False)),
     )
 
-    results = []
     tracker.start()
-    try:
-        results = await orchestrator.run(tasks)
-        await tracker.wait_all_done()
-    except Exception as e:
-        logger.error("subagent orchestrator.run failed: {}", e, exc_info=True)
-        tracker.stop()
+
+    # У неинтерактивного run_agent нет постоянного event loop: fire-and-forget
+    # задача была бы отменена при возврате API-вызова. Там сохраняем синхронную
+    # семантику; фон нужен постоянному CLI, где есть ввод и насос уведомлений.
+    if not background:
+        results = []
+        try:
+            results = await orchestrator.run(tasks)
+        except Exception as e:
+            logger.error("subagent orchestrator.run failed: {}", e, exc_info=True)
+            return tools.ToolResult(
+                name="subagent", status="error",
+                output=f"Subagent orchestrator failed: {type(e).__name__}: {e}",
+                exit_code=1, command=call.command,
+            )
+        finally:
+            for result in results:
+                if 0 <= result.task_index < len(buffers):
+                    buffers[result.task_index].files_changed = len(result.files_changed)
+            tracker.stop()
+        output = (
+            f"Subagent run {summary}\n\n"
+            + format_subagent_results(results, run_dir=orchestrator.run_dir)
+        )
+        has_errors = any(result.error for result in results)
         return tools.ToolResult(
-            name="subagent",
-            status="error",
-            output=f"Subagent orchestrator failed: {type(e).__name__}: {e}",
-            exit_code=1,
+            name="subagent", status="error" if has_errors else "ok",
+            output=output, exit_code=1 if has_errors else 0,
             command=call.command,
         )
-    finally:
-        for r in results:
-            if 0 <= r.task_index < len(buffers):
-                buffers[r.task_index].files_changed = len(r.files_changed)
-        tracker.stop()
 
-    output = f"Subagent run {summary}\n\n" + format_subagent_results(results, run_dir=orchestrator.run_dir)
-    has_errors = any(r.error for r in results)
+    async def _finish_in_background() -> None:
+        from tools.background import publish_external_result
+
+        results = []
+        try:
+            results = await orchestrator.run(tasks)
+            for result in results:
+                if 0 <= result.task_index < len(buffers):
+                    buffers[result.task_index].files_changed = len(result.files_changed)
+            output = (
+                f"[background subagents finished] Subagent run {summary}\n\n"
+                + format_subagent_results(results, run_dir=orchestrator.run_dir)
+            )
+            has_errors = any(result.error for result in results)
+            finished = tools.ToolResult(
+                name="subagent",
+                status="error" if has_errors else "ok",
+                output=output,
+                exit_code=1 if has_errors else 0,
+                command=call.command,
+            )
+        except asyncio.CancelledError:
+            for buffer in buffers:
+                if buffer.status not in ("done", "error"):
+                    buffer.on_error("Cancelled by user.")
+            finished = tools.ToolResult(
+                name="subagent", status="error",
+                output=f"[background subagents stopped] Subagent run {summary}",
+                exit_code=130, command=call.command,
+            )
+        except Exception as e:
+            logger.error("subagent orchestrator.run failed: {}", e, exc_info=True)
+            for buffer in buffers:
+                if buffer.status not in ("done", "error"):
+                    buffer.on_error(f"{type(e).__name__}: {e}")
+            finished = tools.ToolResult(
+                name="subagent", status="error",
+                output=(
+                    "[background subagents failed] "
+                    f"{type(e).__name__}: {e}"
+                ),
+                exit_code=1, command=call.command,
+            )
+        finally:
+            try:
+                tracker.stop()
+            except Exception:
+                logger.debug("subagent tracker stop failed", exc_info=True)
+        publish_external_result(finished)
+
+    from tools.background import register_external_work
+    register_external_work()
+    job = asyncio.create_task(
+        _finish_in_background(),
+        name=f"subagent-run-{id(tracker):x}",
+    )
+    _subagent_background_tasks.add(job)
+    job.add_done_callback(_subagent_background_tasks.discard)
 
     return tools.ToolResult(
         name="subagent",
-        status="error" if has_errors else "ok",
-        output=output,
-        exit_code=1 if has_errors else 0,
+        status="ok",
+        output=(
+            f"Started subagent run {summary} in background. "
+            "Continue working; its results will be delivered automatically."
+        ),
+        exit_code=0,
         command=call.command,
     )
 
 
 async def run_agent_interactive(user_message, model=None, working_dir=None,
     is_continuation=False, session=None, history=None,
-    images=None, mode="agent"):
+    images=None, mode="agent", background_resume=False):
     logger.info(
         "run_agent_interactive start: model={} mode={} continuation={} msg_len={}",
         model, mode, is_continuation, len(user_message or ""),
@@ -786,10 +883,10 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
         except Exception as e:
             logger.warning("plan_dir from session.dir failed: {}", e)
     ctx.reset_interrupt()
-    # Новый ход пользователя — отсчёт «работал Nм» с этого момента.
-    # is_continuation здесь означает «в сессии уже была история» (msg_num>1),
-    # а НЕ продолжение того же хода, поэтому turn_start_time обновляем всегда.
-    ctx.turn_start_time = time.monotonic()
+    # Автодоставка фонового результата — продолжение прежнего пользовательского
+    # хода. Его таймер и Working не начинают заново.
+    if not background_resume:
+        ctx.turn_start_time = time.monotonic()
     if not is_continuation and ctx.plan is None:
         loaded_plan = load_plan_file(ctx.effective_plan_dir)
         if loaded_plan and not loaded_plan.is_complete:
@@ -820,6 +917,13 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
     last_usage: dict = {}
 
     last_tool_name: str | None = None
+    # Один живой Working-блок на весь ход пользователя. Последующие запросы к
+    # модели после инструментов лишь продолжают его через LiveStream.start().
+    from agent.working import begin_working_round, continue_working_round
+    if background_resume:
+        continue_working_round(ctx, model or "", msg_num)
+    else:
+        begin_working_round(ctx, model or "", msg_num)
     try:
         full_response, inline_results, inline_call_keys, plan_processed, last_usage, native_tool_calls = await _stream_send(
             msg, model, ctx, session, images=first_images,
@@ -834,7 +938,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
         native_tool_calls=native_tool_calls,
     )
 
-    for _iteration in range(MAX_ITERATIONS):
+    while True:
         if _is_api_proxy_error(full_response):
             if ctx.event_handler:
                 ctx.event_handler.on_status(
@@ -859,10 +963,23 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             continue
 
         if ctx.interrupted:
-            if ctx.event_handler:
-                ctx.event_handler.on_status(
-                    "■ Interrupted by user — waiting for input", level="warning",
-                )
+            # Native tool calls появляются только в финальном ответе API, поэтому
+            # LiveStream не мог показать их как fenced-блоки. Рисуем вызовы
+            # перед финализацией Stopped, но не передаём их executor'у.
+            if _api_uses_native_tools():
+                from agent.display import show_command
+                for call in native_tool_calls_to_calls(native_tool_calls):
+                    if call.tool_name in ("think", "plan"):
+                        continue
+                    show_command(
+                        call.command,
+                        tool_name=call.tool_name,
+                        args=call.args,
+                        subtitle="skipped (interrupted)",
+                        skipped=True,
+                    )
+                from apis.agent_adapter import close_pending_native_tool_calls
+                close_pending_native_tool_calls()
             final = _clean_for_save(full_response).strip() or "[Interrupted]"
             if session:
                 session.add_assistant_message(
@@ -870,10 +987,12 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                     model=model or "", usage=last_usage,
                     thoughts=_extract_thoughts(full_response),
                 )
+            from agent.working import finish_working_round
+            finish_working_round(ctx, force=True)
             return final
 
         if _api_uses_native_tools():
-            all_calls = _dedupe_tool_calls(_native_tool_calls_to_calls(native_tool_calls))
+            all_calls = _dedupe_tool_calls(native_tool_calls_to_calls(native_tool_calls))
         else:
             all_calls = _dedupe_tool_calls(tools.parse_tool_calls(full_response))
         # think — не исполняемый инструмент, а отображаемая мысль.
@@ -882,7 +1001,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
         # thinking-panel. Если не отфильтровать здесь — execute_and_show_async
         # выполнит его повторно через generic-pipeline → дубль рамок.
         all_calls = [c for c in all_calls if c.tool_name not in ("think", "plan")]
-        repeat_tool_notice, last_tool_name = _build_repeat_tool_notice(last_tool_name, all_calls)
+        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(last_tool_name, all_calls)
         executed_counts = Counter(inline_call_keys)
         remaining_calls = []
         for c in all_calls:
@@ -916,8 +1035,16 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
 
         if subagent_calls:
             for sa_call in subagent_calls:
-                sa_result = await _execute_subagent_call(sa_call, model, ctx)
+                working = getattr(ctx, "working_round", None)
+                if working is not None:
+                    working.begin_call("subagent")
+                try:
+                    sa_result = await _execute_subagent_call(sa_call, model, ctx)
+                finally:
+                    if working is not None:
+                        working.finish_call("subagent")
                 inline_results.append(sa_result)
+                _refresh_agent_status(ctx)
 
         if remaining_calls:
             results = await execute_and_show_async(remaining_calls, event_handler=ctx.event_handler)
@@ -935,6 +1062,8 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                         ctx=ctx,
                     )
                     session.add_tool_result(full_results_msg, model=model or "")
+                from agent.working import finish_working_round
+                finish_working_round(ctx)
                 return fatal.output
 
         if not inline_results and not all_calls:
@@ -1045,12 +1174,8 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
                 )
                 continue
 
-            if (
-                _clean_for_save(full_response).strip()
-                and not getattr(ctx, "silent_console", False)
-            ):
-                from agent.stream import print_worked_footer
-                print_worked_footer(ctx)
+            from agent.working import finish_working_round
+            finish_working_round(ctx)
             if session:
                 session.add_assistant_message(
                     _clean_for_save(full_response).strip(),
@@ -1063,6 +1188,7 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
         saved_msg = None
         if session:
             saved_msg = session.add_assistant_message(full_response, model=model or "", usage=last_usage, thoughts=_extract_thoughts(full_response))
+        _refresh_agent_status(ctx)
 
         # Web: фиксируем накопленный текст итерации как assistant-message ДО
         # старта следующего стрима. Иначе фронт-овский liveStream.text будет
@@ -1139,10 +1265,3 @@ async def run_agent_interactive(user_message, model=None, working_dir=None,
             full_response, ctx, already_processed=plan_processed,
             native_tool_calls=native_tool_calls,
         )
-
-    final_text = (
-        strip_tool_calls(_clean_for_save(full_response)) + "\n\n[Iteration limit]"
-    )
-    if session:
-        session.add_assistant_message(final_text, model=model or "", usage=last_usage, thoughts=_extract_thoughts(full_response))
-    return final_text

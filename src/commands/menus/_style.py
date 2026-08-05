@@ -24,6 +24,7 @@ import time
 from collections.abc import Callable, Sequence
 
 from config.i18n import t as tr
+from config.themes import t
 from ui import overlays
 from ui.menu import Palette, cell, columns, overlay_rows, row_avail
 from ui.overlays import (
@@ -70,7 +71,7 @@ async def with_spinner(label: str, fn, *args):
 
     def frame() -> Text:
         i = int(time.monotonic() * 10) % len(_SPIN)
-        return Text(f"  {_SPIN[i]} {label}", style="cyan")
+        return Text(f"  {_SPIN[i]} {label}", style=t("info"))
 
     sh.set_dynamic("menu-wait", frame)
     try:
@@ -108,7 +109,8 @@ class CardMenu(overlays.SelectOverlay):
                  status_style: str = "muted", facts: Sequence[str] = (),
                  current: int = 0, hint_text: str | None = None,
                  footer_fn: Callable[[int], str] | None = None,
-                 allow_back: bool = False) -> None:
+                 allow_back: bool = False, expand: bool = False,
+                 multi: bool = False) -> None:
         super().__init__(items, current=current, title="", allow_back=allow_back)
         self.card_title = title
         self.status = status
@@ -116,9 +118,15 @@ class CardMenu(overlays.SelectOverlay):
         self.facts = list(facts)
         self.hint_text = hint_text
         self.footer_fn = footer_fn
+        self.expand_height = expand
+        self.multi = multi
+        self.checked: set[int] = set()
         self._widths: dict[int, tuple] = {}
 
     def hint(self) -> str:
+        if self.multi:
+            return (f"↑↓ select · space toggle · enter confirm"
+                    f"{' · esc cancel' if not self.allow_back else ''}")
         return self.hint_text if self.hint_text is not None else super().hint()
 
     def version(self):
@@ -127,7 +135,17 @@ class CardMenu(overlays.SelectOverlay):
         Кроме курсора в карточке ничего не анимируется, поэтому на кадрах без
         нажатий рендер можно не повторять вовсе.
         """
-        return (self.selected, len(self.items))
+        return (self.selected, len(self.items), len(self.checked))
+
+    def handle_key(self, key: str, event) -> bool:
+        if self.multi and key in ("space", " "):
+            if not self._is_skipped(self.selected):
+                if self.selected in self.checked:
+                    self.checked.discard(self.selected)
+                else:
+                    self.checked.add(self.selected)
+            return True
+        return super().handle_key(key, event)
 
     # ── ширины колонок: раз на ширину экрана, а не на кадр ──
     def _layout(self, width: int) -> tuple:
@@ -135,7 +153,8 @@ class CardMenu(overlays.SelectOverlay):
         if cached is not None:
             return cached
         live = [it for i, it in enumerate(self.items) if not self._is_skipped(i)]
-        icon_w = max((cell_width(it.get("icon", "")) for it in live), default=0)
+        icon_w = 3 if self.multi else max(
+            (cell_width(it.get("icon", "")) for it in live), default=0)
         label_w = max((cell_width(it.get("label", "")) for it in live), default=0)
         badge_w = max((cell_width(it.get("badge", "")) for it in live), default=0)
         swatch_w = max((len(it.get("swatch", ())) * 2 for it in live), default=0)
@@ -192,17 +211,26 @@ class CardMenu(overlays.SelectOverlay):
         footer = self.footer_fn(self.selected) if self.footer_fn else ""
         footer_lines = footer.rstrip("\n").split("\n") if footer else []
 
-        # Порядок жертв при нехватке высоты: превью → факты шапки → строки.
+        # Порядок жертв при нехватке высоты: список → факты шапки → превью.
+        # Список скроллится, поэтому первым ужимается он; превью (темы) режем
+        # только если не помещается даже минимум строк списка.
         facts = self.facts
         head_len = len(self._head(width, pal, "", facts))
+        min_rows = min(total, 3)
         rows_room = budget - head_len - len(footer_lines)
-        if rows_room < min(total, 5):
-            footer_lines = []
-            rows_room = budget - head_len
+        if rows_room < min_rows:
+            keep = budget - head_len - min_rows
+            if keep < 2:
+                footer_lines = []
+                rows_room = budget - head_len
+            else:
+                footer_lines = footer_lines[:keep]
+                rows_room = min_rows
         if rows_room < min(total, 5) and facts:
+            # Ужимаем факты шапки — но футеру не в счёт: место возвращаем списку.
             facts = facts[:max(0, len(facts) - (min(total, 5) - rows_room))]
             head_len = len(self._head(width, pal, "", facts))
-            rows_room = budget - head_len
+            rows_room = budget - head_len - len(footer_lines)
         rows_room = max(1, rows_room)
 
         start, end, above, below = scroll_window(total, self.selected, rows_room)
@@ -224,6 +252,13 @@ class CardMenu(overlays.SelectOverlay):
                              if label and not overlays.is_divider(label) else spacer())
                 continue
             selected = i == self.selected
+            if self.multi:
+                checked = i in self.checked
+                mark = "[x]" if checked else "[ ]"
+                mark_role = "success" if checked else ""
+            else:
+                mark = str(item.get("icon", "")) or (" " if icon_w else "")
+                mark_role = str(item.get("icon_style", ""))
             cells: list[tuple[str, str]] = [(cell(item.get("label", ""), label_w), "")]
             if hint_w:
                 cells.append(("  " + cell(item.get("hint", ""), hint_w), DIM))
@@ -247,8 +282,7 @@ class CardMenu(overlays.SelectOverlay):
             lines.append(row(
                 columns(cells, plain=selected),
                 selected=selected, width=width,
-                mark=str(item.get("icon", "")) or (" " if icon_w else ""),
-                mark_role=str(item.get("icon_style", "")),
+                mark=mark, mark_role=mark_role,
                 right="◄" if item.get("active") else "", right_role="success",
             ))
         if below:
@@ -261,18 +295,30 @@ async def card_menu(items: list[dict], *, title: str = "", status: str = "",
                     status_style: str = "muted", facts: Sequence[str] = (),
                     current: int = 0, hint_text: str | None = None,
                     footer_fn: Callable[[int], str] | None = None,
-                    allow_back: bool = False) -> int | None:
-    """Показать меню-карточку. Протокол возврата — как у `select_menu`."""
+                    allow_back: bool = False, expand: bool = False,
+                    multi: bool = False) -> int | None | tuple[int | None, set[int]]:
+    """Показать меню-карточку. Протокол возврата — как у `select_menu`.
+
+    `expand=True` разрешает оверлею занять всю свободную высоту экрана
+    вместо нижней половины — для меню с большим живым превью (/themes).
+    `multi=True` включает чекбоксы: пробел отмечает пункты, возвращается
+    кортеж `(выбор, set(отмеченные индексы))`.
+    """
     if not items:
-        return None
+        return (None, set()) if multi else None
     shell = get_shell()
     if shell is None:
         # Headless / до старта Application: рисовать некому, отдаём тот же
         # синхронный список, на который откатывается и сам overlays.
         from ui.menu import select_menu as legacy
-        return legacy(items, current, title)
-    return await shell.run_overlay(CardMenu(
+        choice = legacy(items, current, title)
+        return (choice, set()) if multi else choice
+    overlay = CardMenu(
         items, title=title, status=status, status_style=status_style,
         facts=facts, current=current, hint_text=hint_text,
-        footer_fn=footer_fn, allow_back=allow_back,
-    ))
+        footer_fn=footer_fn, allow_back=allow_back, expand=expand, multi=multi,
+    )
+    choice = await shell.run_overlay(overlay)
+    if multi:
+        return choice, overlay.checked
+    return choice

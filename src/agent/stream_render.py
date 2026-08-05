@@ -19,29 +19,7 @@ from config.themes import t
 from config.ui import ui
 
 THINKING_FRAMES = SPINNER_FRAMES
-WRITING_FRAMES = SPINNER_FRAMES
 
-
-def make_thinking_indicator(spinner_frame: str) -> Text:
-    txt = Text()
-    txt.append(f"{spinner_frame} ", style=f"bold {t('accent')}")
-    suffix = ui.get("indicators.thinking_suffix", f"{_i18n('ui.thinking')}…")
-    txt.append(f"{suffix}", style=f"bold {t('accent')}")
-    return txt
-
-
-def make_writing_indicator(spinner_frame: str, tool_name: str) -> Text:
-    """Однострочный индикатор подготовки команды без её имени.
-
-    Подписи команд принадлежат статическому scrollback. Динамическая зона
-    намеренно не показывает ни имя, ни ещё недописанные аргументы: её высота
-    остаётся постоянной, пока модель формирует вызов.
-    """
-    del tool_name
-    txt = Text()
-    txt.append(f"{spinner_frame} ", style=f"bold {t('accent')}")
-    txt.append("working…", style="dim")
-    return txt
 
 
 _TABLE_SEPARATOR_RE = re.compile(
@@ -68,7 +46,7 @@ def _inline_md(text: str) -> str:
     out = _esc(text)
     out = re.sub(r"\*\*([^*\n]+?)\*\*", r"[bold]\1[/bold]", out)
     out = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"[italic]\1[/italic]", out)
-    out = re.sub(r"`([^`\n]+?)`", r"[cyan]\1[/cyan]", out)
+    out = re.sub(r"`([^`\n]+?)`", f"[{t('info')}]\\1[/{t('info')}]", out)
     return out
 
 
@@ -308,6 +286,24 @@ def _build_partial_syntax(code: str, lang: str, cache_token):
     return syn
 
 
+def _tool_header(
+    display_name: str, color: str, file_path: str | None,
+    elapsed_seconds: float, spinner_frame: str,
+) -> Text:
+    """Общий заголовок для компактного превью: спиннер + имя + (путь) + время."""
+    header = Text()
+    if spinner_frame:
+        header.append(f"{spinner_frame} ", style=f"bold {color}")
+    header.append(display_name, style=f"bold {color}")
+    if file_path:
+        header.append("(", style=f"bold {color}")
+        header.append(file_path, style=f"bold {color}")
+        header.append(")", style=f"bold {color}")
+    if elapsed_seconds > 0:
+        header.append(f"  {elapsed_seconds:.1f}s", style="dim")
+    return header
+
+
 def _render_compact_write_preview(
     tool_name: str, file_path: str | None, display_text: str,
     elapsed_seconds: float, spinner_frame: str,
@@ -330,17 +326,7 @@ def _render_compact_write_preview(
         raw_lines = raw_lines[:-1]
     total = len(raw_lines)
 
-    header = Text()
-    if spinner_frame:
-        header.append(f"{spinner_frame} ", style=f"bold {color}")
-    name_only = display_name
-    header.append(name_only, style=f"bold {color}")
-    if file_path:
-        header.append("(", style=f"bold {color}")
-        header.append(file_path, style=f"bold {color}")
-        header.append(")", style=f"bold {color}")
-    if elapsed_seconds > 0:
-        header.append(f"  {elapsed_seconds:.1f}s", style="dim")
+    header = _tool_header(display_name, color, file_path, elapsed_seconds, spinner_frame)
 
     parts = [header]
 
@@ -384,16 +370,7 @@ def _render_compact_patch_preview(
 
     display_name, color = TOOL_DISPLAY.get("patch_file", ("Tool", t("warning")))
 
-    header = Text()
-    if spinner_frame:
-        header.append(f"{spinner_frame} ", style=f"bold {color}")
-    header.append(display_name, style=f"bold {color}")
-    if file_path:
-        header.append("(", style=f"bold {color}")
-        header.append(file_path, style=f"bold {color}")
-        header.append(")", style=f"bold {color}")
-    if elapsed_seconds > 0:
-        header.append(f"  {elapsed_seconds:.1f}s", style="dim")
+    header = _tool_header(display_name, color, file_path, elapsed_seconds, spinner_frame)
 
     # Парсим текущие секции из частичного body
     matches = list(_PATCH_SECTION_RE.finditer(body))
@@ -603,7 +580,7 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
     return Group(header, Text(ui.get("symbols.compact_separator_prefix", "└─"), style="dim"), syntax)
 
 
-def render_reasoning_panel(text: str, streaming: bool = False):
+def render_reasoning_panel(text: str, streaming: bool = False, elapsed: float | None = None):
     """Панель с реальными мыслями ИИ (reasoning_content) — формат think-блока с пометкой raw."""
     from agent.display import is_compact, is_expanded_preview
     from ui.formatting import latex_to_unicode
@@ -616,17 +593,9 @@ def render_reasoning_panel(text: str, streaming: bool = False):
     if not full:
         return Text("")
 
-    if streaming:
-        # Низкий стабильный кадр в Live, иначе transient не стирается.
-        lines = full.split("\n")
-        max_lines = int(ui.get("limits.think_stream_lines", 6))
-        if len(lines) > max_lines:
-            full = "\n".join(lines[-max_lines:])
-        full = full + "\u258c"
-
-    if is_compact():
+    if is_compact:
         header = Text()
-        header.append(f"{emoji} {label}", style="bold magenta")
+        header.append(f"{emoji} {label}", style=f"bold {t('magenta')}")
         prefix = ui.get("symbols.summary_prefix", "⎿  ")
 
         try:
@@ -635,6 +604,9 @@ def render_reasoning_panel(text: str, streaming: bool = False):
         except Exception:
             term_w = 80
         avail = max(20, term_w - 6)
+
+        if streaming:
+            full = full + "\u258c"
 
         words = full.replace("\n", " ").split(" ")
         all_lines: list[str] = []
@@ -650,13 +622,27 @@ def render_reasoning_panel(text: str, streaming: bool = False):
         if cur:
             all_lines.append(cur)
 
-        if streaming or is_expanded_preview():
+        if streaming:
+            # Стрим: окно растёт от 1 строки до max_lines, дальше — прокрутка
+            # хвоста фиксированной высоты.
+            max_lines = int(ui.get("limits.think_stream_lines", 6))
+            vis_lines = all_lines[-max_lines:] if len(all_lines) > max_lines else all_lines
+            hidden = 0
+        elif is_expanded_preview():
             vis_lines = all_lines
             hidden = 0
         else:
-            max_lines = int(ui.get("limits.think_preview_lines", 5))
-            vis_lines = all_lines[:max_lines]
-            hidden = len(all_lines) - len(vis_lines)
+            # Финал: шапка с секундами размышления зелёным через пробел +
+            # одна строка «…N строк (ctrl+o развернуть)», полный текст —
+            # по Ctrl+O.
+            if elapsed is not None:
+                header.append(" ")
+                header.append(
+                    Text(_i18n("compact.think_seconds", n=max(1, round(elapsed))), style=t("success"))
+                )
+            summary = Text("   " + prefix, style=muted)
+            summary.append(_i18n("compact.think_expand", n=len(all_lines)), style="dim italic")
+            return Group(header, summary)
 
         out: list = [header]
         for i, ln in enumerate(vis_lines):
@@ -693,7 +679,11 @@ def render_live_group(
             # чтобы пользователь видел полный текст рассуждения сразу.
             from agent.think import ThinkLog, ThoughtStep, render_think_static
             tmp_log = ThinkLog(steps=[*list(think_log.steps), ThoughtStep(text=partial_thought + "▌")])
+            # high-water mark переносится между кадрами, иначе окно сжималось
+            # бы на каждом новом чанке.
+            tmp_log.peak_lines = think_log.peak_lines
             parts.append(render_think_static(tmp_log, streaming=True))
+            think_log.peak_lines = max(think_log.peak_lines, tmp_log.peak_lines)
         elif think_log.total > 0:
             from agent.think import render_think_static
             parts.append(render_think_static(think_log, streaming=True))
@@ -716,25 +706,19 @@ def render_live_group(
         # think уже отображается выше через render_think_static с partial-текстом
         # (parse_partial_thought на text-буфере). Generic panel НЕ нужна.
         pass
-    elif has_partial:
-        # Имя команды, её аргументы и partial-превью не должны жить в
-        # динамической зоне. Они менялись на каждом чанке, раздували высоту
-        # кадра и дёргали открытые меню. Полный подписанный блок появится в
-        # scrollback ровно один раз после выполнения.
-        parts.append(Text(""))
-        parts.append(make_writing_indicator(writing_frame, partial_tool))
-
-    if not parts:
-        parts.append(make_thinking_indicator(spinner_frame))
+    # Для обычного partial-инструмента отдельный старый Working больше не
+    # рисуем: единый живой раундовый блок agent.working уже всегда находится
+    # ниже. Здесь остаются только реальные мысли/ответ.
+    del spinner_frame, writing_frame
 
     return Group(*parts)
 
 
 def make_interrupt_indicator(dots: int = 1) -> Text:
-    t = Text()
+    txt = Text()
     marker = ui.get("symbols.interrupt_marker", "■ ")
     base_text = ui.get("indicators.interrupt_text", "Waiting for response")
-    t.append(f"  {marker}", style="bold yellow")
-    t.append(f"{base_text}{'.' * dots}", style="dim yellow")
-    t.append(f"  {ui.get('indicators.interrupt_hint', '(Ctrl+C = stop)')}", style="dim")
-    return t
+    txt.append(f"  {marker}", style=f"bold {t('warning')}")
+    txt.append(f"{base_text}{'.' * dots}", style=f"dim {t('warning')}")
+    txt.append(f"  {ui.get('indicators.interrupt_hint', '(Ctrl+C = stop)')}", style="dim")
+    return txt

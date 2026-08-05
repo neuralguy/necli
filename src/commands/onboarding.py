@@ -149,11 +149,11 @@ def _theme_list_panel(names: list[str], selected: int, current: str, width: int)
         is_cur = name == current
         marker = "❯ " if is_sel else "  "
         if is_cur and is_sel:
-            name_style = "bold green"
+            name_style = f"bold {tc('success')}"
         elif is_cur:
-            name_style = "green"
+            name_style = tc("success")
         elif is_sel:
-            name_style = "bold white"
+            name_style = f"bold {tc('fg_primary')}"
         else:
             name_style = ""
         name_cell = Text(marker + name + (" ●" if is_cur else ""), style=name_style)
@@ -246,7 +246,7 @@ async def _step_provider(start: int = 0) -> tuple[bool, int]:
         provider_type=ptype, api_format=api_format,
     )
     reload_providers()
-    print_static(f"[green]✓[/green] {_('api.added', name=name)}")
+    print_static(f"[{tc('success')}]✓[/{tc('success')}] {_('api.added', name=name)}")
 
     if pid not in ("ollama",):
         await _ask_api_key(pid, name)
@@ -273,9 +273,9 @@ async def _ask_api_key(pid: str, name: str) -> None:
     ) or "").strip()
     if key:
         _set_key(pid, key)
-        print_static(f"[green]✓[/green] {_('api.key_set')}")
+        print_static(f"[{tc('success')}]✓[/{tc('success')}] {_('api.key_set')}")
     else:
-        print_static(f"  [yellow]⚠[/yellow] {_('onboarding.key_skipped', name=name)}")
+        print_static(f"  [{tc('warning')}]⚠[/{tc('warning')}] {_('onboarding.key_skipped', name=name)}")
 
 
 def _ensure_default_provider() -> None:

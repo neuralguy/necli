@@ -1,7 +1,9 @@
-"""Live-превью темы: компактный набор реальных UI-блоков с заданной палитрой.
+"""Live-превью темы: реальные compact-блоки CLI с заданной палитрой.
 
-Используется в меню /themes для визуализации блоков tool/response/diff
-с подсвеченной темой в текущем (compact, без рамок) формате вывода.
+Блоки повторяют то, что агент реально рисует в компактном режиме
+(agent/display.py, agent/think.py): заголовки инструментов берутся из
+config.ui — того же источника, что и у боевого рендера, — а нумерация
+строк, «⎿»-сводки, diff-строки с фоном и строка ввода сохраняют вид.
 """
 
 from io import StringIO
@@ -9,60 +11,115 @@ from io import StringIO
 from rich.console import Console, Group
 from rich.text import Text
 
+from config import ui
+from config.i18n import t as _i18n
+from config.themes import BUILTIN_THEMES, DEFAULT_THEME
+
+
+def _darken(color: str, factor: float) -> str:
+    """Статичный кадр тёмной волны для превью темы."""
+    raw = str(color or "").removeprefix("#")
+    if len(raw) == 3:
+        raw = "".join(char * 2 for char in raw)
+    if len(raw) != 6:
+        return color
+    try:
+        channels = [int(raw[index:index + 2], 16) for index in (0, 2, 4)]
+    except ValueError:
+        return color
+    return "#" + "".join(
+        f"{round(channel * factor):02x}" for channel in channels
+    )
+
+
+def _tool_disp(tool: str) -> tuple[str, str]:
+    """(display_name, роль палитры) инструмента — как у боевого рендера."""
+    info = ui.tool(tool)
+    emoji = (info.get("emoji", "") or "").strip()
+    label = info.get("label", tool) or tool
+    role = info.get("color_role", "warning") or "warning"
+    return f"{emoji} {label}".strip(), role
+
+
+def _hdr(tool: str, arg: str, colors: dict, *,
+         status: tuple[str, str] | None = None,
+         status_color: str | None = None) -> Text:
+    """Заголовок блока: `⏺ Shell(ls -la src/)  ✓ 0.1s`."""
+    name, role = _tool_disp(tool)
+    color = colors.get(role, colors.get("warning"))
+    txt = Text()
+    txt.append(f"{name}(", style=f"bold {color}")
+    txt.append(arg, style=f"bold {color}")
+    txt.append(")", style=f"bold {color}")
+    if status:
+        icon, elapsed = status
+        txt.append("  ", style="default")
+        txt.append(icon, style=status_color or colors.get("success"))
+        if elapsed:
+            txt.append(f" {elapsed}", style="dim")
+    return txt
+
 
 def render_theme_preview(colors: dict, width: int = 76) -> str:
-    """Рендерит компактные блоки UI в заданной палитре (формат без рамок)."""
-    accent = colors.get("accent", "#4a9eff")
-    success = colors.get("success", "#50fa7b")
-    warning = colors.get("warning", "#f1fa8c")
-    error = colors.get("error", "#ff5555")
-    info = colors.get("info", "#8be9fd")
-    magenta = colors.get("magenta", "#ff79c6")
-    purple = colors.get("purple", "#bd93f9")
-    dim_text = colors.get("dim_text", "#666666")
+    """Рендерит реальные compact-блоки CLI в заданной палитре."""
+    # Частичная палитра (кастомные оверрайды) дополняется дефолтной темой,
+    # чтобы превью никогда не зависело от хардкода.
+    merged = dict(BUILTIN_THEMES[DEFAULT_THEME])
+    if isinstance(colors, dict):
+        merged.update(colors)
+    colors = merged
+
+    accent = colors["accent"]
+    success = colors["success"]
+    warning = colors["warning"]
+    info = colors["info"]
+    dim_text = colors["dim_text"]
+    fg_primary = colors["fg_primary"]
 
     parts: list = []
 
-    # Response — header "● текст"
+    # Response — «● текст»
     response = Text()
     response.append("● ", style=f"bold {success}")
     response.append("Done: renamed old_handler → new_handler.", style="default")
     parts.append(response)
     parts.append(Text(""))
 
-    # Shell — заголовок + нумерованное превью
-    shell_hdr = Text()
-    shell_hdr.append("⏺ Shell", style=f"bold {warning}")
-    shell_hdr.append("(ls -la src/)", style=f"bold {warning}")
-    shell_hdr.append("  ", style="default")
-    shell_hdr.append("✓", style=success)
-    shell_hdr.append(" 0.1s", style="dim")
-    parts.append(shell_hdr)
-    shell_line = Text("      1 ", style="white")
-    shell_line.append("total 24", style="default")
-    parts.append(shell_line)
+    # Read — заголовок + сводка пути
+    parts.append(_hdr("read", "main.py", colors))
+    read_sum = Text()
+    read_sum.append("   ⎿  ", style=info)
+    read_sum.append("main.py lines 1-42", style=info)
+    parts.append(read_sum)
     parts.append(Text(""))
 
-    # Patch — заголовок + inline diff с фоном
-    patch_hdr = Text()
-    patch_hdr.append("🔧 Patch", style=f"bold {warning}")
-    patch_hdr.append("(main.py)", style=f"bold {warning}")
-    patch_hdr.append("  ", style="default")
-    patch_hdr.append("✓", style=success)
-    patch_hdr.append(" 0.3s", style="dim")
-    parts.append(patch_hdr)
-    summary = Text("   ⎿  ", style=warning)
-    summary.append("1 changed", style=warning)
-    parts.append(summary)
+    # Shell — заголовок + нумерованное превью вывода
+    parts.append(_hdr("shell", "ls -la src/", colors, status=("✓", "0.1s")))
+    shell_line = Text("      1 ", style=colors["fg_primary"])
+    shell_line.append("total 24", style="default")
+    parts.append(shell_line)
+    parts.append(Text(
+        "        " + _i18n("compact.more_lines", n=7),
+        style=f"italic {dim_text}",
+    ))
+    parts.append(Text(""))
 
-    bg_del = "#2a0808"
-    bg_add = "#082a08"
-    fg_del = error
-    fg_add = success
-    body_w = max(8, width - 11)
+    # Patch — заголовок + сводка + inline-diff с фоном (как в display.py)
+    parts.append(_hdr("patch_file", "main.py", colors, status=("✓", "0.3s")))
+    patch_sum = Text("   ⎿  ", style=warning)
+    patch_sum.append("1 changed", style=warning)
+    parts.append(patch_sum)
 
-    def _diff_row(num: int, sign: str, text: str, fg: str, bg: str) -> Text:
-        prefix = Text(f"      {num} ", style="white")
+    bg_del = colors["diff_del_bg"]
+    bg_add = colors["diff_add_bg"]
+    fg_del = colors["diff_del_fg"]
+    fg_add = colors["diff_add_fg"]
+    pref_del = ui.get("diff_colors.prefix_delete", "- ")
+    pref_add = ui.get("diff_colors.prefix_add", "+ ")
+    body_w = max(8, width - 6 - 1 - len(pref_del) - 2)
+
+    def _diff_row(num: str, sign: str, text: str, fg: str, bg: str) -> Text:
+        prefix = Text(f"      {num} ", style=colors["fg_primary"])
         sign_t = Text(sign, style=f"bold {fg} on {bg}")
         body = Text(text, style=f"{fg} on {bg}")
         pad = body_w - len(text)
@@ -70,52 +127,40 @@ def render_theme_preview(colors: dict, width: int = 76) -> str:
             body.append(" " * pad, style=f"on {bg}")
         return prefix + sign_t + body
 
-    parts.append(_diff_row(12, "- ", "return req.data", fg_del, bg_del))
-    parts.append(_diff_row(12, "+ ", "return req.data.strip()", fg_add, bg_add))
+    parts.append(_diff_row("12", pref_del, "return req.data", fg_del, bg_del))
+    parts.append(_diff_row("12", pref_add, "return req.data.strip()", fg_add, bg_add))
     parts.append(Text(""))
 
-    # Delete — заголовок без превью
-    delete_hdr = Text()
-    delete_hdr.append("🗑  Delete", style=f"bold {error}")
-    delete_hdr.append("(old_handler.py)", style=f"bold {error}")
-    delete_hdr.append("  ", style="default")
-    delete_hdr.append("✓", style=error)
-    delete_hdr.append(" 0.0s", style="dim")
-    parts.append(delete_hdr)
+    # Create — заголовок без контента (мгновенная тихая операция)
+    parts.append(_hdr("create_file", "new_handler.py", colors,
+                      status=("✓", ""), status_color=success))
     parts.append(Text(""))
 
-    # Grep — заголовок + summary + результат
-    grep_hdr = Text()
-    grep_hdr.append("🔎 Grep", style=f"bold {magenta}")
-    grep_hdr.append("(new_handler → src/)", style=f"bold {magenta}")
-    grep_hdr.append("  ", style="default")
-    grep_hdr.append("✓", style=success)
-    grep_hdr.append(" 3 matches", style="dim")
-    parts.append(grep_hdr)
+    # Grep — заголовок + сводка из первой строки вывода
+    parts.append(_hdr("grep", "new_handler -> src/", colors, status=("✓", "0.1s")))
     grep_sum = Text("   ⎿  ", style=info)
-    grep_sum.append("found 3", style=info)
+    grep_sum.append("main.py:42: def new_handler(req):", style=info)
     parts.append(grep_sum)
-    grep_line = Text("      ", style="default")
-    grep_line.append("main.py:42: ", style=f"dim {info}")
-    grep_line.append("def ", style=magenta)
-    grep_line.append("new_handler", style=f"bold {success}")
-    grep_line.append("(req):", style="default")
-    parts.append(grep_line)
     parts.append(Text(""))
 
-    # Строка с разными ролями (mode/read/ssh/prompt/thinking)
-    misc = Text()
-    misc.append("  [agent]", style=f"bold {purple}")
-    misc.append("  ", style="default")
-    misc.append("📖 read", style=info)
-    misc.append("  ", style="default")
-    misc.append("🔗 ssh", style=magenta)
-    misc.append("  ", style="default")
-    misc.append("❯ prompt", style=f"bold {accent}")
-    misc.append("  ", style="default")
-    from config.i18n import t as _i18n
-    misc.append(f"⌛ {_i18n('ui.thinking')}…", style=f"italic {dim_text}")
-    parts.append(misc)
+    # Единый раундовый Working-блок: акцент с тёмной волной + живая сводка.
+    working_hdr = Text()
+    factors = (1.0, 0.92, 0.70, 0.45, 0.60, 0.84, 1.0)
+    for char, factor in zip("Working", factors, strict=True):
+        color = _darken(accent, factor)
+        working_hdr.append(char, style=f"bold {color}")
+    working_hdr.append(" 3s", style="dim")
+    parts.append(working_hdr)
+    working_sum = Text("   ⎿  ", style="dim")
+    working_sum.append("2 calls · 8.4k tokens", style=fg_primary)
+    parts.append(working_sum)
+    parts.append(Text(""))
+
+    # Строка ввода: «🚀agent ❯»
+    prompt = Text()
+    prompt.append("🚀agent ", style=f"bold {accent}")
+    prompt.append("❯", style=f"bold {success}")
+    parts.append(prompt)
 
     body = Group(*parts)
 

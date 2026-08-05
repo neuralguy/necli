@@ -149,10 +149,15 @@ class BaseProvider:
         # Переопределяются наследниками / фабриками
         self._api_url: str = ""
         self._provider_name: str = "Provider"
+        self._provider_id: str = ""
         self._proxy: str = ""
         self._api_credentials: list[dict[str, Any]] = []
         self._credential_index: int = 0
         self._prompt_cache_mode: str = "auto"
+        # Доля цены входа для токенов, прочитанных из кэша (Anthropic: 0.1×,
+        # OpenAI-совместимые: 0.5×). Переопределяется per-provider через
+        # definition.extra["cache_read_factor"].
+        self._cache_read_factor: float = 0.1
 
     # ── Утилиты ──
 
@@ -209,6 +214,62 @@ class BaseProvider:
             f"{self._provider_name} rotating API key | reason={reason} | "
             f"key={self._credential_index + 1}/{len(self._api_credentials)}"
         )
+
+    def _cache_enabled(self) -> bool:
+        """Включён ли prompt cache у провайдера (по _prompt_cache_mode)."""
+        mode = str(self._prompt_cache_mode or "").lower()
+        return mode not in {"off", "false", "none", "disabled"}
+
+    def _usage_cost(self, usage: dict) -> float:
+        """Стоимость запроса в долларах по usage и ценам модели (за 1M токенов).
+
+        Кэш учитывается только если у провайдера включена опция кэша в меню
+        (_prompt_cache_mode). Тогда токены, прочитанные из кэша (cache_read),
+        тарифицируются дешевле обычного входа (коэффициент _cache_read_factor),
+        а запись в кэш (cache_creation) — как обычный вход. Входные токены в
+        usage уже включают кэш-часть, поэтому вычитаем её, чтобы не платить
+        дважды. Если кэш выключен — весь вход по полной цене.
+        """
+        inp = float(usage.get("input_tokens") or usage.get("input") or 0)
+        out = float(usage.get("output_tokens") or usage.get("output") or 0)
+        cache_read = float(usage.get("cache_read_input_tokens") or usage.get("cache_read") or 0)
+        cache_creation = float(usage.get("cache_creation_input_tokens") or usage.get("cache_creation") or 0)
+        if inp <= 0 and out <= 0:
+            return 0.0
+        try:
+            from models import get_pricing
+        except ImportError:
+            return 0.0
+        in_price, out_price = get_pricing(self.model)
+        if not self._cache_enabled():
+            return (inp * in_price + out * out_price) / 1_000_000.0
+        regular_input = max(0.0, inp - cache_read - cache_creation)
+        return (regular_input * in_price
+                + cache_creation * in_price
+                + cache_read * in_price * self._cache_read_factor
+                + out * out_price) / 1_000_000.0
+
+    def spend_usage(self, usage: dict) -> None:
+        """Списывает стоимость запроса с баланса текущего ключа.
+
+        Баланс хранится в .data/apis.json (по умолчанию 0), цена берётся из
+        конфигурации модели. Нет цены/ключа в конфиге — списание пропускается.
+        """
+        if not self._provider_id or not self._api_credentials:
+            return
+        cost = self._usage_cost(usage)
+        if cost <= 0:
+            return
+        from apis.config import spend_api_credential
+
+        cred = self._api_credentials[self._credential_index % len(self._api_credentials)]
+        new_balance = spend_api_credential(self._provider_id, cred["key"], cost)
+        if new_balance is not None:
+            cred["balance"] = new_balance
+            logger.info(
+                f"{self._provider_name} balance −{cost:.6f}$ → {new_balance:.4f}$ "
+                f"(key {self._credential_index + 1}/{len(self._api_credentials)})"
+            )
 
     def _all_credentials_failed_error(self, status_code: int, last_error: Exception | None) -> ValueError:
         return ValueError(

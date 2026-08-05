@@ -48,7 +48,7 @@ from collections.abc import Callable
 from wcwidth import wcswidth
 
 from config.i18n import t as tr
-from config.themes import t
+from config.themes import ansi_24bit, t
 from ui.shell import Overlay, get_shell
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,15 @@ logger = logging.getLogger(__name__)
 RESET = "\x1b[0m"
 DIM = "\x1b[2m"
 BOLD = "\x1b[1m"
-WHITE = "\x1b[38;2;255;255;255m"
+
+
+def white_fg() -> str:
+    """ANSI SGR для основного текста темы (роль fg_primary), 24-bit.
+
+    Функция, а не константа: тема переключается на ходу, и строку надо
+    пересобирать каждый кадр.
+    """
+    return f"\x1b[{ansi_24bit(t('fg_primary'))}m"
 
 #: Курсор строки — тот же символ, что у поля ввода, чтобы «где я» читалось сразу.
 CURSOR = "❯"
@@ -348,7 +356,7 @@ def row(label: str, hint: str = "", *, selected: bool = False, width: int = 0,
         if part_role:
             sgr += role_fg(part_role)
         elif selected:
-            sgr += WHITE
+            sgr += white_fg()
         # Метки из старых меню приходят уже покрашенными; их внутренний RESET
         # погасил бы фон подсветки на середине строки — возвращаем его обратно.
         if sel_bg and "\x1b[" in text:
@@ -782,7 +790,7 @@ __all__ = [
     "DIM",
     "INDENT",
     "RESET",
-    "WHITE",
+    "white_fg",
     "PanelOverlay",
     "SelectOverlay",
     "TextOverlay",

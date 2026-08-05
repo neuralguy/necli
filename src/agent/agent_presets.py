@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 AGENTS_DIR = BASE_DIR / "agents"
 PRESET_FILENAME = "AGENT.md"
 
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+from _frontmatter import parse_frontmatter as _parse_frontmatter
 
 
 @dataclass
@@ -51,18 +51,7 @@ def get_agents_dir() -> Path:
     return AGENTS_DIR
 
 
-def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    m = _FRONTMATTER_RE.match(text)
-    if not m:
-        return {}, text
-    raw_yaml = m.group(1)
-    body = text[m.end():]
-    meta: dict[str, str] = {}
-    for line in raw_yaml.splitlines():
-        if ":" in line:
-            key, _, val = line.partition(":")
-            meta[key.strip().lower()] = val.strip()
-    return meta, body
+
 
 
 def _load_body(preset_path: Path) -> str:

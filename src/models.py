@@ -155,6 +155,26 @@ def normalize_model_name(model_id: str) -> str:
 def _normalize(s: str) -> str:
     return s.lower().replace(" ", "").replace("-", "").replace("_", "")
 
+def _resolve_from_api_providers(query: str) -> str | None:
+    """Ищет модель среди API-провайдеров (по id или display_name, case-insensitive)."""
+    try:
+        from apis.config import list_api_configs
+    except Exception:
+        return None
+    try:
+        configs = list_api_configs()
+    except Exception:
+        return None
+    q = query.strip().lower()
+    for cfg in configs:
+        for m in cfg.get("models") or []:
+            mid = str(m.get("id", "")).strip().lower()
+            mname = str(m.get("display_name", "")).strip().lower()
+            if q == mid or (mname and q == mname):
+                return str(m.get("id", ""))
+    return None
+
+
 def resolve_model(name: str) -> str | None:
     if not name or not name.strip():
         return None
@@ -198,7 +218,8 @@ def resolve_model(name: str) -> str | None:
     if all_matches:
         return min(all_matches, key=len)
 
-    return None
+    # Fallback: поиск среди моделей API-провайдеров
+    return _resolve_from_api_providers(query)
 
 def list_models() -> list[str]:
     return sorted(CANONICAL_MODELS.keys())

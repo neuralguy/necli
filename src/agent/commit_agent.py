@@ -16,6 +16,7 @@ import logging
 from collections.abc import Callable
 
 import tools
+from agent._common import build_repeat_tool_notice, native_tool_calls_to_calls
 from agent.messages import gather_proof
 from agent.sanitizer import sanitize_response
 from apis._retry import with_throttle_retry
@@ -33,18 +34,6 @@ from tools._paths import use_working_dir
 from tools.registry import execute_call
 
 logger = logging.getLogger(__name__)
-
-MAX_COMMIT_ITERATIONS = 40
-
-
-def _native_tool_calls_to_calls(native_calls: list[dict]) -> list[tools.ToolCall]:
-    calls = []
-    for call in native_calls:
-        name = call.get("name") or "shell"
-        args = call.get("args") if isinstance(call.get("args"), dict) else {}
-        command = str(args.get("command") or "shell") if name == "shell" else name
-        calls.append(tools.ToolCall(command=command, tool_name=name, args=args, raw=""))
-    return calls
 
 _COMMIT_MODE_BLOCK = (
     "\n\n━━━ COMMIT AGENT MODE ━━━\n"
@@ -149,21 +138,6 @@ def _truncate(text: str, limit: int = 20000) -> str:
     return text[:half] + f"\n... [{len(text)} chars, truncated] ...\n" + text[-half:]
 
 
-def _build_repeat_tool_notice(last_tool_name: str | None, calls: list) -> tuple[str, str | None]:
-    if not calls:
-        return "", None
-    tool_name = calls[0].tool_name
-    if tool_name != last_tool_name:
-        return "", tool_name
-    return (
-        "[repeat-tool notice]\n"
-        f"You called `{tool_name}` in two consecutive tool rounds. "
-        "Before calling it again, check whether the previous result already "
-        "answers the task, or explain why repeating the same tool is necessary.",
-        tool_name,
-    )
-
-
 async def run_commit_agent(
     provider_id: str,
     model_id: str,
@@ -200,8 +174,10 @@ async def run_commit_agent(
 
     raw_text = ""
     last_tool_name: str | None = None
-    for i in range(MAX_COMMIT_ITERATIONS):
-        _status(f"iteration {i + 1}")
+    iteration = 0
+    while True:
+        iteration += 1
+        _status(f"iteration {iteration}")
         raw_text, native_calls = await _call_model(session, provider_id, model_id, use_native, schemas)
         raw_text = sanitize_response(raw_text)
 
@@ -211,12 +187,12 @@ async def run_commit_agent(
         session.messages.append(AIMessage(**kwargs))
 
         if native_calls:
-            calls = _native_tool_calls_to_calls(native_calls)
+            calls = native_tool_calls_to_calls(native_calls)
         else:
             calls = parse_tool_calls(raw_text)
         calls = [c for c in calls if c.tool_name != "think"]
 
-        repeat_tool_notice, last_tool_name = _build_repeat_tool_notice(last_tool_name, calls)
+        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(last_tool_name, calls)
         if not calls:
             return strip_tool_calls(raw_text).strip()
 
@@ -248,6 +224,3 @@ async def run_commit_agent(
             if repeat_tool_notice:
                 result_msg += "\n\n" + repeat_tool_notice
             session.messages.append(HumanMessage(content=result_msg))
-
-    logger.warning("commit-agent: iteration limit reached")
-    return strip_tool_calls(raw_text).strip() + "\n\n[commit agent iteration limit]"

@@ -1,8 +1,8 @@
 """Отображение субагентов.
 
 SubagentBuffer — буфер событий одного субагента с рендерингом.
-SubagentTracker — панель прогона в динамической зоне Shell (раньше — rich Live).
-SwarmOverlay — та же панель в нижней зоне, но с навигацией.
+SubagentTracker — компактные интерактивные строки под полем ввода.
+AgentOverlay / SwarmOverlay — полноэкранные живые просмотры.
 
 Единый framed-рендер (стиль Claude Code) используется всегда. Слева панель
 «Phases» со списком фаз и прогрессом done/total (активная фаза помечена «›»),
@@ -11,9 +11,8 @@ SwarmOverlay — та же панель в нижней зоне, но с нав
 синтетическая фаза «Agents», чтобы внешний вид не переключался.
 Сверху хедер «Subagents · имя … N/M agents · общее_время».
 
-Один и тот же render_view обслуживает обе зоны, поэтому таблица, открытая
-Enter'ом со строки под рамкой, выглядит ровно как та, что тикает над рамкой:
-курсор, окно строк и панель деталей — единственное, что добавляется.
+Таблица фаз никогда не занимает место над полем ввода сама по себе: она
+строится только внутри SwarmOverlay после Enter на строке запуска.
 """
 
 import asyncio
@@ -32,7 +31,9 @@ from rich.text import Text
 from config.i18n import t as tr
 from config.themes import t
 from config.ui import ui
-from ui.shell import Overlay, RowGroup, get_shell, print_static, visible_width
+from tools import strip_tool_calls
+from tools.cancellation import CancellationScope
+from ui.shell import Overlay, RowGroup, get_shell, visible_width
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +44,7 @@ def _w() -> int:
     return term if cap <= 0 else min(cap, term)
 
 
-def _fmt_tokens(n: int) -> str:
-    """Компактный формат счётчика токенов: 940, 25.8k, 1.2M."""
-    if n < 1000:
-        return str(n)
-    if n < 1_000_000:
-        v = n / 1000.0
-        return f"{v:.1f}k" if v < 100 else f"{v:.0f}k"
-    v = n / 1_000_000.0
-    return f"{v:.1f}M" if v < 100 else f"{v:.0f}M"
+from ui.formatting import format_tokens as _fmt_tokens
 
 
 _TOOL_HINT_ARG = {
@@ -74,6 +67,18 @@ def _tool_emoji(tool_name: str) -> str:
         return "•"
 
 
+def _tool_label(tool_name: str) -> str:
+    try:
+        return str(ui.tool(tool_name).get("label") or tool_name)
+    except Exception:
+        logger.debug("tool label lookup failed for %r", tool_name, exc_info=True)
+        return tool_name
+
+
+def _one_line(text: str) -> str:
+    return " ".join((text or "").split())
+
+
 @dataclass
 class ToolEvent:
     tool_name: str
@@ -81,6 +86,8 @@ class ToolEvent:
     emoji: str = "•"
     status: str = "running"
     elapsed: float = 0.0
+    iteration: int = 0
+    output: str = ""
 
 
 class SubagentBuffer:
@@ -101,8 +108,15 @@ class SubagentBuffer:
         self.phase = phase or ""
         self.label = label or ""
         self.streaming_text = ""
+        self.response_history: dict[int, str] = {}
         self.tool_events: list[ToolEvent] = []
         self.iteration = 0
+        self.revision = 0
+        self._on_change = None
+        self._cancel_callback = None
+        self.cancel_scope = CancellationScope()
+        self.cancel_requested = False
+        self.in_tool_thread = False
         # Стартовое состояние — "queued", а не "starting": задача, которая ещё
         # ждёт своей волны или слота семафора (max_concurrency), НЕ инициализируется.
         # При 56 задачах и лимите 12 сорок четыре строки показывали "starting" и врали.
@@ -122,6 +136,39 @@ class SubagentBuffer:
         # Кумулятивно по всем вызовам (для справки/биллинга), НЕ для строки статуса.
         self.cumulative_tokens = 0
 
+    def bind_change(self, callback) -> None:
+        self._on_change = callback
+
+    def bind_cancel(self, callback) -> None:
+        """Связать UI с реально исполняющейся asyncio-задачей субагента."""
+        self._cancel_callback = callback
+
+    def request_cancel(self) -> bool:
+        """Остановить этот агент либо снять его с очереди до запуска."""
+        if self.status in ("done", "error"):
+            return False
+        self.cancel_requested = True
+        self.cancel_scope.cancel()
+        callback = self._cancel_callback
+        if callback is None:
+            # Будущая фаза ещё не получила asyncio.Task. Помечаем её сейчас;
+            # run_api_subagents позже увидит флаг и сформирует обычный результат.
+            self.on_error(tr("subagent.cancelled"))
+        else:
+            was_in_tool = self.in_tool_thread
+            self.status = "stopping"
+            self._changed()
+            callback(was_in_tool)
+        return True
+
+    def _changed(self) -> None:
+        self.revision += 1
+        if self._on_change is not None:
+            try:
+                self._on_change()
+            except Exception:
+                logger.debug("subagent buffer invalidate failed", exc_info=True)
+
     def _mark_activity(self) -> None:
         now = time.monotonic()
         if self.activity_start_time is None:
@@ -138,16 +185,19 @@ class SubagentBuffer:
     def on_queued(self):
         """Задача ждёт слот семафора. Часы НЕ запускаем: работа ещё не началась."""
         self.status = "queued"
+        self._changed()
 
     def on_start(self):
         """Слот получен — с этой секунды агент действительно инициализируется."""
         self._mark_activity()
         self.status = "starting"
+        self._changed()
 
     def on_chunk(self, text: str):
         self._mark_activity()
         self.streaming_text = text
         self.status = "streaming"
+        self._changed()
 
     def on_tool_start(self, tool_name: str, command: str, args: dict | None = None):
         self._mark_activity()
@@ -191,18 +241,28 @@ class SubagentBuffer:
                 tool_name=tool_name,
                 command=hint or command,
                 emoji=_tool_emoji(tool_name),
+                iteration=self.iteration,
             )
         )
+        self._changed()
 
-    def on_tool_done(self, elapsed: float = 0.0, error: bool = False):
+    def on_tool_done(self, elapsed: float = 0.0, error: bool = False, output: str = ""):
         self._mark_activity()
         if self.tool_events:
             ev = self.tool_events[-1]
             ev.status = "error" if error else "done"
             ev.elapsed = elapsed
+            # Успешный stdout в UI больше не показывается и не должен зря
+            # удерживать мегабайты в памяти. Для ошибки хватит короткой причины.
+            ev.output = (output or "")[:2000] if error else ""
+        self._changed()
 
     def on_iteration(self, n: int):
+        if self.streaming_text.strip() and n != self.iteration:
+            self.response_history[self.iteration] = self.streaming_text
+            self.streaming_text = ""
         self.iteration = n
+        self._changed()
 
     def on_usage(self, usage_metadata: dict | None) -> None:
         """Аккумулирует потребление токенов за один вызов модели.
@@ -226,15 +286,87 @@ class SubagentBuffer:
         self.output_tokens = out
         self.total_tokens = tot
         self.cumulative_tokens += tot
+        self._changed()
 
     def on_done(self, response: str):
         self._mark_activity()
+        if response and not self.streaming_text.strip():
+            self.streaming_text = response
         self.status = "done"
+        self._changed()
 
     def on_error(self, error: str):
         self._mark_activity()
         self.status = "error"
         self.error = error
+        self._changed()
+
+    def execution_lines(self, width: int) -> list[Text]:
+        """Краткий живой журнал: мысль/инструмент по строке, ответ полностью."""
+        width = max(20, width)
+        out: list[Text] = []
+        out.append(Text("Task", style=f"bold {t('accent')}"))
+        out.extend(
+            Text("  " + line, style=t("fg_primary"))
+            for line in _wrap_preserve(self.prompt.strip() or "(empty)", width)
+        )
+
+        responses = dict(self.response_history)
+        if self.streaming_text.strip():
+            responses[self.iteration] = self.streaming_text
+        iterations = sorted(set(responses) | {ev.iteration for ev in self.tool_events})
+        response_header_shown = False
+        for iteration in iterations:
+            events = [item for item in self.tool_events if item.iteration == iteration]
+            response = strip_tool_calls(responses.get(iteration, "")).strip()
+            if response:
+                # Текущий текст без инструментов — настоящий ответ, его не
+                # схлопываем. Исторический текст перед tool-call — краткая мысль.
+                is_response = iteration == self.iteration and not events
+                if is_response:
+                    if not response_header_shown:
+                        out.extend([Text(""), Text("Response", style=f"bold {t('accent')}")])
+                        response_header_shown = True
+                    out.extend(
+                        Text("  " + line, style=t("fg_primary"))
+                        for line in _wrap_preserve(response, max(12, width - 2))
+                    )
+                else:
+                    thought = Text("  💭 ", style=t("magenta"))
+                    thought.append(_one_line(response), style=t("dim_text"))
+                    thought.truncate(width, overflow="ellipsis")
+                    out.append(thought)
+            for ev in events:
+                mark, style = (
+                    ("✓", t("success")) if ev.status == "done"
+                    else ("✗", t("error")) if ev.status == "error"
+                    else ("◯", t("magenta"))
+                )
+                label = _tool_label(ev.tool_name)
+                detail = _one_line(ev.command)
+                if ev.status == "error" and ev.output.strip():
+                    reason = _one_line(ev.output)
+                    detail = f"{detail} — {reason}" if detail else reason
+                elapsed = f"  {ev.elapsed:.1f}s" if ev.status != "running" else ""
+                line = Text(f"  {mark} {ev.emoji} {label}", style=style)
+                detail_budget = width - visible_width(line.plain) - visible_width(elapsed) - 2
+                if detail and detail_budget >= 4:
+                    detail_text = Text(detail, style=t("dim_text"))
+                    detail_text.truncate(detail_budget, overflow="ellipsis")
+                    line.append("  ")
+                    line.append_text(detail_text)
+                line.append(elapsed, style="dim")
+                line.truncate(width, overflow="ellipsis")
+                out.append(line)
+        if self.error:
+            out.append(Text(""))
+            out.extend(
+                Text("Error: " + line, style=t("error"))
+                for line in _wrap_preserve(self.error, width)
+            )
+        if len(out) <= 2:
+            out.append(Text("  " + tr("subagent.no_output"), style="dim"))
+        return out
 
     # ── вспомогательные части шапки ──────────────────────────────
 
@@ -303,39 +435,10 @@ class SubagentBuffer:
             if ev.status == "done":
                 trail.append(f"\u2713{ev.emoji} ", style=t("success"))
             elif ev.status == "error":
-                trail.append(f"\u2717{ev.emoji} ", style="red")
+                trail.append(f"\u2717{ev.emoji} ", style=t("error"))
             else:
                 trail.append(f"\u25ef{ev.emoji} ", style="dim")
         return trail
-
-    def _current_action(self) -> str:
-        """Одно текущее действие компактно: `create(test.py)`, `$ pytest`.
-
-        Приоритет: бегущий инструмент → последний завершённый (✓/✗) →
-        «streaming…» только когда инструментов ещё не было вовсе. Иначе между
-        вызовами status==streaming затирал бы инструменты голым «streaming…»."""
-        if self.status == "queued":
-            # Единственное, что честно можно сказать про ждущего слот: он ждёт.
-            return tr("subagent.queued")
-        if self.status in ("done", "error", "starting"):
-            return ""
-        last = self.tool_events[-1] if self.tool_events else None
-        if last is not None:
-            arg = (last.command or "").strip()
-            if last.tool_name == "shell":
-                body = f"$ {arg}" if arg else "$ shell"
-            elif arg:
-                body = f"{last.tool_name}({arg})"
-            else:
-                body = last.tool_name
-            if last.status == "running":
-                return body
-            mark = "\u2717" if last.status == "error" else "\u2713"
-            return f"{mark}{body}"
-        # Ещё ни одного инструмента — значит модель только пишет текст.
-        if self.status == "streaming":
-            return "streaming…"
-        return ""
 
     def _action_line(self) -> Text:
         """Третья строка: что субагент делает сейчас / итог."""
@@ -347,7 +450,7 @@ class SubagentBuffer:
             txt.append(tail, style="dim")
         elif self.status == "error":
             err = (self.error or "unknown")[:80]
-            txt.append(f"error \u2014 {err}", style="red")
+            txt.append(f"error \u2014 {err}", style=t("error"))
         elif self.status == "streaming":
             lines = self.streaming_text.count("\n") + 1
             txt.append(f"iter {self.iteration + 1} \u2014 streaming ({lines} lines)", style="dim")
@@ -429,7 +532,8 @@ class SubagentBuffer:
             metrics.append(f" · {n_tools} tool{'s' if n_tools != 1 else ''}", style="dim")
         metrics.append(f" · {self.elapsed:.0f}s", style="dim")
 
-        # Левая часть — глиф + label + модель + текущее действие.
+        # Левая часть — только глиф, label и модель. Текущее действие здесь
+        # намеренно не показываем: нижняя строка должна оставаться стабильной.
         name = self.label or f"Sub{self.index + 1}"
         left = Text()
         left.append(f"{glyph} ", style=gstyle)
@@ -441,20 +545,6 @@ class SubagentBuffer:
         left.append(name, style=name_style)
         if self.model_label:
             left.append(f"  {self.model_label}", style="dim")
-
-        # Текущее действие — справа от модели. Усекается ПЕРВЫМ при нехватке
-        # ширины (имя и метрики важнее), под него берём остаток строки.
-        action = self._current_action()
-        if action:
-            fixed = len(left.plain) + len(metrics.plain) + 2  # +2 разделителя
-            avail_action = width - fixed
-            if avail_action >= 4:
-                if len(action) > avail_action:
-                    action = action[: avail_action - 1] + "\u2026"
-                # queued \u2014 \u043d\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435, \u0430 \u0435\u0433\u043e \u043e\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0438\u0435: \u043f\u0438\u0448\u0435\u043c \u0442\u0443\u0441\u043a\u043b\u043e, \u0447\u0442\u043e\u0431\u044b
-                # \u0441\u0442\u0440\u043e\u043a\u0430 \u043d\u0435 \u0447\u0438\u0442\u0430\u043b\u0430\u0441\u044c \u043a\u0430\u043a \u0440\u0430\u0431\u043e\u0442\u0430\u044e\u0449\u0430\u044f.
-                left.append(f"  {action}",
-                            style="dim" if self.status == "queued" else t("magenta"))
 
         # Собираем с выравниванием метрик вправо.
         gap = width - len(left.plain) - len(metrics.plain)
@@ -495,21 +585,23 @@ def _wrap_words(text: str, width: int) -> list[str]:
     return lines or [""]
 
 
+def _wrap_preserve(text: str, width: int) -> list[str]:
+    """Перенос журнала без схлопывания переводов строк и отступов."""
+    import textwrap
+    width = max(8, width)
+    lines: list[str] = []
+    for raw in (text or "").splitlines() or [""]:
+        if not raw:
+            lines.append("")
+        else:
+            lines.extend(textwrap.wrap(raw, width=width, break_long_words=True) or [""])
+    return lines
+
+
 _RUN_SEQ = itertools.count(1)
-
-# Живые прогоны. Нужны по двум причинам: "swarm" — канонический ключ
-# динамической зоны (см. SHELL_API.md), и второй одновременный прогон не должен
-# затирать кадр первого; плюс вертикаль экрана делится между всеми кадрами.
-_LIVE_TRACKERS: list["SubagentTracker"] = []
-
-# Прогоны с открытой таблицей: пока она открыта, кадры из динамической зоны
-# убраны — их содержимое показывает оверлей, и дублировать его незачем.
-_OPEN_TABLES: set[int] = set()
 
 #: Строки кадра помимо агентов: хедер, рамка кадра, рамка панели, индикатор.
 _PANEL_CHROME = 6
-#: Строки вне динамической зоны: статус, ввод, нижняя линия, пустая + запас.
-_OUTSIDE_ROWS = 6
 #: Панель деталей выбранного агента: шапка, задача (2), действие + рамка.
 _DETAIL_ROWS = 6
 #: Сколько строк стрима/инструментов показывать в раскрытых деталях.
@@ -518,19 +610,6 @@ _EXPAND_LINES = 8
 
 def _term_rows() -> int:
     return shutil.get_terminal_size((80, 24)).lines
-
-
-def _panel_budget(shown: int, below: int) -> int | None:
-    """Сколько строк агентов помещается в ОДИН кадр динамической зоны.
-
-    None — кадр не влезает вовсе, остаётся только строка под рамкой (для этого
-    она и есть). Иначе prompt_toolkit пишет «Window too small...»: именно это и
-    происходило, когда два одновременных прогона рисовали по 20 строк каждый.
-    """
-    if shown <= 0:
-        return None
-    per = (_term_rows() - _OUTSIDE_ROWS - below) // shown
-    return per - _PANEL_CHROME if per >= _PANEL_CHROME + 2 else None
 
 
 def _short(text: str, limit: int) -> str:
@@ -576,26 +655,25 @@ def _derive_run_name(buffers: list[SubagentBuffer]) -> str:
 
 
 class SubagentTracker:
-    """Панель субагентов: живой кадр в динамической зоне Shell + строка под рамкой.
+    """Компактные строки под вводом и полноэкранный просмотр субагентов.
 
-    Раньше кадры двигал rich Live — он лез в терминал курсором и дрался с
-    prompt_toolkit за одни и те же строки. Теперь ровно тот же callable, что
-    уходил в get_renderable, отдаётся Shell'у: его ticker вызывает его сам
-    ~10 fps, поэтому вид панели не изменился ни на символ.
-
-    Интерактив: под панелью ввода живёт строка-сводка прогона (стрелка вниз →
-    Enter), она открывает ту же таблицу оверлеем, где можно ходить по агентам и
-    фазам. Пока таблица открыта, кадр из динамической зоны убран — иначе одно и
-    то же рисовалось бы дважды.
+    Parallel/single-запуск показывает по строке на агента. Настоящий phased
+    запуск занимает одну строку и открывает двухколоночную таблицу. Никакая
+    таблица больше не рендерится над полем ввода сама по себе.
     """
 
-    def __init__(self, buffers: list[SubagentBuffer], name: str = ""):
+    def __init__(
+        self,
+        buffers: list[SubagentBuffer],
+        name: str = "",
+        *,
+        phased: bool = False,
+    ):
         self._buffers = buffers
         self._seq = next(_RUN_SEQ)
         self._name = (name or "").strip() or _derive_run_name(buffers)
-        # Ключ строки уникален всегда: прогонов может идти несколько сразу.
-        self._row_key = f"swarm-{self._seq}"
-        self._dyn_key = "swarm"
+        self._phased = bool(phased)
+        self._row_keys: list[str] = []
         self._shell = None
         self._running = False
         self._stopped = False
@@ -615,15 +693,34 @@ class SubagentTracker:
         self._running = True
         sh = get_shell()
         if sh is None:
-            # Headless / не-TTY: Application нет, анимировать нечего —
-            # финальный кадр напечатаем один раз в stop().
             return
         self._shell = sh
-        if any(live._dyn_key == self._dyn_key for live in _LIVE_TRACKERS):
-            self._dyn_key = f"swarm#{self._seq}"
-        _LIVE_TRACKERS.append(self)
-        sh.set_dynamic(self._dyn_key, self._render)
-        sh.attach_rows(self._row_key, RowGroup(self.row_label, self.open_table))
+        for buffer in self._buffers:
+            buffer.bind_change(sh.invalidate)
+        if self._phased:
+            key = f"swarm-{self._seq}"
+            self._row_keys.append(key)
+            sh.attach_rows(
+                key,
+                RowGroup(
+                    self.row_label,
+                    self.open_table,
+                    kind="agent",
+                    summary_count=len(self._buffers),
+                ),
+            )
+        else:
+            for buffer in self._buffers:
+                key = f"subagent-{self._seq}-{buffer.index}"
+                self._row_keys.append(key)
+                sh.attach_rows(
+                    key,
+                    RowGroup(
+                        lambda b=buffer: self.agent_row_label(b),
+                        lambda b=buffer: self.open_agent(b),
+                        kind="agent",
+                    ),
+                )
 
     def stop(self):
         # Идемпотентность обязательна: agent/loop.py на пути исключения зовёт
@@ -633,24 +730,15 @@ class SubagentTracker:
         self._stopped = True
         self._running = False
         sh, self._shell = self._shell, None
-        try:
-            frame = self._render_final()
-        except Exception:
-            logger.debug("subagent tracker: final render failed", exc_info=True)
-            return
+        for buffer in self._buffers:
+            buffer.bind_change(None)
         if sh is None:
-            # Трекер стартовал без Application. print_static сам решит, куда
-            # писать: если Shell успел появиться — через run_in_terminal, иначе
-            # прямо в stdout. Прямой Console.print сломал бы кадр Application.
-            print_static(frame)
             return
-        if self in _LIVE_TRACKERS:
-            _LIVE_TRACKERS.remove(self)
-        _OPEN_TABLES.discard(self._seq)
-        sh.clear_dynamic(self._dyn_key)
-        sh.detach_rows(self._row_key)
-        # transient=False у Live оставлял финальный кадр в скроллбэке — сохраняем.
-        sh.print_static(frame)
+        for key in self._row_keys:
+            sh.detach_rows(key)
+        # В scrollback остаётся только компактный итог; большая таблица живёт
+        # исключительно в полноэкранном просмотре по Enter.
+        sh.print_static(self.render_summary())
 
     async def wait_all_done(self):
         while not all(b.status in ("done", "error") for b in self._buffers):  # noqa: ASYNC110
@@ -684,6 +772,40 @@ class SubagentTracker:
             line = line[:-2] + "…"
         return line
 
+    def agent_row_label(self, buffer: SubagentBuffer) -> str:
+        """Одна стабильная строка отдельного (не phased) субагента."""
+        glyph, _style = buffer._status_glyph()
+        name = buffer.label or f"Sub{buffer.index + 1}"
+        metrics = f"{_fmt_tokens(buffer.total_tokens)} tok · {len(buffer.tool_events)} calls · {self._fmt_clock(buffer.elapsed)}"
+        left = f"{glyph} 🤖 {name}"
+        budget = max(12, _w() - visible_width(metrics) - 7)
+        left = _short(left, budget)
+        return f"{left}  {metrics}"
+
+    def render_summary(self) -> Group:
+        done = sum(1 for b in self._buffers if b.status == "done")
+        failed = sum(1 for b in self._buffers if b.status == "error")
+        glyph = "✗" if failed else "✓"
+        style = t("error") if failed else t("success")
+        header = Text()
+        header.append(f"{glyph} Subagents", style=f"bold {style}")
+        header.append(f" · {self._name} · {done}/{len(self._buffers)} done", style="dim")
+        if failed:
+            header.append(f" · {failed} failed", style=t("error"))
+        header.append(f" · {self._fmt_clock(self._total_elapsed())}", style="dim")
+        rows = [header]
+        shown = self._buffers[:4]
+        for buffer in shown:
+            row = Text("   " + ui.get("symbols.summary_prefix", "⎿  "), style="dim")
+            row.append(self.agent_row_label(buffer), style=t("dim_text"))
+            rows.append(row)
+        if len(self._buffers) > len(shown):
+            rows.append(Text(
+                f"   … +{len(self._buffers) - len(shown)} agents",
+                style="dim italic",
+            ))
+        return Group(*rows)
+
     def open_table(self) -> None:
         """Enter на строке. RowGroup.open синхронный, а run_overlay — корутина,
         поэтому запускаем задачей: мы внутри обработчика клавиш, loop крутится."""
@@ -697,12 +819,23 @@ class SubagentTracker:
         except RuntimeError:
             logger.debug("subagent tracker: no running loop for overlay", exc_info=True)
 
+    def open_agent(self, buffer: SubagentBuffer) -> None:
+        sh = self._shell
+        if sh is None:
+            return
+        if self._overlay_task is not None and not self._overlay_task.done():
+            return
+        try:
+            self._overlay_task = asyncio.create_task(
+                self._show_overlay(sh, AgentOverlay(self, buffer)),
+            )
+        except RuntimeError:
+            logger.debug("subagent tracker: no running loop for agent overlay", exc_info=True)
+
     async def _show_table(self, sh) -> None:
-        overlay = SwarmOverlay(self)
-        # Кадры «сворачиваются» на всё время таблицы: её содержимое — то же
-        # самое, а вертикали экрана на два кадра сразу не хватает.
-        _OPEN_TABLES.add(self._seq)
-        sh.clear_dynamic(self._dyn_key)
+        await self._show_overlay(sh, SwarmOverlay(self))
+
+    async def _show_overlay(self, sh, overlay: Overlay) -> None:
         ticker = asyncio.create_task(_overlay_ticker(sh))
         try:
             await sh.run_overlay(overlay)
@@ -710,9 +843,6 @@ class SubagentTracker:
             logger.warning("subagent overlay failed", exc_info=True)
         finally:
             ticker.cancel()
-            _OPEN_TABLES.discard(self._seq)
-            if self._running:
-                sh.set_dynamic(self._dyn_key, self._render)
 
     # ── фазы ─────────────────────────────────────────────────────────────────
 
@@ -768,27 +898,6 @@ class SubagentTracker:
         h, m = divmod(m, 60)
         return f"{h}h{m:02d}m{s:02d}s"
 
-    # ── рендер ───────────────────────────────────────────────────────────────
-
-    def _render(self) -> Group | None:
-        """Кадр динамической зоны — тот же, что раньше отдавался Live.
-
-        None — зоне нечего показывать (открыта таблица либо кадр не влезает в
-        экран); Shell в этом случае даёт зоне нулевую высоту, а сводка остаётся
-        в строке под рамкой.
-        """
-        if _OPEN_TABLES:
-            return None
-        live = max(1, len(_LIVE_TRACKERS))
-        budget = _panel_budget(live, live)
-        if budget is None:
-            return None
-        return self.render_view(rows_budget=budget)
-
-    def _render_final(self) -> Group:
-        """Кадр в скроллбэк: без окна — статику по высоте обрезать нечем."""
-        return self.render_view()
-
     def render_view(
         self,
         width: int = 0,
@@ -798,6 +907,7 @@ class SubagentTracker:
         rows_budget: int = 0,
         detail: bool = False,
         expanded: bool = False,
+        focus: str = "agents",
     ) -> Group:
         """Двухпанельный кадр: слева фазы, справа агенты показанной фазы.
 
@@ -828,14 +938,19 @@ class SubagentTracker:
         frame_width = max(40, width - 4)
         left_w = max(18, int(frame_width * 0.22))
         left_panel = self._phase_panel(
-            phases, active, shown, left_w, cursor=selected is not None,
+            phases, active, shown, left_w,
+            cursor=(selected is not None and focus == "phases"),
             rows_budget=rows_budget,
         )
 
         shown_bufs = self.phase_buffers(shown)
         right_w = max(28, frame_width - left_w - 3)
         right_panel = self._agents_panel(
-            shown, shown_bufs, right_w, selected=selected, rows_budget=rows_budget,
+            shown,
+            shown_bufs,
+            right_w,
+            selected=selected if focus == "agents" else None,
+            rows_budget=rows_budget,
         )
 
         grid = Table.grid(padding=(0, 1))
@@ -982,7 +1097,7 @@ def _detail_tail(b: SubagentBuffer, inner: int, limit: int = _EXPAND_LINES) -> l
     """Хвост работы агента: ошибка, последние строки стрима либо инструменты."""
     if b.error:
         return [
-            Text(f"  {ln}", style="red")
+            Text(f"  {ln}", style=t("error"))
             for ln in _wrap_words(b.error.strip(), max(8, inner - 2))[:limit]
         ]
     body = [ln for ln in (b.streaming_text or "").splitlines() if ln.strip()]
@@ -1009,6 +1124,97 @@ async def _overlay_ticker(sh) -> None:
         sh.invalidate()
 
 
+class AgentOverlay(Overlay):
+    """Полноэкранный, живой журнал одного субагента."""
+
+    expand_height = True
+    restore_input_to_bottom = True
+
+    def __init__(self, tracker: SubagentTracker, buffer: SubagentBuffer) -> None:
+        super().__init__()
+        self._tracker = tracker
+        self._buffer = buffer
+        self._offset = 0
+        self._page = 1
+        self._follow = True
+        self._total = 0
+
+    def version(self):
+        tick = int(time.monotonic() * 5) if self._tracker.running else 0
+        return (self._buffer.revision, self._offset, self._follow, tick)
+
+    def render(self, width: int):
+        budget = self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        inner = max(20, width - 6)
+        lines = self._buffer.execution_lines(inner)
+        self._total = len(lines)
+        self._page = max(1, budget - 4)
+        max_offset = max(0, len(lines) - self._page)
+        if self._follow:
+            self._offset = max_offset
+        else:
+            self._offset = max(0, min(self._offset, max_offset))
+        visible = lines[self._offset:self._offset + self._page]
+        while len(visible) < self._page:
+            visible.append(Text(""))
+
+        glyph, _style = self._buffer._status_glyph()
+        name = self._buffer.label or f"Sub{self._buffer.index + 1}"
+        title = f" {glyph} 🤖 {name} "
+        metrics = (
+            f"{_fmt_tokens(self._buffer.total_tokens)} tok · "
+            f"{len(self._buffer.tool_events)} calls · "
+            f"{self._tracker._fmt_clock(self._buffer.elapsed)}"
+        )
+        border = (
+            t("error") if self._buffer.status == "error"
+            else t("success") if self._buffer.status == "done"
+            else t("magenta")
+        )
+        return Panel(
+            Group(*visible),
+            title=title,
+            title_align="left",
+            subtitle=f" {metrics} ",
+            subtitle_align="right",
+            border_style=border,
+            padding=(0, 1),
+            width=width,
+            height=max(3, budget),
+        )
+
+    def hint(self) -> str:
+        hint = tr("subagent.agent_hint")
+        if self._buffer.status not in ("done", "error"):
+            hint += f" · {tr('subagent.cancel_hint')}"
+        return hint
+
+    def handle_key(self, key: str, event) -> bool:
+        del event
+        if key in ("escape", "c-c", "q", "Q"):
+            self.finish(None)
+        elif key == "c-x":
+            self._buffer.request_cancel()
+        elif key in ("up", "k", "c-p"):
+            self._follow = False
+            self._offset = max(0, self._offset - 1)
+        elif key in ("down", "j", "c-n"):
+            self._offset += 1
+            if self._offset >= max(0, self._total - self._page):
+                self._follow = True
+        elif key == "pageup":
+            self._follow = False
+            self._offset = max(0, self._offset - self._page)
+        elif key == "pagedown":
+            self._offset += self._page
+        elif key == "home":
+            self._follow = False
+            self._offset = 0
+        elif key == "end":
+            self._follow = True
+        return True
+
+
 class SwarmOverlay(Overlay):
     """Таблица субагентов в нижней зоне: навигация по агентам и фазам.
 
@@ -1019,13 +1225,17 @@ class SwarmOverlay(Overlay):
 
     def __init__(self, tracker: SubagentTracker) -> None:
         super().__init__()
+        self.expand_height = True
+        self.restore_input_to_bottom = True
         self._tracker = tracker
         phases = tracker.phase_names()
         active = tracker.active_phase()
         self._phase_idx = phases.index(active) if active in phases else 0
         self._sel = 0
         self._expanded = False
+        self._focus = "agents"
         self._page = 1  # размер окна с последнего кадра — для pageup/pagedown
+        self._agent_overlay_task: asyncio.Task | None = None
 
     # ── что показываем ──
     def _phase(self) -> str:
@@ -1043,11 +1253,13 @@ class SwarmOverlay(Overlay):
         рамки, индикатор и панель деталей. На низком терминале деталями
         приходится жертвовать — иначе prompt_toolkit скажет «Window too small».
         """
-        base = _OUTSIDE_ROWS + 1 + _PANEL_CHROME
-        budget = _term_rows() - base - _DETAIL_ROWS - self._expand_rows()
+        available = self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        available = max(3, available - 2)  # рамка полноэкранного контейнера
+        base = 1 + _PANEL_CHROME
+        budget = available - base - _DETAIL_ROWS - self._expand_rows()
         if budget >= 3:
             return budget, True
-        return max(2, _term_rows() - base), False
+        return max(2, available - base), False
 
     def _expand_rows(self) -> int:
         """Сколько строк реально займёт раскрытый хвост. Считаем по факту, а не
@@ -1066,38 +1278,61 @@ class SwarmOverlay(Overlay):
             self._sel = max(0, min(self._sel, len(bufs) - 1))
         budget, detail = self._layout()
         self._page = max(1, budget - 1)
-        return self._tracker.render_view(
-            width,
+        view = self._tracker.render_view(
+            max(40, width - 2),
             phase=self._phase(),
             selected=self._sel,
             rows_budget=budget,
             detail=detail,
             expanded=self._expanded,
+            focus=self._focus,
+        )
+        available = self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        return Panel(
+            view,
+            border_style=t("muted"),
+            padding=(0, 0),
+            width=width,
+            height=max(3, available),
         )
 
     def hint(self) -> str:
         tail = "" if self._tracker.running else f" · {tr('subagent.finished')}"
+        bufs = self._visible()
+        can_cancel = bool(
+            bufs
+            and bufs[min(self._sel, len(bufs) - 1)].status not in ("done", "error")
+        )
+        cancel = f" · {tr('subagent.cancel_hint')}" if can_cancel else ""
         # Подсказка печатается без переноса, поэтому на узком терминале
         # оставляем только главное — иначе она обрезалась бы посреди слова.
         if _w() < 84:
-            return tr("subagent.hint_narrow") + tail
-        return tr("subagent.hint") + tail
+            return tr("subagent.hint_narrow") + cancel + tail
+        return tr("subagent.hint") + cancel + tail
 
     # ── клавиши ──
     def handle_key(self, key: str, event) -> bool:
         total = len(self._visible())
         if key in ("escape", "c-c", "q", "Q"):
             self.finish(None)
+        elif key == "c-x" and total:
+            self._visible()[min(self._sel, total - 1)].request_cancel()
         elif key in ("up", "k", "c-p"):
-            if total:
+            if self._focus == "phases":
+                self._switch_phase(-1)
+            elif total:
                 self._sel = (self._sel - 1) % total
         elif key in ("down", "j", "c-n"):
-            if total:
+            if self._focus == "phases":
+                self._switch_phase(1)
+            elif total:
                 self._sel = (self._sel + 1) % total
         elif key in ("left", "h"):
-            self._switch_phase(-1)
-        elif key in ("right", "l", "tab"):
-            self._switch_phase(1)
+            self._focus = "phases"
+        elif key in ("right", "l"):
+            self._focus = "agents"
+        elif key == "tab":
+            self._focus = "phases" if self._focus == "agents" else "agents"
         elif key == "pageup":
             self._sel = max(0, self._sel - self._page)
         elif key == "pagedown":
@@ -1107,8 +1342,40 @@ class SwarmOverlay(Overlay):
         elif key == "end":
             self._sel = max(0, total - 1)
         elif key == "enter":
-            self._expanded = not self._expanded
+            if self._focus == "phases":
+                self._focus = "agents"
+            elif total:
+                self._open_selected_agent()
         return True
+
+    def _open_selected_agent(self) -> None:
+        """Открыть выбранного агента тем же экраном, что одиночный запуск.
+
+        Это вложенный overlay: Shell сохраняет таблицу фаз в стеке, поэтому
+        Esc из журнала возвращает ровно к прежней фазе и выбранной строке.
+        """
+        if self.shell is None:
+            return
+        if self._agent_overlay_task is not None and not self._agent_overlay_task.done():
+            return
+        buffers = self._visible()
+        if not buffers:
+            return
+        selected = buffers[min(self._sel, len(buffers) - 1)]
+        try:
+            self._agent_overlay_task = asyncio.create_task(
+                self._show_selected_agent(selected),
+            )
+        except RuntimeError:
+            logger.debug("subagent table: no running loop for agent overlay", exc_info=True)
+
+    async def _show_selected_agent(self, buffer: SubagentBuffer) -> None:
+        if self.shell is None:
+            return
+        try:
+            await self.shell.run_overlay(AgentOverlay(self._tracker, buffer))
+        except Exception:
+            logger.warning("subagent detail overlay failed", exc_info=True)
 
     def _switch_phase(self, delta: int) -> None:
         """Переход между фазами. Смотреть можно любую — активная тут ни при чём."""

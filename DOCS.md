@@ -45,16 +45,15 @@ echo "сосчитай строки .py" | uv run python src/main.py run --quiet
 14. [Память (memory)](#память-memory)
 15. [Хуки (hooks)](#хуки-hooks)
 16. [Сессионные заметки (session notes)](#сессионные-заметки-session-notes)
-17. [SSH](#ssh)
-18. [MCP](#mcp)
-19. [LSP](#lsp)
-20. [Telegram-мост](#telegram-мост)
-21. [Headless / CI](#headless--ci)
-22. [Система разрешений](#система-разрешений)
-23. [UI и темы (CLI)](#ui-и-темы-cli)
-24. [Логирование](#логирование)
-25. [Структура проекта](#структура-проекта)
-26. [Инсайты (/insights)](#инсайты-insights)
+17. [MCP](#mcp)
+18. [LSP](#lsp)
+19. [Telegram-мост](#telegram-мост)
+20. [Headless / CI](#headless--ci)
+21. [Система разрешений](#система-разрешений)
+22. [UI и темы (CLI)](#ui-и-темы-cli)
+23. [Логирование](#логирование)
+24. [Структура проекта](#структура-проекта)
+25. [Инсайты (/insights)](#инсайты-insights)
 
 ---
 
@@ -131,7 +130,6 @@ LangChain **не используется**. Своя минимальная з�
 ├── hooks.json                 # хуки (см. раздел Хуки)
 ├── mcp_servers.json           # MCP-сервера
 ├── lsp_servers.json           # LSP-сервера (опционально, есть дефолты)
-├── ssh_hosts.json             # SSH-хосты (см. раздел SSH)
 ├── pinned_sessions.json       # закреплённые сессии (не удаляются автоочисткой)
 ├── .last_cleanup              # маркер последней автоочистки .data (раз в сутки)
 ├── history                    # история ввода prompt_toolkit
@@ -156,7 +154,6 @@ LangChain **не используется**. Своя минимальная з�
 - пустые сессии-директории удаляются;
 - `subagents/` старше **14 дней**;
 - `clipboard_images/`, `docx_shots/`, `docx_sources/`, `uploads/` старше **7 дней**;
-- мёртвые ssh-сокеты старше **1 дня**;
 - корневой мусор `_clean_root_junk()`: `_git_stats.py`, `api_providers.json`, `diff_target.txt`, `docx_reference.docx`.
 
 Конфиги, реестры, `agents/`, `skills/`, `memory/` не трогаются. `docx_reference.docx` больше **не** генерируется как служебный файл `create_docx` — он считается мусором и вычищается автоочисткой.
@@ -200,7 +197,7 @@ LangChain **не используется**. Своя минимальная з�
 
 `agent/loop.py` содержит две реализации над одним и тем же `apis.agent_adapter.api_send_message`:
 
-- **`run_agent_interactive`** — основной цикл с `LiveStream` (`agent/stream.py`). Стримит ответ, парсит `:::call <tool> ... call:::` блоки по мере поступления, выполняет инлайн через `agent/stream_tool_exec.py`. После каждой итерации скармливает `ToolResult`'ы модели как новое сообщение. До `MAX_ITERATIONS = 500` (`agent/loop.py:65`).
+- **`run_agent_interactive`** — основной цикл с `LiveStream` (`agent/stream.py`). Стримит ответ, парсит `:::call <tool> ... call:::` блоки по мере поступления, выполняет инлайн через `agent/stream_tool_exec.py`. После каждой итерации скармливает `ToolResult`'ы модели как новое сообщение. Итерации не ограничены (`agent/loop.py`).
 - **`run_agent`** — headless-вариант без Rich Live. Используется в `commands/headless.py`.
 
 Ключевые детали:
@@ -225,7 +222,7 @@ LangChain **не используется**. Своя минимальная з�
    ...body...
    call:::
    ```
-   Парсятся `tools/call_parser.py`. Лимит `MAX_TOOL_CALLS_PER_MESSAGE = 50` (`tools/parser.py:16`). Три формата:
+   Парсятся `tools/call_parser.py`. Три формата:
    - **JSON-инструменты** — body это JSON.
    - **Контентные** (`create_file` / `create_docx`) — `path="..."` в шапке, body — сырой контент.
    - **`patch_file`** — секции `--- FIND --- / --- REPLACE --- / --- INSERT ---` или атрибут `delete_lines`.
@@ -284,9 +281,7 @@ LangChain **не используется**. Своя минимальная з�
 
 ### Лимиты вызовов
 
-- `MAX_TOOL_CALLS_PER_MESSAGE = 50` — лишние блоки в одном сообщении отбрасываются (`tools/parser.py:16`).
-- `MAX_ITERATIONS = 500` — потолок итераций главного агента (`agent/loop.py:65`).
-- `MAX_SUBAGENT_ITERATIONS = 200` — потолок итераций субагента (`agent/subagent_api.py:46`).
+- Итерации главного агента и субагентов **не ограничены** — цикл работает, пока задача не завершена или не прервана.
 - До **100 задач** на один вызов `subagent` (`agent/subagent.py:80`), конкурентность внутри волны — `subagent.max_concurrency = 12` (`config/ui.py:224`).
 - Каждый вызов выполняется отдельно `agent/executor._execute_single` с тиканием спиннера и трекингом изменений ФС.
 
@@ -399,7 +394,6 @@ LangChain **не используется**. Своя минимальная з�
 | `/lsp` | tools | LSP-сервера: список / enable / диагностика. |
 | `/skills` | tools | Меню скиллов: список / создание / добавление / удаление. |
 | `/agents` | tools | CRUD заготовок-пресетов субагентов (`.data/agents/<name>/AGENT.md`). |
-| `/ssh` | tools | Меню управления SSH-хостами (`.data/ssh_hosts.json`). |
 | `/themes` | display | Выбор темы и кастомизация ролей. |
 | `/lang` | display | Язык интерфейса (en, ru, de, fr, zh). |
 | `/think` | display | Toggle THINK-режима (рассуждения вслух); toggle `think_enabled`. |
@@ -436,7 +430,7 @@ LangChain **не используется**. Своя минимальная з�
 - **`isolate`** — по умолчанию `false`: субагенты пишут ПРЯМО в общую рабочую директорию, поэтому работу надо резать на независимые слайсы (каждый субагент владеет своими файлами). `isolate=true` — каждому отдельный git worktree (см. ниже).
 - Все субагенты запускаются в agent-mode и получают одинаковый полный набор инструментов (кроме явно запрещённых внутри субагента `poll` и вложенного `subagent`).
 - Дисплей: `SubagentTracker` / `SubagentBuffer` + `SwarmOverlay` — интерактивная панель в нижней зоне (навигация стрелками, Enter — детали задачи), плюс `agent/subagent_display.py`. Инкрементальный лог завершившихся — `progress.md` в run-директории.
-- Лимит итераций субагента — `MAX_SUBAGENT_ITERATIONS = 200` (`agent/subagent_api.py:46`).
+- Итерации субагента не ограничены — цикл идёт до завершения задачи (или стопа по контексту/ошибке).
 - Внутри субагента **запрещены** `poll` и вложенный `subagent`. `web_search` **разрешён** — субагент умеет искать в сети.
 - Список доступных моделей и заготовок-пресетов подмешивается в системный промпт через `system_prompt._build_subagent_models_block` / `_build_agent_presets_block`.
 
@@ -539,17 +533,6 @@ disable-model-invocation: false
 Шаблон (`_TEMPLATE`) содержит разделы: `# Session Title` (короткое описательное название сессии, 5-10 слов), `# Current State` (что активно делается, ближайшие шаги), `# Task specification` (что просил пользователь, ограничения и решения), `# Files and Functions` (важные файлы/функции и почему они важны), `# Workflow` (обычно запускаемые команды и как трактовать результат), `# Errors & Corrections` (ошибки, правки пользователя, неудачные подходы), `# Verification` (какие проверки запускались, вердикты), `# Worklog` (краткий пошаговый журнал работы).
 
 Лимиты: `_MAX_NOTE_CHARS = 12000` (весь файл), `_MAX_MESSAGE_CHARS = 1200` (одно сообщение/раздел в промпте).
-
----
-
-## SSH
-
-`config/ssh.py` + меню `commands/menus/ssh.py`.
-
-- Хосты: `.data/ssh_hosts.json` — `{alias, host, user, port, identity_file, password?}`.
-- Меню `/ssh` управляет хостами: список со статусами, добавление, удаление, тест соединения.
-- **Агентского инструмента `ssh` больше нет** — он удалён в changelog 0.17.0 (SSH остался только как управление хостами через меню).
-- Мёртвые ssh-сокеты старше 1 дня вычищаются автоочисткой `.data/` (`data_cleanup.py`).
 
 ---
 
@@ -719,7 +702,7 @@ src/  (точка входа: src/main.py)
 │   └── native.py                 # native function calling вариант
 │
 ├── agent/                        # агентный цикл
-│   ├── loop.py                   # run_agent / run_agent_interactive (MAX_ITERATIONS=500)
+│   ├── loop.py                   # run_agent / run_agent_interactive (неограниченные итерации)
 │   ├── stream.py                 # LiveStream c инлайн-выполнением tool блоков
 │   ├── stream_parser.py          # поиск partial/complete :::call блоков
 │   ├── stream_tool_exec.py       # выполнение блоков по мере появления
@@ -775,7 +758,7 @@ src/  (точка входа: src/main.py)
 │   ├── helpers.py
 │   └── menus/                    # agents, api, autoprune, help, history, insights,
 │                                 # lang, lsp, mcp, params, permissions, proxy, skills,
-│                                 # ssh, stats, telegram, themes, _editor, _style
+│                                 # stats, telegram, themes, _editor, _style
 │
 ├── config/                       # настройки и пути
 │   ├── settings.py               # config.json get/set/cache (+ tool_format_force_native)
@@ -784,7 +767,7 @@ src/  (точка входа: src/main.py)
 │   ├── data_cleanup.py           # автоочистка мусора из .data при старте (раз в сутки)
 │   ├── themes.py                 # 8 встроенных тем + семантические роли
 │   ├── permissions.py            # scopes session/process/forever
-│   ├── mcp.py / lsp.py / ssh.py / hooks.py / pinned.py
+│   ├── mcp.py / lsp.py / hooks.py / pinned.py
 │   ├── ui.py                     # лимиты и подсказки (limits.*)
 │   └── i18n.py                   # переводы интерфейса (en/ru/de/fr/zh)
 │

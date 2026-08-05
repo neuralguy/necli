@@ -65,7 +65,7 @@ def _render_assistant(content: str) -> Text:
         if out.plain:
             out.append("\n")
         out.append("     → ", style=f"bold {t('accent')}")
-        out.append(summary, style="cyan")
+        out.append(summary, style=t("info"))
         pos = m.end()
     suffix = content[pos:].strip()
     if suffix:

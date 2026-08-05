@@ -62,13 +62,9 @@ def _get_term_width() -> int:
 
 
 def _accent_ansi() -> str:
-    """ANSI SGR-параметры для accent-цвета темы (#rrggbb → 24-bit, fallback 38;5;75)."""
-    from config.themes import t
-    accent = t("accent")
-    if accent.startswith("#") and len(accent) == 7:
-        r, g, b = int(accent[1:3], 16), int(accent[3:5], 16), int(accent[5:7], 16)
-        return f"38;2;{r};{g};{b}"
-    return "38;5;75"
+    """ANSI SGR-параметры для accent-цвета темы (hex → 24-bit)."""
+    from config.themes import ansi_24bit, t
+    return ansi_24bit(t("accent"))
 
 
 def _poll_hint(multiple: bool) -> str:
@@ -174,7 +170,7 @@ class PollOverlay(Overlay):
                  multiple: bool = False) -> None:
         super().__init__()
         self.question = question
-        # Копия: вызывающий код (например tools/ssh._confirm_command) передаёт
+        # Копия: вызывающий код передаёт
         # свой исходный список, и мутация порвала бы его данные.
         self.options = list(options)
         self.step_info = step_info

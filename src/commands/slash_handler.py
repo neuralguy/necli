@@ -14,6 +14,7 @@ from commands.helpers import (
 from commands.interactive_state import InteractiveState
 from commands.slash import SlashResult
 from config.i18n import t as tr
+from config.themes import t
 from logger import logger
 from session import Session
 from skills import reset_active_skills
@@ -34,11 +35,11 @@ def _busy(label: str):
     from ui.shell import get_shell
     shell = get_shell()
     if shell is None:
-        with console.status(f"[bold cyan]{label}[/bold cyan]", spinner="dots"):
+        with console.status(f"[bold {t('info')}]{label}[/bold {t('info')}]", spinner="dots"):
             yield
         return
     from rich.spinner import Spinner
-    spinner = Spinner("dots", text=label, style="bold cyan")
+    spinner = Spinner("dots", text=label, style=f"bold {t('info')}")
 
     def _busy_provider():
         # Callable-обёртка, чтобы shell считал зону «анимируемой» и крутил

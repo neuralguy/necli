@@ -22,7 +22,7 @@ from rich.text import Text
 import models as app_models
 import session.storage as storage
 from config.i18n import t as _
-from config.themes import t
+from config.themes import ansi_24bit, t
 from session import Session
 from ui import format_tokens
 
@@ -192,6 +192,17 @@ class InterruptController:
                 logger.debug("stderr devnull close failed", exc_info=True)
         sys.stderr = saved
 
+    @staticmethod
+    def _invalidate_ui() -> None:
+        """Перерисовать Working сразу, не дожидаясь следующего SSE-чанка."""
+        try:
+            from ui.shell import get_shell
+            shell = get_shell()
+            if shell is not None:
+                shell.invalidate()
+        except Exception:
+            logger.debug("interrupt UI invalidate failed", exc_info=True)
+
     # ── собственно эскалация ──
     def escalate(self) -> int:
         """Обработать очередной Ctrl+C. Возвращает достигнутый уровень.
@@ -209,8 +220,8 @@ class InterruptController:
             # Мягкое прерывание: цикл доделает текущую итерацию и остановится.
             if ctx:
                 ctx.interrupted = True
-            _notice("  [yellow]■[/yellow] [dim]Stopping after current step…"
-                    " (Ctrl+C again = hard stop)[/dim]")
+                ctx.interrupt_level = 1
+            self._invalidate_ui()
             return 1
 
         # level >= 3: cancel завис (неотменяемый синхронный код / C-расширение) —
@@ -219,7 +230,7 @@ class InterruptController:
             _restore_termios()
             # print_static здесь недоступен: он печатает через run_in_terminal,
             # то есть на следующем шаге loop'а, которого уже не будет.
-            _write_now("\r\033[K  \033[31m■■■\033[0m \033[2mForce exit.\033[0m\n")
+            _write_now(f"\r\033[K  \033[{ansi_24bit(t('error'))}m■■■\033[0m \033[2mForce exit.\033[0m\n")
             os._exit(130)
 
         # level == 2: жёсткая отмена задачи прямо сейчас.
@@ -234,7 +245,8 @@ class InterruptController:
         # Терминал восстанавливаем только на уровне 3, перед самим выходом.
         if ctx:
             ctx.hard_interrupted = True
-        _notice("  [red]■■[/red] [dim]Emergency stop…[/dim]")
+            ctx.interrupt_level = 2
+        self._invalidate_ui()
         self.hard_at = time.monotonic()
         self.silence_stderr()
         task = self.task
@@ -285,7 +297,7 @@ async def _run_with_interrupt(coro, session):
                 _restore_termios()
                 ctl.restore_stderr()
                 _write_now(
-                    "\r\033[K  \033[31m■■\033[0m"
+                    f"\r\033[K  \033[{ansi_24bit(t('error'))}m■■\033[0m"
                     " \033[2mTask did not cancel in time — force exit.\033[0m\n"
                 )
                 os._exit(130)
@@ -310,14 +322,14 @@ async def _run_with_interrupt(coro, session):
     except (BrokenPipeError, ConnectionError, OSError):
         ctl.end(task)
         if not cancelled:
-            _notice("\n  [red]✗ API connection error[/red]")
+            _notice(f"\n  [{t('error')}]✗ API connection error[/{t('error')}]")
         await asyncio.to_thread(storage.save, session)
         raise
     except Exception as e:
         ctl.end(task)
         logger.exception("agent run failed: %s: %s", type(e).__name__, e)
         if not cancelled:
-            _notice(f"\n  [red]✗ {escape(str(e))}[/red]")
+            _notice(f"\n  [{t('error')}]✗ {escape(str(e))}[/{t('error')}]")
         await asyncio.to_thread(storage.save, session)
         raise
 
@@ -325,7 +337,7 @@ async def _run_with_interrupt(coro, session):
 def _resolve_or_exit(name: str) -> str:
     resolved = app_models.resolve_model(name)
     if resolved is None:
-        console.print(f"[red]Model not found: {escape(name)}[/red]")
+        console.print(f"[{t('error')}]Model not found: {escape(name)}[/{t('error')}]")
         for m in app_models.list_models():
             console.print(f"  • {m}")
         sys.exit(1)

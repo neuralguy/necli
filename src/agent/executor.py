@@ -12,13 +12,10 @@ from rich.text import Text
 import tools
 from agent.display import (
     _w,
-    exec_spinner_frames,
     print_static,
 )
 from config.themes import t
 from logger import logger
-from tools.parser import MAX_TOOL_CALLS_PER_MESSAGE
-from ui.shell import get_shell
 
 #: Ключ динамической зоны под индикатор «инструмент выполняется». Раньше это
 #: был rich Live с transient=True: спиннер исчезал, а итоговую шапку печатал
@@ -46,28 +43,39 @@ def _extract_write_time(subtitle: str) -> float | None:
         return None
 
 
+def _working_detail(args: dict | None) -> str:
+    """Короткое описание вызова для Working без предположений о его схеме."""
+    data = args or {}
+    value = (
+        data.get("path")
+        or data.get("command")
+        or data.get("prompt")
+        or data.get("name")
+        or ""
+    )
+    lines = str(value).splitlines()
+    return lines[0][:72] if lines else ""
+
+
+def _execution_error(call: tools.ToolCall, error: Exception) -> tools.ToolResult:
+    """Не дать сбою UI-обвязки оставить native tool_call без ответа."""
+    logger.opt(exception=True).error(
+        "tool execution wrapper failed for {}: {}", call.tool_name, error,
+    )
+    return tools.ToolResult(
+        name=call.tool_name or "tool",
+        status="error",
+        output=f"Internal tool execution error: {type(error).__name__}: {error}",
+        exit_code=1,
+        command=call.command,
+    )
+
+
 # Инструменты, которые сами рисуют живой мультиплексный UI (своя динамическая
 # зона Shell). Для них НЕЛЬЗЯ поднимать спиннер «Tool …s»: две зоны нарисовали
 # бы над рамкой сразу два кадра об одном и том же. У subagent своя ветка в
 # loop.py — поэтому гасим индикатор здесь по имени инструмента.
 _SELF_RENDERING_TOOLS = frozenset({"subagent"})
-
-
-def _make_exec_indicator(tool_name: str, args: dict, elapsed: float, frame: str) -> Text:
-    """Стабильный живой индикатор без подписи команды.
-
-    Имя инструмента и его аргументы относятся к истории выполнения, поэтому
-    печатаются только итоговым статическим блоком. Если держать их здесь, то
-    при дозревании аргументов заголовок меняет ширину и высоту прямо под
-    открытым меню — это было главным источником мерцания. Параметры оставлены
-    в сигнатуре для совместимости с тестами и внешними импортами.
-    """
-    del tool_name, args
-    out = Text()
-    out.append(f"  {frame} ", style=f"bold {t('accent')}")
-    out.append("working…", style="dim")
-    out.append(f"  {elapsed:.1f}s", style="dim")
-    return out
 
 
 def _show_poll_result(result: tools.ToolResult):
@@ -105,7 +113,6 @@ def _execute_single(
     call: tools.ToolCall,
     event_handler=None,
     subtitle: str = "",
-    show_live: bool = True,
     subtitle_factory=None,
     suppress_display: bool = False,
 ) -> tools.ToolResult:
@@ -159,9 +166,15 @@ def _execute_single(
                 logger.debug("poll activity status set failed", exc_info=True)
         if not _silent:
             print_static(Text(""))
+        from agent.working import current_working_round
+        working = current_working_round()
+        if working is not None:
+            working.begin_call(call.tool_name)
         try:
             result = tools.execute_call(call)
         finally:
+            if working is not None:
+                working.finish_call(call.tool_name)
             if prompt_input is not None and hasattr(prompt_input, "set_activity_status"):
                 try:
                     prompt_input.set_activity_status("working")
@@ -174,37 +187,16 @@ def _execute_single(
         event_handler.on_tool_start(call, subtitle=subtitle)
 
     t0 = time.monotonic()
-
-    if show_live and not _silent and call.tool_name not in _SELF_RENDERING_TOOLS:
-        _frames = exec_spinner_frames()
-
-        def _exec_frame() -> str:
-            # Смена кадра по времени, а не на каждый кадр рендера — плавно и медленно.
-            idx = int((time.monotonic() - t0) / 0.18) % len(_frames)
-            return _frames[idx]
-
-        def _indicator() -> Text:
-            return _make_exec_indicator(
-                call.tool_name, call.args or {}, time.monotonic() - t0, _exec_frame(),
-            )
-
-        # Тот же callable, что уходил в Live.get_renderable, отдаём Shell'у:
-        # его ticker вызывает его сам, поэтому спиннер и счётчик секунд тикают
-        # без ручного refresh. Инструмент может исполняться в рабочем потоке
-        # (loop.run_in_executor) — set_dynamic/clear_dynamic безопасны оттуда,
-        # Application.invalidate потокобезопасен по контракту prompt_toolkit.
-        sh = get_shell()
-        if sh is not None:
-            sh.set_dynamic(_TOOL_ZONE, _indicator)
-        try:
-            result = tools.execute_call(call)
-        finally:
-            # Аналог transient=True: кадр исчезает без следа, итоговую шапку
-            # печатает show_tool_combined ниже.
-            if sh is not None:
-                sh.clear_dynamic(_TOOL_ZONE)
-    else:
+    from agent.working import current_working_round
+    working = current_working_round()
+    if working is not None:
+        detail = _working_detail(call.args)
+        working.begin_call(call.tool_name, detail)
+    try:
         result = tools.execute_call(call)
+    finally:
+        if working is not None:
+            working.finish_call(call.tool_name)
     result.elapsed = time.monotonic() - t0
     logger.info(
         "tool_done: {} status={} exit={} elapsed={:.2f}s",
@@ -239,36 +231,27 @@ def _execute_single(
     if _ctx and _ctx.step_tracker:
         _ctx.step_tracker.record(call.tool_name, result.output, args=call.args)
 
+    if _ctx is not None and _ctx.refresh_status is not None:
+        try:
+            _ctx.refresh_status()
+        except Exception:
+            logger.debug("status refresh after tool failed", exc_info=True)
+
     return result
 
 
-def _make_overflow_results(dropped: list[tools.ToolCall]) -> list[tools.ToolResult]:
-    out = []
-    for call in dropped:
-        out.append(tools.ToolResult(  # noqa: PERF401
-            name=call.tool_name,
-            status="error",
-            output=(
-                f"Tool call dropped: exceeded limit of "
-                f"{MAX_TOOL_CALLS_PER_MESSAGE} calls per message. "
-                f"Repeat this call in the next message."
-            ),
-            exit_code=1,
-            command=call.command,
-        ))
-    return out
+def _execute_single_safe(
+    call: tools.ToolCall,
+    event_handler=None,
+    **kwargs,
+) -> tools.ToolResult:
+    try:
+        return _execute_single(call, event_handler, **kwargs)
+    except Exception as error:
+        return _execution_error(call, error)
 
 
 def execute_and_show(calls: list[tools.ToolCall], event_handler=None, subtitle: str = "", subtitle_factory=None) -> list[tools.ToolResult]:
-    dropped = []
-    if len(calls) > MAX_TOOL_CALLS_PER_MESSAGE:
-        logger.warning(
-            "execute_and_show: dropping {} calls (limit {})",
-            len(calls) - MAX_TOOL_CALLS_PER_MESSAGE, MAX_TOOL_CALLS_PER_MESSAGE,
-        )
-        dropped = list(calls[MAX_TOOL_CALLS_PER_MESSAGE:])
-        calls = calls[:MAX_TOOL_CALLS_PER_MESSAGE]
-
     # Сохраняем исходный порядок: results[idx] = result
     indexed: dict[int, tools.ToolResult] = {}
     read_pairs: list[tuple[tools.ToolCall, tools.ToolResult]] = []
@@ -276,11 +259,11 @@ def execute_and_show(calls: list[tools.ToolCall], event_handler=None, subtitle: 
     for idx, call in enumerate(calls):
         if call.tool_name == "read" and sum(1 for c in calls if c.tool_name == "read") >= 2:
             # Несколько read — без индивидуального отображения
-            result = _execute_single(call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory, suppress_display=True)
+            result = _execute_single_safe(call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory, suppress_display=True)
             read_pairs.append((call, result))
             indexed[idx] = result
         else:
-            result = _execute_single(call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory)
+            result = _execute_single_safe(call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory)
             indexed[idx] = result
 
     # Показываем все read одним компактным блоком
@@ -289,7 +272,6 @@ def execute_and_show(calls: list[tools.ToolCall], event_handler=None, subtitle: 
         show_read_combined(read_pairs)
 
     results = [indexed[i] for i in range(len(calls))]
-    results.extend(_make_overflow_results(dropped))
     return results
 
 
@@ -297,15 +279,6 @@ async def execute_and_show_async(
     calls: list[tools.ToolCall], event_handler=None, subtitle: str = "",
     subtitle_factory=None,
 ) -> list[tools.ToolResult]:
-    dropped = []
-    if len(calls) > MAX_TOOL_CALLS_PER_MESSAGE:
-        logger.warning(
-            "execute_and_show_async: dropping {} calls (limit {})",
-            len(calls) - MAX_TOOL_CALLS_PER_MESSAGE, MAX_TOOL_CALLS_PER_MESSAGE,
-        )
-        dropped = list(calls[MAX_TOOL_CALLS_PER_MESSAGE:])
-        calls = calls[:MAX_TOOL_CALLS_PER_MESSAGE]
-
     loop = asyncio.get_running_loop()
     # Сохраняем исходный порядок: results[idx] = result
     indexed: dict[int, tools.ToolResult] = {}
@@ -314,9 +287,9 @@ async def execute_and_show_async(
 
     for idx, call in enumerate(calls):
         if call.tool_name == "read" and n_read >= 2:
-            fn = partial(_execute_single, call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory, suppress_display=True)
+            fn = partial(_execute_single_safe, call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory, suppress_display=True)
         else:
-            fn = partial(_execute_single, call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory)
+            fn = partial(_execute_single_safe, call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory)
         ctx = contextvars.copy_context()
         result = await loop.run_in_executor(None, lambda fn=fn, ctx=ctx: ctx.run(fn))
         if call.tool_name == "read" and n_read >= 2:
@@ -329,5 +302,4 @@ async def execute_and_show_async(
         show_read_combined(read_pairs)
 
     results = [indexed[i] for i in range(len(calls))]
-    results.extend(_make_overflow_results(dropped))
     return results

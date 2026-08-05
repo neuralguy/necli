@@ -893,6 +893,7 @@ def create_anthropic_provider(
         max_retries=definition.max_retries or 3,
     )
     provider._provider_name = definition.name
+    provider._provider_id = definition.id
     provider._proxy = definition.proxy
     provider._api_credentials = get_api_credentials(definition.id)
     if definition.id == "anthropic" and auth_token:

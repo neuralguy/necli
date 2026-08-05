@@ -13,15 +13,10 @@ from .call_parser import (
     strip_call_calls as _strip_call_calls,
 )
 
-MAX_TOOL_CALLS_PER_MESSAGE = 50
-
 def parse_tool_calls(text: str) -> list:
     if not text:
         return []
-    calls = _parse_call_calls(text)
-    if len(calls) > MAX_TOOL_CALLS_PER_MESSAGE:
-        calls = calls[:MAX_TOOL_CALLS_PER_MESSAGE]
-    return calls
+    return _parse_call_calls(text)
 
 def strip_tool_calls(text: str) -> str:
     if not text:

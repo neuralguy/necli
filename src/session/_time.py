@@ -5,14 +5,10 @@ from datetime import datetime, timedelta, timezone
 MSK = timezone(timedelta(hours=3))
 
 
-def format_msk(ts: float) -> str:
-    """Unix timestamp → строка по МСК (полный формат)."""
-    return datetime.fromtimestamp(ts, tz=MSK).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def format_msk_short(ts: float) -> str:
-    """Unix timestamp → строка по МСК (короткий формат)."""
-    return datetime.fromtimestamp(ts, tz=MSK).strftime("%m-%d %H:%M")
+def format_msk(ts: float, short: bool = False) -> str:
+    """Unix timestamp → строка по МСК. short=True даёт '%m-%d %H:%M'."""
+    fmt = "%m-%d %H:%M" if short else "%Y-%m-%d %H:%M:%S"
+    return datetime.fromtimestamp(ts, tz=MSK).strftime(fmt)
 
 
 def format_relative(ts: float) -> str:

@@ -173,6 +173,13 @@ def remove_api_config(provider_id: str) -> bool:
     return True
 
 
+def _parse_balance(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _parse_api_key_entry(entry) -> dict[str, Any] | None:
     if isinstance(entry, str):
         raw = entry.strip()
@@ -182,7 +189,7 @@ def _parse_api_key_entry(entry) -> dict[str, Any] | None:
         api_key = api_key.strip()
         if not api_key:
             return None
-        return {"key": api_key, "proxy": proxy.strip(), "main": False, "name": ""}
+        return {"key": api_key, "proxy": proxy.strip(), "main": False, "name": "", "balance": 0.0}
     if isinstance(entry, dict):
         api_key = str(entry.get("key") or entry.get("api_key") or "").strip()
         if not api_key:
@@ -192,6 +199,7 @@ def _parse_api_key_entry(entry) -> dict[str, Any] | None:
             "proxy": str(entry.get("proxy") or "").strip(),
             "main": bool(entry.get("main")),
             "name": str(entry.get("name") or "").strip(),
+            "balance": _parse_balance(entry.get("balance")),
         }
     return None
 
@@ -218,6 +226,7 @@ def _normalize_api_credentials(entries: list[dict[str, Any]]) -> list[dict[str, 
             "proxy": str(item.get("proxy", "")).strip(),
             "main": is_main,
             "name": str(item.get("name", "")).strip(),
+            "balance": _parse_balance(item.get("balance")),
         })
         main_seen = main_seen or is_main
     if normalized and not main_seen:
@@ -264,6 +273,9 @@ def _compact_credential(entry: dict[str, Any]) -> dict[str, Any]:
         compact["main"] = True
     if entry.get("name"):
         compact["name"] = entry["name"]
+    balance = _parse_balance(entry.get("balance"))
+    if balance:
+        compact["balance"] = round(balance, 6)
     return compact
 
 
@@ -296,6 +308,52 @@ def set_api_credential_name(provider_id: str, index: int, name: str) -> None:
         raise IndexError("API key index out of range")
     entries[index]["name"] = name.strip()
     set_api_credentials(provider_id, entries)
+
+
+def set_api_credential_balance(provider_id: str, index: int, balance: float) -> None:
+    entries = get_api_credentials(provider_id)
+    if index < 0 or index >= len(entries):
+        raise IndexError("API key index out of range")
+    entries[index]["balance"] = _parse_balance(balance)
+    set_api_credentials(provider_id, entries)
+
+
+def spend_api_credential(provider_id: str, key: str, amount: float) -> float | None:
+    """Списывает amount с баланса ключа провайдера.
+
+    Возвращает новый баланс ключа, либо None, если ключ не найден
+    или amount <= 0. Баланс по умолчанию 0 и уходит в минус при перерасходе.
+    """
+    if amount <= 0:
+        return None
+    keys = _get_keys()
+    raw = keys.get(provider_id)
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None
+    raw_list: list = raw
+    for i, item in enumerate(raw_list):
+        entry = _parse_api_key_entry(item)
+        if not entry or entry["key"] != key:
+            continue
+        new_balance = round(_parse_balance(entry.get("balance")) - amount, 6)
+        if isinstance(item, dict):
+            if new_balance:
+                item["balance"] = new_balance
+            else:
+                item.pop("balance", None)
+        else:
+            # строковый ключ: переводим в dict, чтобы хранить баланс
+            raw_list[i] = {"key": entry["key"], "balance": new_balance} if new_balance else {"key": entry["key"]}
+        _save_keys(keys)
+        return new_balance
+    return None
+
+
+def get_provider_balance(provider_id: str) -> float:
+    """Суммарный баланс всех ключей провайдера."""
+    return sum(_parse_balance(cred.get("balance")) for cred in get_api_credentials(provider_id))
 
 
 def remove_api_credential(provider_id: str, index: int) -> None:

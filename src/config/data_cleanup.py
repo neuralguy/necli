@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import stat
 import time
 from pathlib import Path
 
@@ -32,7 +31,6 @@ SESSION_MAX_AGE_DAYS = 30      # сессии старше — кандидат�
 KEEP_RECENT_SESSIONS = 100     # …но последние N по времени всегда храним
 RUNS_MAX_AGE_DAYS = 14         # subagents/
 TEMP_MAX_AGE_DAYS = 7          # clipboard_images/ docx_shots/ docx_sources/ uploads/
-SOCKET_MAX_AGE_DAYS = 1        # ssh_sockets/ — мёртвые сокеты
 MIN_INTERVAL_SECONDS = DAY     # не чаще раза в сутки
 
 _MARKER = BASE_DIR / ".last_cleanup"
@@ -62,7 +60,6 @@ def run_cleanup() -> int:
     freed += _clean_runs("subagents", RUNS_MAX_AGE_DAYS)
     for name in ("clipboard_images", "docx_shots", "docx_sources", "uploads"):
         freed += _clean_temp_files(name, TEMP_MAX_AGE_DAYS)
-    freed += _clean_ssh_sockets()
     return freed
 
 
@@ -191,26 +188,6 @@ def _clean_temp_files(name: str, max_age_days: int) -> int:
         except OSError:
             continue
         freed += _unlink(child) if child.is_file() else _rmtree(child)
-    return freed
-
-
-# ── ssh sockets ──────────────────────────────────────────────────────────────
-
-def _clean_ssh_sockets() -> int:
-    base = BASE_DIR / "ssh_sockets"
-    if not base.is_dir():
-        return 0
-    cutoff = time.time() - SOCKET_MAX_AGE_DAYS * DAY
-    freed = 0
-    for child in base.iterdir():
-        try:
-            st = child.stat()
-        except OSError:
-            continue
-        # Сокеты — это не обычные файлы; удаляем старые сокеты и любой мусор.
-        is_socket = stat.S_ISSOCK(st.st_mode)
-        if (is_socket or child.is_file()) and st.st_mtime < cutoff:
-            freed += _unlink(child)
     return freed
 
 

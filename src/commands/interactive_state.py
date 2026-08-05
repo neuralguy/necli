@@ -4,6 +4,7 @@ from rich.console import Console
 from rich.markup import escape
 
 import session.storage as storage
+from config.themes import t
 from session import Session
 
 console = Console()
@@ -34,4 +35,4 @@ class InteractiveState:
         try:
             storage.save(self.session)
         except Exception as e:
-            console.print(f"  [yellow]⚠[/yellow] [dim]Save error: {escape(str(e))}[/dim]")
+            console.print(f"  [{t('warning')}]⚠[/{t('warning')}] [dim]Save error: {escape(str(e))}[/dim]")

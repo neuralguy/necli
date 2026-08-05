@@ -160,8 +160,9 @@ def replay(store: RenderStore, *, expand: bool = False) -> None:
     set_expanded_preview(bool(expand))
     close = _open_sink()
     try:
-        # Каждый элемент печатает одну пустую строку ПЕРЕД собой — ровно одна
-        # пустая строка между всеми пунктами (та же leading-модель, что в live).
+        # Каждый самостоятельный элемент ведёт свой separator. Исключение —
+        # tool сразу после assistant: в live они тоже идут вплотную. Два
+        # соседних tool-блока разделяются одной пустой строкой.
         _replay_inner(store)
         # Хвостовая пустая перед prompt'ом (элементы ведут, а не замыкают).
         _out().print()
@@ -174,15 +175,23 @@ def _replay_inner(store: RenderStore) -> None:
     from agent.display import render_md_panel, show_command, show_tool_combined
 
     _replay_welcome()
+    previous_kind = ""
     for item in store.items:
         try:
-            _replay_item(item, show_tool_combined, show_command, render_md_panel)
+            _replay_item(
+                item, show_tool_combined, show_command, render_md_panel,
+                previous_kind=previous_kind,
+            )
+            previous_kind = item.kind
         except Exception:  # noqa: PERF203
             from logger import logger
             logger.opt(exception=True).debug("replay item failed: kind={}", item.kind)
 
 
-def _replay_item(item, show_tool_combined, show_command, render_md_panel) -> None:
+def _replay_item(
+    item, show_tool_combined, show_command, render_md_panel,
+    *, previous_kind: str = "",
+) -> None:
     kind = item.kind
     p = item.payload or {}
 
@@ -211,6 +220,8 @@ def _replay_item(item, show_tool_combined, show_command, render_md_panel) -> Non
         subtitle = p.get("subtitle", "")
         if not call_d:
             return
+        if previous_kind in ("tool", "command_only"):
+            _out().print()
         call = deserialize_tool_call(call_d)
         result = deserialize_tool_result(result_d) if result_d else None
         if result is None:
@@ -224,6 +235,8 @@ def _replay_item(item, show_tool_combined, show_command, render_md_panel) -> Non
         call_d = p.get("call")
         if not call_d:
             return
+        if previous_kind in ("tool", "command_only"):
+            _out().print()
         call = deserialize_tool_call(call_d)
         show_command(call.command, tool_name=call.tool_name,
                      args=call.args, subtitle=p.get("subtitle", ""))
@@ -249,6 +262,34 @@ def _replay_item(item, show_tool_combined, show_command, render_md_panel) -> Non
         if label:
             _out().print()
             _out().print(f"[grey50]⏱ {label}[/grey50]")
+        return
+
+    if kind == "working":
+        from agent.working import _finished_header
+        from config.i18n import t as tr
+        from config.themes import t as theme
+        from ui.formatting import format_tokens
+        elapsed = float(p.get("elapsed", 0.0) or 0.0)
+        calls = int(p.get("calls", 0) or 0)
+        outcome = str(p.get("outcome") or "worked")
+        has_split_tokens = "input_tokens" in p or "output_tokens" in p
+        input_tokens = int(p.get("input_tokens", 0) or 0)
+        output_tokens = int(
+            p.get("output_tokens", 0) or (p.get("tokens", 0) if not has_split_tokens else 0)
+        )
+        output_prefix = "~" if p.get("output_estimated") or not has_split_tokens else ""
+        _out().print()
+        header = _finished_header(elapsed, outcome)
+        details = Text("   ⎿  ", style=theme("dim_text"))
+        details.append(tr("working.calls", n=calls), style=theme("fg_primary"))
+        details.append(" · ", style="dim")
+        details.append(f"↑{format_tokens(input_tokens)}", style=theme("fg_primary"))
+        details.append(" ", style="dim")
+        details.append(
+            f"↓{output_prefix}{format_tokens(output_tokens)}", style=theme("fg_primary"),
+        )
+        _out().print(header)
+        _out().print(details)
         return
 
     if kind == "raw_console":
@@ -294,6 +335,7 @@ def print_session_history(necli_session, *, max_messages: int = 20) -> None:
     set_expanded_preview(False)
     close = _open_sink()
     try:
+        previous_was_tool = False
         for msg in visible:
             content = msg.content or ""
             if not content.strip():
@@ -301,14 +343,19 @@ def print_session_history(necli_session, *, max_messages: int = 20) -> None:
             if msg.role == "user":
                 _out().print()
                 _print_user_line(content)
+                previous_was_tool = False
                 continue
             # assistant: текст + восстановленные tool-вызовы (без результатов).
             clean = strip_tool_calls(content)
             if clean.strip():
                 _out().print()
                 _out().print(render_md_panel(clean))
+                previous_was_tool = False
             for call in parse_tool_calls(content):
+                if previous_was_tool:
+                    _out().print()
                 show_command(call.command, tool_name=call.tool_name, args=call.args)
+                previous_was_tool = True
         _out().print()
     finally:
         set_replay_active(False)
@@ -390,7 +437,7 @@ def _print_user_line(text: str, status: str = "") -> None:
             frags = _ip._make_separator_fragments(status)
             _cls_style = {
                 "class:separator": theme("muted"),
-                "class:status-text": "bold #E8E8E8",
+                "class:status-text": f"bold {theme('fg_primary')}",
                 "class:bar-filled": theme("accent"),
                 "class:bar-empty": theme("muted"),
             }

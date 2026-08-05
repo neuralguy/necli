@@ -14,11 +14,10 @@ from tools.file_ops.docx_screenshot import docx_screenshot
 from tools.file_ops.docx_writer import create_docx
 from tools.file_ops.grep import execute_grep
 from tools.file_ops.patch import patch_file
-from tools.file_ops.read import MAX_READ_FILES, read
+from tools.file_ops.read import read
 from tools.file_ops.write import create_file
 
 __all__ = [
-    "MAX_READ_FILES",
     "create_docx",
     "create_file",
     "docx_screenshot",

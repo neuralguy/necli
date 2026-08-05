@@ -21,17 +21,18 @@ Live лезет в терминал курсором и дерётся с prompt
 Раскладка сверху вниз:
 
     <динамическая зона>          высота 0, когда нечего показывать
-    <две пустые строки>          между ответом/thinking и вводом
+    <одна пустая строка>         между динамикой Working/ответом и вводом
     ─── статус ──────────────    верхняя линия рамки
     🚀agent ❯ ввод             режим агента слева от стрелки ввода
     ─────────────────────────    нижняя линия рамки
     <меню автодополнения>        растёт вниз, сдвигая ввод не выше середины
-    <строки субагентов>          ИЛИ строка подсказок активного оверлея
+    <до 4 агентов/фоновых задач> ИЛИ строка подсказок активного оверлея
+    <сводка скрытых строк>       только если элементов больше четырёх
     <пустая строка>              обязательна: отбивка от низа терминала
 
-У интерактивного оверлея обе линии рамки скрыты. Shell не прижимает обычный ввод к низу:
-оверлей и autocomplete могут сдвинуть нижнюю зону вверх, но её верхняя граница не поднимается
-выше середины терминала.
+У интерактивного оверлея обе линии рамки скрыты. После полноэкранного просмотра
+агента или фоновой задачи обычная нижняя зона заново привязывается к низу терминала,
+поэтому поле ввода не остаётся на месте верхней строки закрытого оверлея.
 
 Вид сохраняется за счёт моста Rich → prompt_toolkit: любой Rich-объект
 рендерится в ANSI и показывается внутри Window через `FormattedText.ANSI`.
@@ -46,8 +47,10 @@ import io
 import logging
 import os
 import sys
+import time
 from collections import deque
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from prompt_toolkit.application import Application, run_in_terminal
@@ -62,7 +65,13 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.menus import CompletionsMenuControl
-from prompt_toolkit.layout.processors import AppendAutoSuggestion
+from prompt_toolkit.layout.processors import (
+    AppendAutoSuggestion,
+    Processor,
+    Transformation,
+    TransformationInput,
+)
+from prompt_toolkit.layout.utils import explode_text_fragments
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -79,6 +88,8 @@ SUBMIT_EOF = "eof"            # Ctrl+D
 SUBMIT_INTERRUPT = "interrupt"  # Ctrl+C
 SUBMIT_BG_RESUME = "bg_resume"  # фоновая задача завершилась, разбудить агента
 SUBMIT_TG = "tg"              # сообщение из Telegram
+HISTORY_LIMIT = 100           # сколько последних команд держать в истории ↑/↓
+ROW_WINDOW_SIZE = 4           # максимум интерактивных строк под полем ввода
 
 
 def visible_width(s: str) -> int:
@@ -103,6 +114,92 @@ def clip_visible(s: str, width: int, tail: str = "…") -> str:
         out.append(char)
         used += char_width
     return "".join(out) + tail
+
+
+def _word_wrap_padding(chars: list[str], width: int) -> dict[int, int]:
+    """Сколько display-пробелов нужно вставить перед каждым словом."""
+    width = max(1, width)
+    padding: dict[int, int] = {}
+    col = 0
+    for index, char in enumerate(chars):
+        if char and not char.isspace() and (index == 0 or chars[index - 1].isspace()):
+            end = index
+            while end < len(chars) and not chars[end].isspace():
+                end += 1
+            word_width = visible_width("".join(chars[index:end]))
+            if col and word_width <= width and col + word_width > width:
+                if width > col:
+                    padding[index] = width - col
+                col = width
+        char_width = visible_width(char)
+        if col + char_width > width:
+            col = 0
+        col += char_width
+    return padding
+
+
+def _word_wrapped_rows(text: str, width: int) -> int:
+    chars = list(text)
+    padding = _word_wrap_padding(chars, width)
+    width = max(1, width)
+    rows = 1
+    col = 0
+    for index, char in enumerate(chars):
+        col += padding.get(index, 0)
+        char_width = visible_width(char)
+        if col + char_width > width:
+            rows += 1
+            col = 0
+        col += char_width
+    return rows
+
+
+class WordWrapProcessor(Processor):
+    """Переносит ввод по границам слов, не меняя текст Buffer.
+
+    Штатный ``Window(wrap_lines=True)`` переносит строку ровно по
+    ширине окна и режет последнее слово. Здесь перед словом,
+    которое не помещается в остаток строки, добавляются только
+    визуальные пробелы. Их нет ни в отправляемом тексте, ни в истории.
+    """
+
+    def apply_transformation(self, ti: TransformationInput) -> Transformation:
+        fragments = explode_text_fragments(ti.fragments)
+        chars = [fragment[1] for fragment in fragments]
+        width = max(1, ti.width)
+        padding_by_index = _word_wrap_padding(chars, width)
+        result: list[tuple] = []
+        # Позиция исходного display-текста -> позиция с мягкими отступами.
+        source_to_display = [0] * (len(chars) + 1)
+        display_to_source: list[int] = []
+        col = 0
+
+        for index, fragment in enumerate(fragments):
+            char = fragment[1]
+            source_to_display[index] = len(result)
+
+            padding = padding_by_index.get(index, 0)
+            if padding:
+                style = fragment[0]
+                for _ in range(padding):
+                    result.append((style, " "))
+                    display_to_source.append(index)
+                col = width
+
+            char_width = visible_width(char)
+            if col + char_width > width:
+                col = 0
+            result.append(fragment)
+            display_to_source.append(index)
+            col += char_width
+
+        source_to_display[len(chars)] = len(result)
+        display_to_source.append(len(chars))
+        return Transformation(
+            result,
+            source_to_display=lambda i: source_to_display[min(i, len(chars))],
+            display_to_source=lambda i: display_to_source[min(i, len(display_to_source) - 1)],
+        )
 
 
 def term_size() -> tuple[int, int]:
@@ -225,6 +322,10 @@ class Overlay:
     wants_text: bool = False
     #: Пустые ряды между scrollback и телом конкретного оверлея.
     top_margin_rows: int = 0
+    #: Разрешить оверлею больше половины экрана (всю свободную высоту).
+    expand_height: bool = False
+    #: После закрытия вернуть компактный кадр ввода к нижнему краю терминала.
+    restore_input_to_bottom: bool = False
 
     def __init__(self) -> None:
         self.shell: Shell | None = None
@@ -317,6 +418,8 @@ class Shell:
         self._status_text: str = ""
         # Сообщения slash-команд живут только в динамической нижней зоне.
         self._notice_text: str = ""
+        # Дедлайн подтверждения выхода по Ctrl+D (time.monotonic); None — нет.
+        self._confirm_exit_until: float | None = None
 
         # ── кэш отрисовки зон ──
         # Ключ кэша — (номер кадра, ширина, версия содержимого). Без него
@@ -337,7 +440,11 @@ class Shell:
         self._static_tail_blank: bool = False
         self._rows: dict[str, RowGroup] = {}   # строки под рамкой
         self._rows_order: list[str] = []
+        # Фокус и начало окна считаются в координатах ПОЛНОГО списка. На экране
+        # одновременно живут только ROW_WINDOW_SIZE строк; стрелки двигают
+        # окно вслед за выбранным агентом/фоновой задачей.
         self._row_focus: int = -1              # -1 = фокус на вводе
+        self._row_window_start: int = 0
         self._queued_messages: list[str] = []
 
         self.overlay: Overlay | None = None
@@ -373,6 +480,7 @@ class Shell:
 
         self.completer, self.file_completer = make_combined_completer(working_dir)
         history_file = str(config.BASE_DIR / "history")
+        self._history_file = history_file
         self.input_buffer = Buffer(
             name="input",
             completer=self.completer,
@@ -505,11 +613,26 @@ class Shell:
         cached = self._dyn_cache
         if cached is not None and cached[0] == key:
             return cached[1]
+        # Working всегда последним: это стабильный блок, ближайший к полю
+        # ввода; стримящийся ответ и другие динамические элементы живут выше.
+        ordered = [k for k in self._dynamic_order if k != "working"]
+        if "working" in self._dynamic:
+            ordered.append("working")
         parts = [
-            self.bridge.to_ansi(self._resolve(self._dynamic[k]), w)
-            for k in self._dynamic_order
+            (k, self.bridge.to_ansi(self._resolve(self._dynamic[k]), w))
+            for k in ordered
         ]
-        body = "".join(p if p.endswith("\n") else p + "\n" for p in parts if p).rstrip("\n")
+        chunks: list[str] = []
+        for dynamic_key, part in parts:
+            if not part:
+                continue
+            # Мысли/частичный инструмент живут над Working. Между этими
+            # смысловыми блоками нужен пустой ряд, иначе нижняя строка мыслей
+            # визуально слипается с заголовком Working.
+            if dynamic_key == "working" and chunks:
+                chunks.append("\n")
+            chunks.append(part if part.endswith("\n") else part + "\n")
+        body = "".join(chunks).rstrip("\n")
         if body:
             # Отбивка от scrollback — ровно одна пустая строка, независимо от
             # того, поставил ли её сам виджет: часть кадров приходит с ведущей
@@ -693,14 +816,64 @@ class Shell:
 
     def detach_rows(self, key: str) -> None:
         if key in self._rows:
+            try:
+                removed = self._rows_order.index(key)
+            except ValueError:
+                removed = -1
             del self._rows[key]
             self._rows_order = [k for k in self._rows_order if k != key]
+            if removed >= 0 and self._row_focus >= 0:
+                if removed < self._row_focus:
+                    self._row_focus -= 1
+                elif removed == self._row_focus:
+                    self._row_focus = -1
             if self._row_focus >= len(self._rows_order):
-                self._row_focus = len(self._rows_order) - 1
+                self._row_focus = max(-1, len(self._rows_order) - 1)
+            self._row_window_start = min(
+                self._row_window_start,
+                max(0, len(self._rows_order) - ROW_WINDOW_SIZE),
+            )
             self.invalidate()
 
-    def _visible_rows(self) -> list[RowGroup]:
+    def _all_rows(self) -> list[RowGroup]:
         return [self._rows[k] for k in self._rows_order if k in self._rows]
+
+    def _visible_row_entries(self) -> list[tuple[int, RowGroup]]:
+        rows = self._all_rows()
+        total = len(rows)
+        if not total:
+            self._row_window_start = 0
+            return []
+        start = min(self._row_window_start, max(0, total - ROW_WINDOW_SIZE))
+        if self._row_focus >= 0:
+            if self._row_focus < start:
+                start = self._row_focus
+            elif self._row_focus >= start + ROW_WINDOW_SIZE:
+                start = self._row_focus - ROW_WINDOW_SIZE + 1
+        start = max(0, min(start, max(0, total - ROW_WINDOW_SIZE)))
+        self._row_window_start = start
+        return list(enumerate(rows[start:start + ROW_WINDOW_SIZE], start=start))
+
+    def _visible_rows(self) -> list[RowGroup]:
+        return [group for _index, group in self._visible_row_entries()]
+
+    def _hidden_row_summary(self) -> str:
+        rows = self._all_rows()
+        visible_indices = {i for i, _group in self._visible_row_entries()}
+        hidden = [group for i, group in enumerate(rows) if i not in visible_indices]
+        if not hidden:
+            return ""
+        agents = sum(group.summary_count for group in hidden if group.kind == "agent")
+        tasks = sum(group.summary_count for group in hidden if group.kind == "task")
+        other = sum(group.summary_count for group in hidden if group.kind not in ("agent", "task"))
+        from config.i18n import t as tr
+        if agents and tasks:
+            return tr("rows.more_both", agents=agents, tasks=tasks)
+        if agents:
+            return tr("rows.more_agents", n=agents)
+        if tasks:
+            return tr("rows.more_tasks", n=tasks)
+        return tr("rows.more_items", n=other or len(hidden))
 
     # ──────────────────────────── оверлеи ──────────────────────────────────
     async def run_overlay(self, overlay: Overlay) -> Any:
@@ -710,6 +883,12 @@ class Shell:
         возвращает управление ему же по esc.
         """
         loop = asyncio.get_running_loop()
+        use_alternate_screen = (
+            self.overlay is None
+            and bool(getattr(overlay, "restore_input_to_bottom", False))
+            and self.app is not None
+            and get_app_or_none() is not None
+        )
         overlay.shell = self
         overlay.future = loop.create_future()
         if self.overlay is not None:
@@ -717,16 +896,54 @@ class Shell:
         self.overlay = overlay
         self.overlay_buffer.text = ""
         self._focus_for_overlay()
-        self.invalidate()
+        if use_alternate_screen:
+            try:
+                # Полноэкранные журналы живут на alternate screen. При выходе
+                # терминал сам восстанавливает исходный scrollback и позицию
+                # компактного ввода — без физической вставки пустых строк.
+                await run_in_terminal(self._enter_overlay_screen)
+            except Exception:
+                logger.debug("alternate overlay screen enter failed", exc_info=True)
+                use_alternate_screen = False
+                self.invalidate()
+        else:
+            self.invalidate()
         try:
             return await overlay.future
         finally:
             self.overlay = self._overlay_stack.pop() if self._overlay_stack else None
             self.overlay_buffer.text = ""
             self._focus_for_overlay()
-            if self.overlay is None and self._static_queue:
+            if use_alternate_screen and self.overlay is None:
+                try:
+                    await run_in_terminal(self._leave_overlay_screen)
+                except Exception:
+                    logger.debug("alternate overlay screen exit failed", exc_info=True)
+                    if self._static_queue:
+                        self._schedule_static_flush()
+            elif self.overlay is None and self._static_queue:
                 self._schedule_static_flush()
             self.invalidate()
+
+    def _enter_overlay_screen(self) -> None:
+        """Переключить полноэкранный журнал на отдельный экран терминала."""
+        app = self.app
+        if app is None:
+            return
+        app.output.enter_alternate_screen()
+        app.renderer.reset(leave_alternate_screen=False)
+        app.output.flush()
+
+    def _leave_overlay_screen(self) -> None:
+        """Вернуть scrollback и напечатать накопленную статику без разрыва."""
+        app = self.app
+        if app is None:
+            return
+        app.output.quit_alternate_screen()
+        app.renderer.reset(leave_alternate_screen=False)
+        if self._static_queue:
+            self._drain_static()
+        app.output.flush()
 
     def _focus_for_overlay(self) -> None:
         """Фокус всегда на окне ввода.
@@ -851,12 +1068,21 @@ class Shell:
         )
         rows = self._term_rows()
         available = rows - used - 1
+        # Меню с большим превью (например /themes) может занять всю свободную
+        # высоту: ввод всё равно заменён оверлеем, а превью важнее сохранения
+        # точки привязки выше середины.
+        if getattr(self.overlay, "expand_height", False):
+            return max(3, available)
         # Виджет вместе с подсказкой и нижней пустой строкой занимает
         # не более нижней половины экрана. Большой список прокручивается внутри,
         # а не выталкивает ввод/точку привязки выше середины.
         half_screen = (rows + 1) // 2
         capped = half_screen - self._below_height() - 1
         return max(3, min(available, capped))
+
+    def _confirm_exit_active(self) -> bool:
+        return (self._confirm_exit_until is not None
+                and time.monotonic() < self._confirm_exit_until)
 
     def _overlay_ansi(self) -> str:
         overlay = self.overlay
@@ -900,23 +1126,31 @@ class Shell:
         return ansi_rows(self._overlay_ansi())
 
     def _below_fragments(self):
-        """Под нижней линией: подсказка активного оверлея либо строки групп."""
+        """Под нижней линией: подсказка выхода, подсказка оверлея либо строки групп."""
+        prefix: list[tuple[str, str]] = []
+        if self._confirm_exit_active():
+            # Пустая строка отбивает подсказку от нижней линии рамки.
+            prefix = [("class:hint", "\nНажмите ctrl+d для выхода\n")]
         if self.overlay is not None:
             text = self._notice_text or self.overlay.hint()
-            return [("class:hint", "  " + text)] if text else []
+            return prefix + ([("class:hint", "  " + text)] if text else [])
         out: list[tuple[str, str]] = []
-        for i, group in enumerate(self._visible_rows()):
-            focused = i == self._row_focus
+        for absolute_index, group in self._visible_row_entries():
+            focused = absolute_index == self._row_focus
             out.append((
                 "class:row.sel" if focused else "class:row",
                 ("❯ " if focused else "  ") + group.label() + "\n",
             ))
-        return out
+        summary = self._hidden_row_summary()
+        if summary:
+            out.append(("class:row.summary", f"  … {summary}\n"))
+        return prefix + out
 
     def _below_height(self) -> int:
+        extra = 2 if self._confirm_exit_active() else 0
         if self.overlay is not None:
-            return 1 if (self._notice_text or self.overlay.hint()) else 0
-        return len(self._visible_rows())
+            return extra + (1 if (self._notice_text or self.overlay.hint()) else 0)
+        return extra + len(self._visible_rows()) + (1 if self._hidden_row_summary() else 0)
 
     def _frame_height(self) -> int:
         """У меню нет рамки поля ввода; у обычного ввода обе линии видимы."""
@@ -926,10 +1160,10 @@ class Shell:
         return bool(self._dynamic) and self.overlay is None
 
     def _dynamic_gap_rows(self) -> int:
-        return 2 if self._dynamic_visible() else 0
+        return 1 if self._dynamic_visible() else 0
 
     def _top_gap_rows(self) -> int:
-        """Отбивка перед нижней зоной: два ряда после ответа либо отступ оверлея."""
+        """Отбивка перед нижней зоной: один ряд после динамики либо отступ меню."""
         if self.overlay is not None:
             return max(0, int(getattr(self.overlay, "top_margin_rows", 0)))
         return self._dynamic_gap_rows()
@@ -942,11 +1176,15 @@ class Shell:
         """
         if self.overlay is not None:
             return 0
-        avail = max(1, self._width() - 2)   # минус "❯ "
+        # Поле ввода лежит справа от промпта ("🚀agent ❯"), поэтому перенос
+        # происходит на ширине width - prompt_width, а не width - 2. Если
+        # считать не ту ширину, строка, которую рендер уже завернул, попадает
+        # в расчёт одной строкой — окно ввода оказывается ниже нужного и текст
+        # уезжает на уровень промпта / за нижнюю линию рамки.
+        avail = max(1, self._width() - self._prompt_width())
         rows = 0
         for line in (self.input_buffer.text or "").split("\n"):
-            w = visible_width(line)
-            rows += max(1, -(-w // avail)) if w else 1
+            rows += _word_wrapped_rows(line, avail)
         return max(1, min(rows, 10))
 
     def _menu_max_height(self) -> int:
@@ -1006,7 +1244,7 @@ class Shell:
                 # После перехода на собственный BufferControl его не стало,
                 # поэтому suggestion вычислялся, но серый хвост истории нигде
                 # не рисовался.
-                input_processors=[AppendAutoSuggestion()],
+                input_processors=[WordWrapProcessor(), AppendAutoSuggestion()],
             ),
             height=self._input_height,
             dont_extend_height=True,
@@ -1082,7 +1320,7 @@ class Shell:
                 logger.warning("overlay.handle_key failed", exc_info=True)
                 return True
 
-        @kb.add("escape", eager=True)
+        @kb.add("escape")
         def _esc(event):
             if overlay_takes("escape", event):
                 self.invalidate()
@@ -1118,7 +1356,7 @@ class Shell:
             if overlay_takes("down", event):
                 self.invalidate()
                 return
-            groups = self._visible_rows()
+            groups = self._all_rows()
             buf = self.input_buffer
             if self._row_focus >= 0:
                 self._row_focus = min(len(groups) - 1, self._row_focus + 1)
@@ -1143,7 +1381,7 @@ class Shell:
                 self.invalidate()
                 return
             if self._row_focus >= 0:
-                groups = self._visible_rows()
+                groups = self._all_rows()
                 if 0 <= self._row_focus < len(groups):
                     groups[self._row_focus].open()
                 self.invalidate()
@@ -1171,6 +1409,15 @@ class Shell:
                 self.input_buffer.insert_text("\n")
                 self.invalidate()
 
+        @kb.add("escape", "backspace", eager=True)
+        def _alt_backspace(event):
+            if overlay_takes("a-backspace", event):
+                self.invalidate()
+                return
+            _default_buffer_key(self, "a-backspace", event)
+            self._restart_completion()
+            self.invalidate()
+
         @kb.add("c-c", eager=True)
         def _ctrl_c(event):
             if overlay_takes("c-c", event):
@@ -1191,7 +1438,14 @@ class Shell:
             if overlay_takes("c-d", event):
                 return
             if self.overlay is None and not self.input_buffer.text:
-                self.submissions.put_nowait((SUBMIT_EOF, None))
+                if self._confirm_exit_active():
+                    # Второе нажатие в течение 3 с — выход сразу.
+                    self._confirm_exit_until = None
+                    self.submissions.put_nowait((SUBMIT_EOF, None))
+                else:
+                    # Первое нажатие — показать подсказку и ждать 3 с.
+                    self._confirm_exit_until = time.monotonic() + 3.0
+                    self.invalidate()
 
         @kb.add("tab", eager=True)
         def _tab(event):
@@ -1231,7 +1485,7 @@ class Shell:
         # Клавиши, которые должны доезжать до оверлея как есть.
         for key in ("left", "right", "home", "end", "c-left", "c-right",
                     "c-a", "c-e", "c-w", "c-u", "c-k",
-                    "pageup", "pagedown", "backspace", "delete", "c-p",
+                    "pageup", "pagedown", "backspace", "delete", "c-delete", "c-p",
                     "c-n", "c-x", "c-s", "space", "f5"):
             def _make(k):
                 def _h(event):
@@ -1240,7 +1494,7 @@ class Shell:
                         return
                     # вне оверлея — обычное поведение буфера
                     _default_buffer_key(self, k, event)
-                    if k in ("backspace", "delete"):
+                    if k in ("backspace", "delete", "c-delete"):
                         self._restart_completion()
                     self.invalidate()
                 return _h
@@ -1275,6 +1529,36 @@ class Shell:
             self.input_buffer.history.append_string(cleaned)
         except Exception:
             logger.debug("history append failed", exc_info=True)
+        self._trim_history()
+        # Buffer держит _working_lines — снимок истории с первого рендера;
+        # обновить его может только reset(). Без него вводы текущей сессии
+        # не появляются в навигации ↑/↓ (остаётся только файл на момент старта).
+        try:
+            self.input_buffer.reset()
+        except Exception:
+            logger.debug("buffer reset failed", exc_info=True)
+
+    def _trim_history(self) -> None:
+        """Оставляет в истории ввода последние HISTORY_LIMIT записей.
+
+        FileHistory из prompt_toolkit только дописывает файл и не имеет
+        лимита; обрезаем и файл, и кэш ThreadedHistory, чтобы ↑/↓ не рос
+        безгранично.
+        """
+        try:
+            entries = list(self.input_buffer.history.load_history_strings())
+            if len(entries) <= HISTORY_LIMIT:
+                return
+            keep = entries[:HISTORY_LIMIT]  # новые — первыми
+            with open(self._history_file, "wb") as f:
+                for entry in reversed(keep):  # в файле старые — снизу
+                    f.write(f"\n# {datetime.now()}\n".encode())
+                    for line in entry.split("\n"):
+                        f.write(f"+{line}\n".encode())
+            # Кэш в памяти тоже ограничиваем, иначе он продолжит расти.
+            self.input_buffer.history._loaded_strings[:] = keep
+        except Exception:
+            logger.debug("history trim failed", exc_info=True)
 
     # ──────────────────────────── жизненный цикл ───────────────────────────
     def invalidate(self) -> None:
@@ -1288,23 +1572,24 @@ class Shell:
         from config.themes import t
         return Style.from_dict({
             "frame": t("muted"),
-            "status": "bold #E8E8E8",
+            "status": f"bold {t('fg_primary')}",
             "mode": f"bold {t('accent')}",
             "arrow": f"bold {t('success')}",
             "hint": t("dim_text"),
             "queue": t("dim_text"),
-            "queue.text": "#E8E8E8",
+            "queue.text": t("fg_primary"),
             "queue.summary": f"italic {t('dim_text')}",
             "queue.hint": t("dim_text"),
             "row": t("accent"),
-            "row.sel": f"bold #E8E8E8 bg:{t('bg_select')}",
+            "row.sel": f"bold {t('fg_primary')} bg:{t('bg_select')}",
+            "row.summary": f"italic {t('dim_text')}",
             "bar-filled": t("bar_filled"),
             "bar-empty": t("muted"),
-            "auto-suggestion": "#555555",
+            "auto-suggestion": t("dim_alt"),
             "completion-menu": "bg:default noinherit",
-            "completion-menu.completion": "bg:default #888888 noinherit",
+            "completion-menu.completion": f"bg:default {t('dim_alt')} noinherit",
             "completion-menu.completion.current": f"bg:default {t('accent')} noinherit",
-            "completion-menu.meta.completion": "bg:default #555555 noinherit",
+            "completion-menu.meta.completion": f"bg:default {t('dim_alt')} noinherit",
             "completion-menu.meta.completion.current": f"bg:default {t('accent')} noinherit",
             "scrollbar.background": "bg:default noinherit",
             "scrollbar.button": "bg:default noinherit",
@@ -1320,7 +1605,12 @@ class Shell:
         тормоза `/models` и мерцание, на которые жалуется заказчик.
         """
         while not self._stopped.is_set():
-            if self._animating():
+            if self._confirm_exit_until is not None:
+                if time.monotonic() >= self._confirm_exit_until:
+                    self._confirm_exit_until = None
+                self.invalidate()
+                await asyncio.sleep(0.1)
+            elif self._animating():
                 self.invalidate()
                 await asyncio.sleep(0.1)
             else:
@@ -1412,9 +1702,23 @@ def _edit_buffer_key(buf: Buffer, key: str) -> bool:
         buf.delete_before_cursor(1)
     elif key == "delete":
         buf.delete(1)
+    elif key == "c-delete":
+        # Ctrl+Delete — удалить слово ПОСЛЕ курсора (как emacs kill-word),
+        # симметрично Alt+Backspace, который стирает слово перед курсором.
+        offset = buf.document.find_next_word_beginning(WORD=True)
+        if offset is None:
+            offset = len(buf.text) - buf.cursor_position
+        buf.delete(offset)
+    elif key == "a-backspace":
+        # Alt+Backspace — удалить слово перед курсором вместе с пробелами
+        # (как readline backward-kill-word).
+        offset = buf.document.find_start_of_previous_word(WORD=True)
+        if offset is None:
+            offset = -buf.cursor_position
+        buf.delete_before_cursor(-offset)
     elif key == "c-w":
-        offset = buf.document.find_previous_word_beginning(WORD=True)
-        buf.delete_before_cursor(-offset if offset is not None else buf.cursor_position)
+        # Ctrl+W — очистить всё левее курсора до начала строки.
+        buf.delete_before_cursor(-buf.document.get_start_of_line_position())
     elif key == "c-u":
         buf.delete_before_cursor(-buf.document.get_start_of_line_position())
     elif key == "c-k":
@@ -1451,10 +1755,18 @@ class RowGroup:
     открывает связанный оверлей.
     """
 
-    def __init__(self, label_fn: Callable[[], str],
-                 open_fn: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        label_fn: Callable[[], str],
+        open_fn: Callable[[], None],
+        *,
+        kind: str = "agent",
+        summary_count: int = 1,
+    ) -> None:
         self._label_fn = label_fn
         self._open_fn = open_fn
+        self.kind = kind
+        self.summary_count = max(1, int(summary_count or 1))
         self.shell: Shell | None = None
 
     def label(self) -> str:

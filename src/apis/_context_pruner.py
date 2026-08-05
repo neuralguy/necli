@@ -31,17 +31,7 @@ from apis.messages import AIMessage, HumanMessage, ToolMessage
 from logger import logger
 
 
-def _is_real_user(msg: Any) -> bool:
-    """True только для НАСТОЯЩЕЙ реплики юзера (не synthetic).
-
-    Служебные HumanMessage (extras/картинки/гибрид tool-результаты), которые
-    агент сам вставляет между репликами юзера в native-режиме, помечены
-    additional_kwargs={"synthetic": True} и не должны считаться за раунд —
-    иначе окна вытеснения схлопываются раньше, чем юзер напишет 5 сообщений.
-    """
-    if not isinstance(msg, HumanMessage):
-        return False
-    return not (getattr(msg, "additional_kwargs", None) or {}).get("synthetic")
+from skills.registry import is_real_user_message as _is_real_user
 
 _BLOCK_SEP = "\n---\n"
 _READ_CMD_RE = re.compile(r"^\$ (read)\s+(.+)$")

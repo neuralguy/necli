@@ -8,6 +8,7 @@ import sys
 
 from logger import logger
 from tools._paths import get_working_dir
+from tools.background import start_background, wait_background_result
 from tools.models import ToolCall, ToolResult
 
 _EXECUTION_TIMEOUT = 60
@@ -176,8 +177,6 @@ def execute_shell(call: ToolCall) -> ToolResult:
     # сразу возвращаем job-id и продолжаем работу. Уведомление о завершении
     # придёт отдельным результатом в одном из следующих раундов.
     if (call.args or {}).get("background"):
-        from tools.background import start_background
-
         job_id = start_background(command, get_working_dir(), _utf8_env())
         return ToolResult(
             name=call.name, status="ok",
@@ -188,6 +187,27 @@ def execute_shell(call: ToolCall) -> ToolResult:
             ),
             exit_code=0, command=command,
         )
+
+    # Субагент исполняет синхронные инструменты в worker thread. Его shell
+    # проводим через тот же process-group runner, что фоновые задачи, но без
+    # отдельной строки UI и без авто-доставки результата главному агенту.
+    from tools.cancellation import current_cancellation_scope
+    cancel_scope = current_cancellation_scope()
+    if cancel_scope is not None:
+        job_id = start_background(
+            command,
+            get_working_dir(),
+            _utf8_env(),
+            visible=False,
+            deliver_result=False,
+        )
+        cancel_scope.bind_job(job_id)
+        try:
+            result = wait_background_result(job_id)
+            result.name = call.name
+            return result
+        finally:
+            cancel_scope.clear_job(job_id)
 
     # cd разрешён: команда выполняется в одном subprocess (shell=True), поэтому
     # любой `cd` действует только внутри ЭТОГО вызова и не «утекает» между

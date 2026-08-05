@@ -634,10 +634,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
-from config import READ_ONLY_TOOLS as _READ_ONLY_TOOL_NAMES  # noqa: E402
-
-_PLANNING_TOOL_NAMES = _READ_ONLY_TOOL_NAMES | {"poll", "skill", "web_search", "web_fetch"}
-_SWARM_TOOL_NAMES = _PLANNING_TOOL_NAMES | {"shell", "subagent"}
+from tools.registry import PLANNING_TOOLS as _PLANNING_TOOL_NAMES, SWARM_TOOLS as _SWARM_TOOL_NAMES  # noqa: E402
 
 # Cache for get_tool_schemas. Key — (mode, mcp_signature), where mcp_signature is
 # a tuple of MCP tool names. Invalidated whenever the MCP set changes.

@@ -13,6 +13,7 @@ import logging
 import time
 
 import tools
+from agent._common import native_tool_calls_to_calls
 from agent.sanitizer import sanitize_response
 from agent.subagent_git import (
     WorktreeHandle,
@@ -43,16 +44,14 @@ from tools.registry import execute_call
 
 logger = logging.getLogger(__name__)
 
-MAX_SUBAGENT_ITERATIONS = 200
-
 # Потолок АКТИВНОГО контекста (input одного вызова) субагента. Бэкстоп от
 # runaway-петель verify/polish: «проверь → поправь → перечитай файл → снова
 # проверь» раздувает контекст одного вызова, перечитывая большие файлы по кругу;
 # прунер вытесняет старое, но если петля тащит всё больше — input улетает вверх.
 # При превышении субагент останавливается с тем, что есть (graceful). Это НЕ
 # кумулятив по итерациям (тот рос бы O(N²) и ложно стопил нормальную длинную
-# работу) — длину ограничивает MAX_SUBAGENT_ITERATIONS. 1M токенов активного
-# контекста — заведомо аномалия для фокусной задачи субагента.
+# работу). 1M токенов активного контекста — заведомо аномалия для фокусной
+# задачи субагента (число итераций не ограничено).
 MAX_SUBAGENT_CONTEXT_TOKENS = 1_000_000
 
 # Таймаут на ОДИН вызов модели субагентом. Прокси (onlysq) умеет зависать на
@@ -244,9 +243,8 @@ class _ApiSubagentRunner:
         # растущий контекст, и если прунер не справляется (verify/polish крутит
         # перечитывание больших файлов), input одного вызова улетает за потолок
         # окна. СУММИРОВАТЬ input по итерациям нельзя — это O(N²) и ложно стопит
-        # нормальную длинную работу. Число итераций ограничено отдельно
-        # (MAX_SUBAGENT_ITERATIONS). Считаем независимо от buffer (на tool-пути
-        # buffer=None).
+        # нормальную длинную работу. Число итераций не ограничено.
+        # Считаем независимо от buffer (на tool-пути buffer=None).
         self._last_input_tokens = 0
         # Кумулятив (input+output по всем вызовам) — только для лога/справки.
         self._spent_tokens = 0
@@ -542,9 +540,14 @@ class _ApiSubagentRunner:
         Выполняется внутри use_working_dir(self.working_dir): file-tool'ы
         и shell корректно резолвят пути в worktree этого субагента.
         """
+        from tools.cancellation import use_cancellation_scope
+
         results = []
-        with use_working_dir(self.working_dir):
+        cancel_scope = self.buffer.cancel_scope if self.buffer else None
+        with use_working_dir(self.working_dir), use_cancellation_scope(cancel_scope):
             for call in text_calls:
+                if self.buffer is not None and self.buffer.cancel_requested:
+                    break
                 if call.tool_name in _BLOCKED_FOR_SUBAGENTS:
                     results.append(tools.ToolResult(
                         name=call.tool_name,
@@ -577,6 +580,7 @@ class _ApiSubagentRunner:
                     self.buffer.on_tool_done(
                         elapsed=elapsed,
                         error=(r.status == "error"),
+                        output=r.output or "",
                     )
         return results
 
@@ -652,13 +656,14 @@ class _ApiSubagentRunner:
 
             raw_text = ""
             progress_nudges = 0
-            for iterations in range(MAX_SUBAGENT_ITERATIONS):
+            while True:
+                iterations += 1
                 # Context-size backstop: если АКТИВНЫЙ контекст одного вызова
                 # (input последнего обмена) раздулся за потолок — это runaway-петля
                 # read/patch/re-read, которую прунер не смог удержать. Останавливаемся
                 # с тем, что есть. Сравниваем активный контекст, НЕ кумулятив по
                 # итерациям (тот рос бы O(N²) и ложно стопил нормальную длинную
-                # работу). Длину ограничивает MAX_SUBAGENT_ITERATIONS.
+                # работу). Число итераций не ограничено.
                 ctx = self._last_input_tokens
                 if ctx > MAX_SUBAGENT_CONTEXT_TOKENS:
                     logger.warning(
@@ -669,18 +674,18 @@ class _ApiSubagentRunner:
                     )
                     final = strip_tool_calls(raw_text).strip()
                     final = (final + "\n\n[Subagent stopped: context size limit reached]").strip()
+                    # NB: iterations уже инкрементирован на входе в итерацию.
                     if self.buffer:
                         self.buffer.on_done(final)
                     # Контекст переполнен = РАБОТА, скорее всего, НЕ ДОВЕДЕНА до конца.
                     # Возвращаем error (а не None), чтобы главный агент
                     # узнали о неполноте, а не считали это полным успехом. Сделанный
                     # текст сохраняется в final — он не теряется.
-                    return final, iterations + 1, "stopped: context size limit reached (work likely incomplete)"
+                    return final, iterations, "stopped: context size limit reached (work likely incomplete)"
 
-                self.status_cb(self.index, f"Iteration {iterations + 1}")
+                self.status_cb(self.index, f"Iteration {iterations}")
                 if self.buffer:
-                    self.buffer.streaming_text = ""
-                    self.buffer.on_iteration(iterations)
+                    self.buffer.on_iteration(iterations - 1)
 
                 try:
                     raw_text, native_tool_calls = await asyncio.wait_for(
@@ -707,8 +712,7 @@ class _ApiSubagentRunner:
                 # Native tool_calls конвертируем в ToolCall для исполнения
                 native_as_calls = []
                 if native_tool_calls:
-                    from agent.loop import _native_tool_calls_to_calls
-                    native_as_calls = _native_tool_calls_to_calls(native_tool_calls)
+                    native_as_calls = native_tool_calls_to_calls(native_tool_calls)
 
                 # Если native_tool_calls есть — используем именно их (исходник истины)
                 all_calls = native_as_calls if native_tool_calls else text_calls
@@ -727,21 +731,25 @@ class _ApiSubagentRunner:
                         continue
                     if self.buffer:
                         self.buffer.on_done(final)
-                    return final, iterations + 1, None
+                    return final, iterations, None
 
-                results = self._execute_tool_calls(all_calls)
+                # execute_call синхронный (shell может жить минуту). Выносим
+                # его из UI-loop; ContextVar с рабочей директорией asyncio
+                # копирует в поток автоматически.
+                if self.buffer:
+                    self.buffer.in_tool_thread = True
+                try:
+                    results = await asyncio.to_thread(self._execute_tool_calls, all_calls)
+                finally:
+                    if self.buffer:
+                        self.buffer.in_tool_thread = False
+                if self.buffer and self.buffer.cancel_requested:
+                    raise asyncio.CancelledError
 
                 if native_tool_calls:
                     self._append_tool_results_native(native_tool_calls, results)
                 else:
                     self._append_tool_results_text(results)
-
-            # Лимит итераций исчерпан — как и бюджет, это сигнал неполноты:
-            # помечаем error, чтобы главный агент знал (текст сохранён).
-            final = strip_tool_calls(raw_text).strip() + "\n\n[Subagent iteration limit]"
-            if self.buffer:
-                self.buffer.on_done(final)
-            return final, iterations + 1, "stopped: iteration limit reached (work likely incomplete)"
 
         except Exception as e:
             logger.error(f"Subagent {self.index} API run failed: {e}", exc_info=True)
@@ -749,7 +757,7 @@ class _ApiSubagentRunner:
             if self.buffer:
                 self.buffer.on_error(err)
             # Возвращаем фактическое число выполненных итераций, а не 0.
-            return "", iterations + 1, err
+            return "", iterations, err
 
 
 def _looks_like_progress_only(text: str) -> bool:
@@ -1040,6 +1048,8 @@ async def run_api_subagents(
         i = runner.index
         buf = runner.buffer
         try:
+            if buf and buf.cancel_requested:
+                raise asyncio.CancelledError
             if sem is None:
                 if buf:
                     buf.on_start()
@@ -1063,6 +1073,18 @@ async def run_api_subagents(
                 phase=getattr(task, "phase", "") or "",
                 label=getattr(task, "label", "") or "",
             )
+        except asyncio.CancelledError:
+            error = "Cancelled by user."
+            if buf:
+                buf.on_error(error)
+            result = SubagentResult(
+                task_index=i, mode=task.mode, response="",
+                error=error,
+                elapsed=runner.buffer.elapsed if runner.buffer else 0.0,
+                model_label=runner.model_id,
+                phase=getattr(task, "phase", "") or "",
+                label=getattr(task, "label", "") or "",
+            )
         except Exception as e:
             result = SubagentResult(
                 task_index=i, mode=task.mode, response="",
@@ -1077,7 +1099,7 @@ async def run_api_subagents(
         return result
 
     for wave in waves:
-        coros = []
+        wave_jobs = []
         for i in wave:
             task = tasks[i]
             preset = None
@@ -1123,15 +1145,41 @@ async def run_api_subagents(
                 wave_size=len(wave),
             )
             # _run_one финализирует и пишет в progress.md внутри себя.
-            coros.append(_run_one(runner, task, handles[i]))
+            job = asyncio.create_task(
+                _run_one(runner, task, handles[i]),
+                name=f"subagent-{i + 1}",
+            )
+            if runner.buffer:
+                # Во время синхронного инструмента Task не отцепляем от рабочего
+                # потока: ждём завершения текущего атомарного вызова, затем
+                # _run_one увидит cancel_requested и не запустит следующий.
+                runner.buffer.bind_cancel(
+                    lambda in_tool, task=job: None if in_tool else task.cancel()
+                )
+            wave_jobs.append((i, task, runner.buffer, job))
 
         # Внутри волны субагенты идут параллельно; каждый сам пишет
         # себя в progress.md сразу по завершению (не ждём всю волну).
-        wave_results = await asyncio.gather(*coros, return_exceptions=True)
-        for raw in wave_results:
-            if isinstance(raw, Exception):
+        wave_results = await asyncio.gather(
+            *(job for _i, _task, _buf, job in wave_jobs),
+            return_exceptions=True,
+        )
+        for (i, task, buf, _job), raw in zip(wave_jobs, wave_results, strict=True):
+            if buf:
+                buf.bind_cancel(None)
+            if isinstance(raw, BaseException):
                 logger.error("subagent: wave coro crashed: %s", raw, exc_info=raw)
-                continue
+                error = "Cancelled by user." if isinstance(raw, asyncio.CancelledError) else f"{type(raw).__name__}: {raw}"
+                if buf and buf.status not in ("done", "error"):
+                    buf.on_error(error)
+                raw = SubagentResult(
+                    task_index=i, mode=task.mode, response="", error=error,
+                    elapsed=buf.elapsed if buf else 0.0,
+                    phase=getattr(task, "phase", "") or "",
+                    label=getattr(task, "label", "") or "",
+                )
+                _finalize_subagent(raw, task, handles[i], project_root)
+                await _append_progress(run_dir, raw, len(tasks))
             results_by_index[raw.task_index] = raw
 
     return [

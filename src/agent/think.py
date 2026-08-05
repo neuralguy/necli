@@ -87,6 +87,10 @@ class ThoughtStep:
 @dataclass
 class ThinkLog:
     steps: list[ThoughtStep] = field(default_factory=list)
+    # High-water mark строк стрим-окна: достигнув max_lines, кадр больше не
+    # сжимается (текст может временно укорачиваться, напр. при закрытии
+    # блока мысль чистится от markdown).
+    peak_lines: int = 0
 
     def add(self, text: str) -> None:
         raw_text = text or ""
@@ -213,6 +217,14 @@ def _parse_one(body: str) -> str | None:
     return body if body else None
 
 
+def _think_duration(log: ThinkLog) -> int:
+    """Секунды, потраченные на рассуждение (от первой до последней мысли)."""
+    if not log.steps:
+        return 0
+    span = log.steps[-1].created_at - log.steps[0].created_at
+    return max(1, round(span))
+
+
 def parse_think_blocks(text: str) -> list[str]:
     """Извлекает мысли из всех call think блоков."""
     if not text or not _think_enabled():
@@ -263,10 +275,10 @@ def render_think_static(log: ThinkLog, streaming: bool = False):
     emoji = ui.get("symbols.thinking_emoji", "💭")
     label = _i18n("ui.thinking")
 
-    if is_compact():
+    if is_compact:
         from rich.console import Group as RGroup
         header = Text()
-        header.append(f"{emoji} {label}", style="bold magenta")
+        header.append(f"{emoji} {label}", style=f"bold {_theme('magenta')}")
 
         full_text = "\n".join(
             ln for ln in "\n\n".join(step.text.strip() for step in log.steps).split("\n")
@@ -305,22 +317,38 @@ def render_think_static(log: ThinkLog, streaming: bool = False):
                 all_lines.append(cur)
 
         if streaming:
-            # Стрим: прокручиваем — показываем небольшой стабильный ХВОСТ.
-            # Лимит НАМЕРЕННО маленький (не высота терминала): живой Live —
-            # transient, и кадр близкий к высоте окна он не может стереть
-            # курсором → каждый refresh оставляет старый кадр в scrollback
-            # («спам пустых строк»). Низкий стабильный кадр перерисовывается
-            # на месте.
+            # Стрим: окно растёт от 1 строки до max_lines, дальше — прокрутка
+            # хвоста. Достигнув max_lines, кадр больше не сжимается
+            # (peak_lines — high-water mark: текст может временно
+            # укорачиваться, напр. при закрытии блока мысль чистится от
+            # markdown). Лимит НАМЕРЕННО маленький (не высота терминала):
+            # живой Live — transient, и кадр близкий к высоте окна он не
+            # может стереть курсором → каждый refresh оставляет старый кадр
+            # в scrollback («спам пустых строк»).
             max_lines = int(ui.get("limits.think_stream_lines", 6))
-            vis_lines = all_lines[-max_lines:] if len(all_lines) > max_lines else all_lines
+            if log.peak_lines >= max_lines or len(all_lines) > max_lines:
+                vis_lines = all_lines[-max_lines:]
+                if len(vis_lines) < max_lines:
+                    vis_lines = [""] * (max_lines - len(vis_lines)) + vis_lines
+                log.peak_lines = max(log.peak_lines, max_lines)
+            else:
+                vis_lines = all_lines
+                log.peak_lines = max(log.peak_lines, len(all_lines))
             hidden = 0
         elif is_expanded_preview():
             vis_lines = all_lines
             hidden = 0
         else:
-            max_lines = int(ui.get("limits.think_preview_lines", 3))
-            vis_lines = all_lines[:max_lines]
-            hidden = len(all_lines) - len(vis_lines)
+            # Финал: шапка с секундами размышления зелёным через пробел +
+            # одна строка «…N строк (ctrl+o развернуть)». Полный текст —
+            # по Ctrl+O.
+            header.append(" ")
+            header.append(
+                Text(_i18n("compact.think_seconds", n=_think_duration(log)), style=_theme("success"))
+            )
+            summary = Text("   " + prefix, style=muted)
+            summary.append(_i18n("compact.think_expand", n=len(all_lines)), style="dim italic")
+            return RGroup(header, summary)
 
         out: list = [header]
         for i, ln in enumerate(vis_lines):

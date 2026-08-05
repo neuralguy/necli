@@ -10,6 +10,20 @@ from system_prompt import build_tool_results
 logger = logging.getLogger(__name__)
 
 _TRUNCATION_CHAR_THRESHOLD = 45000
+
+# Максимальная длина сообщения истории до усечения (первые 1000 + ... + последние 500)
+_HISTORY_TRUNCATE_LIMIT = 2000
+_HISTORY_TRUNCATE_HEAD = 1000
+_HISTORY_TRUNCATE_TAIL = 500
+
+
+def truncate_history_content(content: str) -> str:
+    """Урезает длинное сообщение истории: первые 1000 + ...(truncated)... + последние 500."""
+    if len(content) > _HISTORY_TRUNCATE_LIMIT:
+        return content[:_HISTORY_TRUNCATE_HEAD] + "\n...(truncated)...\n" + content[-_HISTORY_TRUNCATE_TAIL:]
+    return content
+
+
 def _truncate(text: str, max_len: int | None = None) -> str:
     if text is None:
         return ""
@@ -125,9 +139,7 @@ async def build_first_message(
         parts.append("\n" + CONVERSATION_CONTEXT_HEADER)
         for msg in history:
             role = msg["role"].upper()
-            cnt = msg["content"]
-            if len(cnt) > 2000:
-                cnt = cnt[:1000] + "\n...(truncated)...\n" + cnt[-500:]
+            cnt = truncate_history_content(msg["content"])
             parts.append(f"{role}:\n{cnt}")
         parts.append(CONVERSATION_CONTEXT_FOOTER)
     from skills import consume_pending_messages

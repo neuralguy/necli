@@ -60,10 +60,10 @@ DEFAULTS: dict[str, Any] = {
         "spinner.frames": "Кадры спиннера (рисуются по очереди). По умолчанию braille-точки.",
         "spinner.interval": "Интервал между кадрами в секундах (используется только некоторыми спиннерами).",
 
-        "diff_colors.bg_delete": "Фон удалённой строки в diff (HEX).",
-        "diff_colors.bg_add": "Фон добавленной строки.",
-        "diff_colors.fg_delete": "Цвет знака '-' и текста удалённой строки.",
-        "diff_colors.fg_add": "Цвет знака '+' и текста добавленной строки.",
+        "diff_colors.bg_delete": "ОПЦИОНАЛЬНО. Фон удалённой строки в diff (HEX). По умолчанию — роль темы diff_del_bg.",
+        "diff_colors.bg_add": "ОПЦИОНАЛЬНО. Фон добавленной строки (тема: diff_add_bg).",
+        "diff_colors.fg_delete": "ОПЦИОНАЛЬНО. Цвет удалённой строки (тема: diff_del_fg).",
+        "diff_colors.fg_add": "ОПЦИОНАЛЬНО. Цвет добавленной строки (тема: diff_add_fg).",
         "diff_colors.prefix_delete": "Префикс удалённой строки ('- ' с пробелом).",
         "diff_colors.prefix_add": "Префикс добавленной строки ('+ ').",
         "diff_colors.prefix_equal": "Префикс неизменной строки (два пробела).",
@@ -161,10 +161,8 @@ DEFAULTS: dict[str, Any] = {
     },
 
     "diff_colors": {
-        "bg_delete": "#2a0808",
-        "bg_add": "#082a08",
-        "fg_delete": "#ff6b6b",
-        "fg_add": "#6bff6b",
+        # Цвета diff теперь берутся из темы (роли diff_del_*/diff_add_*);
+        # здесь только символы-префиксы.
         "prefix_delete": "- ",
         "prefix_add": "+ ",
         "prefix_equal": "  ",

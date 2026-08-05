@@ -61,7 +61,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/lsp",         "tools",   "help.lsp"),
     SlashCommand("/skills",      "tools",   "help.skills"),
     SlashCommand("/agents",      "tools",   "help.agents"),
-    SlashCommand("/ssh",         "tools",   "help.ssh"),
 
     # ── display ─────────────────────────────────────────────
     SlashCommand("/themes",      "display", "help.themes"),

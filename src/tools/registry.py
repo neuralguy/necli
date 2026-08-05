@@ -213,7 +213,7 @@ def execute_call(call: ToolCall) -> ToolResult:
 PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"poll", "skill", "web_search", "web_fetch"})
 SWARM_TOOLS = frozenset(PLANNING_TOOLS | {"shell", "subagent"})
 
-_PLANNING_TOOLS_HUMAN = ", ".join(sorted(_READ_ONLY_CANONICAL))
+
 
 
 def is_tool_allowed(

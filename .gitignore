@@ -27,3 +27,5 @@ dist/
 *.zip
 scripts/
 .claude/
+tests/
+docx_engine_port/

@@ -9,14 +9,20 @@ ROLES = (
     "warning",     # shell, patch, предупреждения
     "error",       # ошибки
     "info",        # read, list, tree, cyan-элементы
-    "magenta",     # ssh, subagent
+    "magenta",     # subagent
     "purple",      # mode labels
     "muted",       # разделители, бордеры
     "dim_text",    # hint text, приглушённый текст
+    "fg_primary",  # основной текст (строка ввода, номера строк)
+    "dim_alt",     # приглушённый текст 2-го уровня (автосаггест, completion)
     "bar_filled",  # progress bar заполненная часть
     "bg_code",     # фон блоков кода
     "bg_output",   # фон вывода команд
     "bg_select",   # фон выделения в меню
+    "diff_del_fg",  # diff: удаление — текст
+    "diff_del_bg",  # diff: удаление — фон
+    "diff_add_fg",  # diff: добавление — текст
+    "diff_add_bg",  # diff: добавление — фон
 )
 
 ROLE_LABELS = {
@@ -25,14 +31,20 @@ ROLE_LABELS = {
     "warning": "Предупреждение (shell)",
     "error": "Ошибка",
     "info": "Информация (read, list)",
-    "magenta": "SSH, субагент",
+    "magenta": "Субагент",
     "purple": "Метки режимов",
     "muted": "Приглушённый (разделители)",
     "dim_text": "Тусклый текст",
+    "fg_primary": "Основной текст",
+    "dim_alt": "Тусклый текст (подсказки)",
     "bar_filled": "Прогресс-бар",
     "bg_code": "Фон кода",
     "bg_output": "Фон вывода",
     "bg_select": "Фон выделения",
+    "diff_del_fg": "Diff: удаление (текст)",
+    "diff_del_bg": "Diff: удаление (фон)",
+    "diff_add_fg": "Diff: добавление (текст)",
+    "diff_add_bg": "Diff: добавление (фон)",
 }
 
 BUILTIN_THEMES: dict[str, dict[str, str]] = {
@@ -50,6 +62,12 @@ BUILTIN_THEMES: dict[str, dict[str, str]] = {
         "bg_code": "#1a1a2e",
         "bg_output": "#0d1117",
         "bg_select": "#1e1e2e",
+        "fg_primary": "#e8e8e8",
+        "dim_alt": "#888888",
+        "diff_del_fg": "#ff6b6b",
+        "diff_del_bg": "#2a0808",
+        "diff_add_fg": "#6bff6b",
+        "diff_add_bg": "#082a08",
     },
     "monokai": {
         "accent": "#66d9ef",
@@ -65,6 +83,12 @@ BUILTIN_THEMES: dict[str, dict[str, str]] = {
         "bg_code": "#272822",
         "bg_output": "#1e1f1c",
         "bg_select": "#3e3d32",
+        "fg_primary": "#f8f8f2",
+        "dim_alt": "#8f908a",
+        "diff_del_fg": "#ff6b6b",
+        "diff_del_bg": "#2a0808",
+        "diff_add_fg": "#6bff6b",
+        "diff_add_bg": "#082a08",
     },
     "catppuccin": {
         "accent": "#89b4fa",
@@ -80,6 +104,12 @@ BUILTIN_THEMES: dict[str, dict[str, str]] = {
         "bg_code": "#1e1e2e",
         "bg_output": "#181825",
         "bg_select": "#313244",
+        "fg_primary": "#cdd6f4",
+        "dim_alt": "#7f849c",
+        "diff_del_fg": "#ff6b6b",
+        "diff_del_bg": "#2a0808",
+        "diff_add_fg": "#6bff6b",
+        "diff_add_bg": "#082a08",
     },
     "nord": {
         "accent": "#88c0d0",
@@ -95,6 +125,12 @@ BUILTIN_THEMES: dict[str, dict[str, str]] = {
         "bg_code": "#2e3440",
         "bg_output": "#272c36",
         "bg_select": "#3b4252",
+        "fg_primary": "#d8dee9",
+        "dim_alt": "#7b88a1",
+        "diff_del_fg": "#ff6b6b",
+        "diff_del_bg": "#2a0808",
+        "diff_add_fg": "#6bff6b",
+        "diff_add_bg": "#082a08",
     },
     "gruvbox": {
         "accent": "#83a598",
@@ -110,6 +146,12 @@ BUILTIN_THEMES: dict[str, dict[str, str]] = {
         "bg_code": "#282828",
         "bg_output": "#1d2021",
         "bg_select": "#3c3836",
+        "fg_primary": "#ebdbb2",
+        "dim_alt": "#928374",
+        "diff_del_fg": "#ff6b6b",
+        "diff_del_bg": "#2a0808",
+        "diff_add_fg": "#6bff6b",
+        "diff_add_bg": "#082a08",
     },
     "tokyo-night": {
         "accent": "#7aa2f7",
@@ -125,6 +167,12 @@ BUILTIN_THEMES: dict[str, dict[str, str]] = {
         "bg_code": "#1a1b26",
         "bg_output": "#16161e",
         "bg_select": "#283457",
+        "fg_primary": "#c0caf5",
+        "dim_alt": "#737aa2",
+        "diff_del_fg": "#ff6b6b",
+        "diff_del_bg": "#2a0808",
+        "diff_add_fg": "#6bff6b",
+        "diff_add_bg": "#082a08",
     },
     "solarized": {
         "accent": "#268bd2",
@@ -140,6 +188,12 @@ BUILTIN_THEMES: dict[str, dict[str, str]] = {
         "bg_code": "#002b36",
         "bg_output": "#00212b",
         "bg_select": "#073642",
+        "fg_primary": "#93a1a1",
+        "dim_alt": "#657b83",
+        "diff_del_fg": "#ff6b6b",
+        "diff_del_bg": "#2a0808",
+        "diff_add_fg": "#6bff6b",
+        "diff_add_bg": "#082a08",
     },
     "one-dark": {
         "accent": "#61afef",
@@ -155,10 +209,19 @@ BUILTIN_THEMES: dict[str, dict[str, str]] = {
         "bg_code": "#282c34",
         "bg_output": "#21252b",
         "bg_select": "#2c313a",
+        "fg_primary": "#abb2bf",
+        "dim_alt": "#7f848e",
+        "diff_del_fg": "#ff6b6b",
+        "diff_del_bg": "#2a0808",
+        "diff_add_fg": "#6bff6b",
+        "diff_add_bg": "#082a08",
     },
 }
 
 DEFAULT_THEME = "dracula"
+
+#: Фолбэк, если роли нет ни в одной теме (например, устаревший конфиг).
+FALLBACK = "#E8E8E8"
 
 _active: dict[str, str] | None = None
 
@@ -193,7 +256,18 @@ def get_theme() -> dict[str, str]:
 def t(role: str) -> str:
     """Быстрый доступ к цвету по роли. Основной API."""
     theme = get_theme()
-    return theme.get(role, "#E8E8E8")
+    return theme.get(role, FALLBACK)
+
+
+def ansi_24bit(color: str) -> str:
+    """hex-цвет → ANSI SGR '38;2;R;G;B' (без 'm'). Фолбэк — синий 38;5;75."""
+    if isinstance(color, str) and color.startswith("#") and len(color) == 7:
+        try:
+            r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+            return f"38;2;{r};{g};{b}"
+        except ValueError:
+            pass
+    return "38;5;75"
 
 
 def set_theme(name: str) -> None:

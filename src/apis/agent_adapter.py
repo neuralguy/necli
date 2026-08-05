@@ -141,6 +141,9 @@ class ApiSession:
         self.messages: list = []
         self._llm: BaseProvider | None = None
         self._llm_kwargs: dict = {}
+        # True после fallback «фото не прошло» (см. api_send_message) — interactive
+        # читает флаг после хода и убирает фото из истории сессии.
+        self.image_fallback: bool = False
 
     @property
     def use_native_tools(self) -> bool:
@@ -278,6 +281,31 @@ def _pending_native_tool_calls(messages: list) -> list[dict]:
         }
         return [tc for tc in calls if tc.get("id") not in used]
     return []
+
+
+def close_pending_native_tool_calls(reason: str = "interrupted by user") -> int:
+    """Закрыть неисполненные native tool calls без запроса к модели.
+
+    OpenAI-compatible провайдеры требуют, чтобы за AIMessage(tool_calls=...)
+    шёл ToolMessage для каждого tool_call_id. При Ctrl+C инструменты
+    намеренно не исполняются, но парность истории всё равно нужно
+    сохранить, иначе следующий запрос получит HTTP 400.
+    """
+    session = get_api_session()
+    if session is None:
+        return 0
+    pending = _pending_native_tool_calls(session.messages)
+    if not pending:
+        return 0
+    content = f"(skipped: {reason})"
+    for call in pending:
+        session.messages.append(ToolMessage(
+            content=content,
+            tool_call_id=call.get("id", ""),
+            name=call.get("name") or "tool",
+        ))
+    logger.info("closed %d interrupted native tool call(s)", len(pending))
+    return len(pending)
 
 
 def _structured_result_content(d: dict) -> str:
@@ -420,6 +448,20 @@ def _extract_usage(obj) -> dict:
     return out
 
 
+def _spend_llm_usage(llm, obj) -> None:
+    """Списывает стоимость запроса с баланса ключа (если он настроен).
+
+    Некритично: сбой списания не должен ронять запрос, поэтому молча
+    логируем и продолжаем.
+    """
+    try:
+        usage = _extract_usage(obj)
+        if usage:
+            llm.spend_usage(usage)
+    except Exception:
+        logger.debug("spend_usage failed, balance not updated", exc_info=True)
+
+
 async def api_send_message(text, system_prompt="", on_chunk=None, model=None, tools=None, images=None, on_reasoning_chunk=None, on_tool_chunk=None, tool_results=None, extras=None):
     """Отправляет сообщение провайдеру.
 
@@ -433,6 +475,12 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
     session = get_api_session()
     if session is None:
         raise RuntimeError("API session not initialized. Use /api to configure.")
+
+    # Флаг «фото не прошло»: сбрасывается перед запросом с изображениями и
+    # выставляется в fallback-ветке ниже (модель не приняла фото). interactive.py
+    # читает его после хода, чтобы убрать фото из истории сессии.
+    if images:
+        session.image_fallback = False
 
     if model and model != session.model_id:
         try:
@@ -533,7 +581,7 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
                 content=str(extras), additional_kwargs={"synthetic": True},
             )
             messages.append(extras_message)
-    elif tool_results is not None:
+    elif tool_results:
         # Гибрид: провайдер native, но в прошлом ответе модель использовала
         # текстовые :::call блоки (а не native function-calling) → pending
         # tool_calls нет. Шлём результаты плоским text-payload + extras одним
@@ -652,7 +700,38 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
             return ""
         return ""
 
-    try:
+    # Fallback при отправке фото модели, которая его не принимает (или файл
+    # повреждён): не роняем сессию — убираем изображения из запроса и истории,
+    # модели уходит текст с пометкой «фото не удалось прочитать», и запрос
+    # повторяется один раз чистым текстом.
+    _img_fallback_note = "\n\n[Фото не удалось прочитать — изображение не отправлено.]"
+
+    def _strip_images_from(target: list) -> bool:
+        """Заменяет image_url-части мультимодальных HumanMessage текстом-пометкой."""
+        dropped = False
+        for m in list(target):
+            content = getattr(m, "content", None)
+            if not isinstance(content, list):
+                continue
+            if not any(
+                isinstance(p, dict) and p.get("type") == "image_url"
+                for p in content
+            ):
+                continue
+            text_parts = [
+                p for p in content
+                if not (isinstance(p, dict) and p.get("type") == "image_url")
+            ]
+            if text_parts:
+                text_parts.append({"type": "text", "text": _img_fallback_note})
+            else:
+                text_parts = [{"type": "text", "text": _img_fallback_note.strip()}]
+            m.content = text_parts
+            dropped = True
+        return dropped
+
+    async def _run_api_call() -> None:
+        nonlocal raw_text, tool_calls, reasoning_content, usage_info
         if on_chunk is not None:
             final_chunk = await stream_with_throttle_retry(
                 lambda: llm.astream(messages),
@@ -664,6 +743,7 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
             tool_calls = list(getattr(final_chunk, "tool_calls", []) or [])
             reasoning_content = _extract_reasoning(final_chunk)
             usage_info = _extract_usage(final_chunk)
+            _spend_llm_usage(llm, final_chunk)
 
             # Раньше здесь был фолбэк: при пустых args в tool_calls после
             # стрима повторяли запрос через ainvoke БЕЗ стрима. Это удваивало
@@ -685,53 +765,71 @@ async def api_send_message(text, system_prompt="", on_chunk=None, model=None, to
             tool_calls = _ensure_tool_call_ids(tool_calls)
             reasoning_content = _extract_reasoning(result)
             usage_info = _extract_usage(result)
+            _spend_llm_usage(llm, result)
             if on_reasoning_chunk is not None and reasoning_content:
                 on_reasoning_chunk(reasoning_content)
-    except asyncio.CancelledError:
-        # Cancel мог прилететь в середине стрима. raw_text уже содержит
-        # частичный текст из on_chunk. Сохраняем то, что успели получить,
-        # как assistant-сообщение в ApiSession, чтобы история не оборвалась
-        # на user без ответа (иначе следующий запрос пойдёт с "пустым"
-        # вопросом в хвосте и провайдеры типа Anthropic/OpenAI начинают
-        # ругаться или модель теряет контекст диалога).
+
+    for _attempt in range(2):
         try:
-            from agent.sanitizer import sanitize_response as _sanitize
-            partial = _sanitize(raw_text or "")
-            if partial.strip():
-                session.add_assistant(partial, reasoning_content=reasoning_content)
-            else:
-                # Совсем ничего не успели — добавляем плейсхолдер,
-                # иначе history кончается user-сообщением без ответа.
-                session.add_assistant("[Interrupted]")
-            logger.info(
-                "API cancelled mid-stream: saved partial assistant len="
-                + str(len(partial))
+            await _run_api_call()
+            break
+        except asyncio.CancelledError:
+            # Cancel мог прилететь в середине стрима. raw_text уже содержит
+            # частичный текст из on_chunk. Сохраняем то, что успели получить,
+            # как assistant-сообщение в ApiSession, чтобы история не оборвалась
+            # на user без ответа (иначе следующий запрос пойдёт с "пустым"
+            # вопросом в хвосте и провайдеры типа Anthropic/OpenAI начинают
+            # ругаться или модель теряет контекст диалога).
+            try:
+                from agent.sanitizer import sanitize_response as _sanitize
+                partial = _sanitize(raw_text or "")
+                if partial.strip():
+                    session.add_assistant(partial, reasoning_content=reasoning_content)
+                else:
+                    # Совсем ничего не успели — добавляем плейсхолдер,
+                    # иначе history кончается user-сообщением без ответа.
+                    session.add_assistant("[Interrupted]")
+                logger.info(
+                    "API cancelled mid-stream: saved partial assistant len="
+                    + str(len(partial))
+                )
+            except Exception:
+                logger.debug("partial assistant save on cancel failed", exc_info=True)
+            raise
+        except Exception as e:
+            if _attempt == 0 and has_images:
+                # Фото не принято (модель без поддержки изображений или файл
+                # повреждён). Убираем фото из локального запроса и API-истории
+                # и пробуем ещё раз чистым текстом — сессия продолжает работать.
+                logger.warning(
+                    "API send failed with image(s), retrying text-only: "
+                    + type(e).__name__ + ": " + str(e)
+                )
+                _strip_images_from(messages)
+                _strip_images_from(session.messages)
+                session.image_fallback = True
+                continue
+            elapsed = time.monotonic() - t0
+            logger.opt(exception=True).error(
+                "API send_message failed after "
+                + str(round(elapsed, 1))
+                + "s: "
+                + type(e).__name__
+                + ": "
+                + str(e)
             )
-        except Exception:
-            logger.debug("partial assistant save on cancel failed", exc_info=True)
-        raise
-    except Exception as e:
-        elapsed = time.monotonic() - t0
-        logger.opt(exception=True).error(
-            "API send_message failed after "
-            + str(round(elapsed, 1))
-            + "s: "
-            + type(e).__name__
-            + ": "
-            + str(e)
-        )
-        # User уже добавлен в историю — добавим плейсхолдер assistant,
-        # чтобы пара user/assistant была сбалансирована для следующих запросов.
-        try:
-            from agent.sanitizer import sanitize_response as _sanitize
-            partial = _sanitize(raw_text or "")
-            if partial.strip():
-                session.add_assistant(partial, reasoning_content=reasoning_content)
-            else:
-                session.add_assistant("[Error: " + type(e).__name__ + "]")
-        except Exception:
-            logger.debug("partial assistant save on error failed", exc_info=True)
-        raise
+            # User уже добавлен в историю — добавим плейсхолдер assistant,
+            # чтобы пара user/assistant была сбалансирована для следующих запросов.
+            try:
+                from agent.sanitizer import sanitize_response as _sanitize
+                partial = _sanitize(raw_text or "")
+                if partial.strip():
+                    session.add_assistant(partial, reasoning_content=reasoning_content)
+                else:
+                    session.add_assistant("[Error: " + type(e).__name__ + "]")
+            except Exception:
+                logger.debug("partial assistant save on error failed", exc_info=True)
+            raise
 
     elapsed = time.monotonic() - t0
     logger.info(
@@ -823,6 +921,7 @@ async def api_compress_history(compress_prompt: str) -> str:
         )
         raise
 
+    _spend_llm_usage(llm, result)
     text = _content_to_text(getattr(result, "content", result)).strip()
     elapsed = time.monotonic() - t0
     logger.info(
@@ -872,6 +971,7 @@ async def api_recap(conversation_text: str) -> str:
             + type(e).__name__ + ": " + str(e)
         )
         raise
+    _spend_llm_usage(llm, result)
     text = _content_to_text(getattr(result, "content", result)).strip()
     elapsed = time.monotonic() - t0
     logger.info("API recap done: " + str(len(text)) + " chars in " + str(round(elapsed, 1)) + "s")
@@ -905,6 +1005,7 @@ async def api_extract_memory(prompt: str) -> str:
             + type(e).__name__ + ": " + str(e)
         )
         raise
+    _spend_llm_usage(llm, result)
     text = _content_to_text(getattr(result, "content", result)).strip()
     logger.info(
         "API memory-extract done: " + str(len(text)) + " chars in "
@@ -941,6 +1042,7 @@ async def api_insights(prompt: str) -> str:
             + type(e).__name__ + ": " + str(e)
         )
         raise
+    _spend_llm_usage(llm, result)
     text = _content_to_text(getattr(result, "content", result)).strip()
     logger.info(
         "API insights done: " + str(len(text)) + " chars in "

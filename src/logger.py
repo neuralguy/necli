@@ -2,7 +2,7 @@
 
 Все логи разделены на слои:
   - ui.log       : терминальный интерфейс, prompt_toolkit, slash-команды
-  - tools.log    : инструменты агента (shell, file_ops, ssh, web_search, ...)
+  - tools.log    : инструменты агента (shell, file_ops, web_search, ...)
   - ai.log       : стриминг ответа, парсинг tool calls, sanitizer, рендеринг
   - agent.log    : агентный цикл, субагенты, планировщик, system prompt, skills
   - api.log      : API-провайдеры (OpenAI/Anthropic/Google/...), HTTP, токены

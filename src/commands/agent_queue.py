@@ -39,8 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from time import monotonic
+from dataclasses import dataclass
 
 from config.i18n import t as tr
 
@@ -54,7 +53,7 @@ KIND_SLASH = "slash"
 #: нижнюю зону, стрим продолжает идти выше.
 IMMEDIATE_SLASH: frozenset[str] = frozenset({
     "/agents", "/api", "/autoprune", "/help", "/lang", "/lsp", "/mcp",
-    "/models", "/params", "/permissions", "/proxy", "/skills", "/ssh",
+    "/models", "/params", "/permissions", "/proxy", "/skills",
     "/stats", "/themes", "/tg",
 })
 
@@ -69,7 +68,7 @@ def is_immediate_slash(text: str) -> bool:
 class QueueItem:
     kind: str
     text: str
-    created_at: float = field(default_factory=monotonic)
+
 
 
 class AgentQueue:

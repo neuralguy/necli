@@ -71,6 +71,7 @@ def create_custom_provider(
     )
     provider._api_url = api_url
     provider._provider_name = definition.name
+    provider._provider_id = definition.id
     provider._proxy = definition.proxy
     provider._api_credentials = get_api_credentials(definition.id)
     provider._requires_auth = definition.requires_auth
@@ -82,6 +83,7 @@ def create_custom_provider(
     # либо из per-model override extra.reasoning_models = {"<model_id>": "high"}.
     extra = definition.extra or {}
     provider._prompt_cache_mode = str(extra.get("prompt_cache", extra.get("prompt_caching", "auto")))
+    provider._cache_read_factor = float(extra.get("cache_read_factor", provider._cache_read_factor))
     extra_body = dict(extra.get("extra_body") or {})
     reasoning_models = extra.get("reasoning_models") or {}
     if actual_model in reasoning_models:

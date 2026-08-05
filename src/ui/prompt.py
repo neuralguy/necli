@@ -7,7 +7,7 @@ separator со статусом и сам печатал эхо, отматыв�
 осталась только та часть, которую Shell не знает и знать не должен:
 
 - вставка из буфера обмена (Ctrl+V текст/картинка, Ctrl+P картинка,
-  bracketed paste с маркером `[Pasted N lines]`);
+  bracketed paste с маркером `[Pasted N chars]`);
 - учёт вставленных картинок и маппинг `[imageN]` → путь;
 - полноширинное эхо отправленной реплики (его печатает воркер очереди
   перед началом ответа — см. `commands/agent_queue`);
@@ -37,7 +37,8 @@ from prompt_toolkit.layout.processors import Processor, Transformation
 from prompt_toolkit.styles import Style
 from wcwidth import wcswidth
 
-from config.themes import t
+from config.i18n import t as _i18n
+from config.themes import ansi_24bit, t
 from ui.formatting import BAR_EMPTY_END, BAR_EMPTY_START, BAR_FILLED_END, BAR_FILLED_START
 from ui.shell import get_shell
 
@@ -50,7 +51,7 @@ def _build_style():
             "prompt": f"bold {t('accent')}",
             "prompt-arrow": f"bold {t('success')}",
             "separator": t("muted"),
-            "status-text": "bold #E8E8E8",
+            "status-text": f"bold {t('fg_primary')}",
             "bar-filled": t("bar_filled"),
             "bar-empty": t("muted"),
         }
@@ -308,7 +309,7 @@ class InputPrompt:
         if "\n" not in text:
             buf.insert_text(text)
             return
-        marker = f"[Pasted {len(text.splitlines())} lines]"
+        marker = _i18n("prompt.pasted_chars", n=len(text))
         pending = self._pasted_texts.setdefault(marker, [])
         # Если такого маркера в буфере уже нет — предыдущую вставку отменили
         # (Ctrl+C чистит ввод внутри Shell, и хука отмены у нас больше нет).
@@ -332,7 +333,7 @@ class InputPrompt:
         return self._submitted_text
 
     def expand_submitted(self, text: str) -> str:
-        """Раскрывает `[Pasted N lines]` в реальный текст отправленной реплики.
+        """Раскрывает `[Pasted N chars]` в реальный текст отправленной реплики.
 
         Раньше это делала обёртка истории prompt_toolkit в момент записи; теперь
         буфером владеет Shell, поэтому раскрываем в главном цикле — до эха и до
@@ -444,7 +445,7 @@ class InputPrompt:
         if isinstance(bg, str) and bg.startswith("#") and len(bg) == 7:
             r, g, b = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
             bg_seq = f"48;2;{r};{g};{b}"
-        fg = "97"  # bright white
+        fg = ansi_24bit(t("fg_primary"))
 
         # Маппинг [imageN] → путь для OSC 8 file://-гиперссылок (Ctrl+клик).
         image_paths = {

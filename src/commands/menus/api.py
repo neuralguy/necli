@@ -60,11 +60,13 @@ def _validate_float(raw: str) -> str | None:
 
 
 def _provider_rows(providers: list, active_api: str) -> list[dict]:
-    """Строки списка провайдеров: имя, URL, число моделей, статус.
+    """Строки списка провайдеров: имя, URL, число моделей, баланс, статус.
 
     Статика не зависит ни от курсора, ни от запроса поиска — считаем один раз
     и фильтруем только индексы при смене `query` (как в /models и /sessions).
     """
+    from apis.config import get_provider_balance
+
     rows = []
     for p in providers:
         models_count = len(p["models"])
@@ -76,11 +78,12 @@ def _provider_rows(providers: list, active_api: str) -> list[dict]:
             badge, style = _("api.status_no_key"), "error"
         else:
             badge, style = _("api.status_no_models"), "warning"
+        balance = get_provider_balance(p["id"])
         rows.append({
             "label": p["name"],
             "hint": _shorten_url(p.get("base_url") or ""),
-            "cols": f"{models_count} {_('api.col_models').lower()}"
-                    if models_count else "—",
+            "models": str(models_count) if models_count else "—",
+            "balance": f"{balance:g}$" if balance else "—",
             "badge": badge,
             "badge_style": style,
             "haystack": f'{p["name"]} {p.get("base_url", "")}'.casefold(),
@@ -128,33 +131,37 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
         total = len(order) + 1  # + строка «Добавить провайдера»
         return (True, min(keep, max(0, total - 1)), total)
 
-    def _layout(width: int) -> tuple[int, int, int, int]:
+    def _layout(width: int) -> tuple[int, int, int, int, int]:
         key = (width, version)
         cached = layout_cache.get(key)
         if cached is not None:
             return cached
-        label_w = hint_w = cols_w = badge_w = 0
+        label_w = hint_w = 0
+        models_w = cell_width(_("api.col_models"))
+        balance_w = cell_width(_("api.col_balance"))
+        badge_w = 0
         for i in order:
             r = rows[i]
             label_w = max(label_w, cell_width(r["label"]))
             hint_w = max(hint_w, cell_width(r["hint"]))
-            cols_w = max(cols_w, cell_width(r["cols"]))
+            models_w = max(models_w, cell_width(r["models"]))
+            balance_w = max(balance_w, cell_width(r["balance"]))
             badge_w = max(badge_w, cell_width(r["badge"]))
         label_w = min(max(label_w, 1), 24)
         free = width - ROW_INDENT - 1 - (badge_w + 2 if badge_w else 0)
-        hint_w = max(0, min(hint_w, free - label_w - cols_w - 12))
+        hint_w = max(0, min(hint_w, free - label_w - models_w - balance_w - 16))
         if hint_w < 8:
             hint_w = 0
-        res = (label_w, hint_w, cols_w, badge_w)
+        res = (label_w, hint_w, models_w, balance_w, badge_w)
         layout_cache[key] = res
         return res
 
     def render_fn(sel: int) -> str:
         pal = Palette()
         width = render_width()
-        label_w, hint_w, cols_w, badge_w = _layout(width)
+        label_w, hint_w, models_w, balance_w, badge_w = _layout(width)
         total = len(order) + 1
-        budget = max(3, overlay_rows(reserve=2))
+        budget = max(3, overlay_rows(reserve=3))
         start, end, above, below = scroll_window(total, sel, budget)
 
         lines = [
@@ -162,6 +169,16 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
                          right=f"{sel + 1}/{total}" if total else ""),
             search_line(query, width, _("api.search_hint"), pal),
         ]
+        headings = [("  " + cell(_("api.col_name"), label_w), pal.dim)]
+        if hint_w:
+            headings.append(("  " + cell(_("api.col_url"), hint_w), pal.dim))
+        headings.extend([
+            ("  " + cell(_("api.col_models"), models_w, "right"), pal.dim),
+            ("  " + cell(_("api.col_balance"), balance_w, "right"), pal.dim),
+        ])
+        if badge_w:
+            headings.append(("  " + cell(_("api.col_status"), badge_w, "right"), pal.dim))
+        lines.append(row_line(headings, width, pal=pal))
         if total == 1 and not order:
             lines.append(f"  {pal.dim}{_('common.no_data')}{pal.reset}")
             return "\n".join(lines)
@@ -183,7 +200,8 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
                      (cell(r["label"], label_w), pal.success if is_active else "")]
             if hint_w:
                 cells.append(("  " + cell(r["hint"], hint_w), pal.dim))
-            cells.append(("  " + cell(r["cols"], cols_w, "right"), pal.dim))
+            cells.append(("  " + cell(r["models"], models_w, "right"), pal.dim))
+            cells.append(("  " + cell(r["balance"], balance_w, "right"), pal.dim))
             if badge_w:
                 cells.append(("  " + cell(r["badge"], badge_w, "right"),
                               getattr(pal, r["badge_style"], pal.dim)))
@@ -385,6 +403,14 @@ def _mask_api_key(api_key: str) -> str:
     return f"{api_key[:6]}…{api_key[-4:]}"
 
 
+def _key_badge(item: dict) -> str:
+    balance = float(item.get("balance") or 0)
+    parts = [f"{balance:g}$" if balance else "без баланса"]
+    if item.get("proxy"):
+        parts.append(item["proxy"])
+    return " · ".join(parts)
+
+
 def _refresh_active_api_session(pid: str, active_api: str) -> None:
     if pid != active_api:
         return
@@ -411,6 +437,7 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
         add_api_credential,
         get_api_credentials,
         remove_api_credential,
+        set_api_credential_balance,
         set_api_credential_name,
         set_main_api_credential,
         update_api_credential_proxy,
@@ -425,7 +452,7 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
                 "icon_style": "warning",
                 "label": item.get("name") or _mask_api_key(item["key"]),
                 "hint": _mask_api_key(item["key"]) if item.get("name") else "",
-                "badge": item["proxy"] or "без proxy",
+                "badge": _key_badge(item),
                 "badge_style": "dim",
             }
             for item in credentials
@@ -463,6 +490,7 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
             {"label": "Переименовать", "hint": current["name"] or "без имени"},
             {"label": "Изменить proxy", "hint": current["proxy"] or "сейчас без proxy"},
             {"label": "Сделать главным", "hint": "запросы будут начинаться с него"},
+            {"label": "Баланс", "hint": _key_badge(current)},
             {"label": "Показать ключ полностью", "hint": "вывести ключ без маскировки"},
             {"label": "Удалить ключ", "hint": "убрать только этот ключ"},
             {"label": _("common.back")},
@@ -473,9 +501,9 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
             status="★ главный" if current.get("main") else "",
             status_style="warning",
             facts=[facts_line(_mask_api_key(current["key"]),
-                              current["proxy"] or "без proxy")],
+                              _key_badge(current))],
         )
-        if action is None or action == 5:
+        if action is None or action == 6:
             continue
 
         if action == 0:
@@ -506,13 +534,26 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
             continue
 
         if action == 3:
+            bal = await overlays.ask_text(
+                f"Баланс ({_key_badge(current)}, '.' = 0):")
+            if not bal:
+                continue
+            try:
+                value = float(bal.replace(",", "."))
+            except ValueError:
+                continue
+            set_api_credential_balance(provider_id, choice, value)
+            reload_providers()
+            continue
+
+        if action == 4:
             # Ключ показываем внутри оверлея, а не печатаем в scrollback:
             # статику стереть нельзя, и секрет остался бы в истории терминала.
             await card_menu([{"label": _("common.back")}],
                             title="API key", facts=[current["key"]])
             continue
 
-        if action == 4 and await confirm_delete(
+        if action == 5 and await confirm_delete(
                 f"Удалить ключ {_mask_api_key(current['key'])}?"):
             remove_api_credential(provider_id, choice)
             reload_providers()
@@ -540,6 +581,8 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
         cache_status = _("api.prompt_cache_on") if cache_enabled else _("api.prompt_cache_off")
         key_status = (f"{len(credentials)} key(s)" if has_key
                       else f"API key: {_('common.not_set')}")
+        balance_status = f"{sum(float(c.get('balance') or 0) for c in credentials):g}$" \
+            if any(c.get("balance") for c in credentials) else "без баланса"
         model_names = ", ".join(m.display_name for m in defn.models) or _("common.none")
 
         default_model = defn.default_model or (defn.models[0].id if defn.models else "")
@@ -549,7 +592,7 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
                 else _("api.status_no_models"))
         actions = [
             {"label": _("api.switch_model") if is_active else _("api.use"), "hint": hint},
-            {"label": "Управление ключами", "hint": f"{len(credentials)} key(s)"},
+            {"label": "Управление ключами", "hint": f"{len(credentials)} key(s) · баланс: {balance_status}"},
             {"label": _("api.edit_provider"), "hint": _("api.edit_provider_hint")},
             {"label": _("api.manage_models"),
              "hint": f"{len(defn.models)} {_('api.col_models').lower()}"},
@@ -566,8 +609,9 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
             status_style="success" if is_active else "muted",
             facts=[
                 facts_line(f"id: {pid}", f"type: {defn.type}", defn.base_url),
-                facts_line(key_status, f"{_('api.prompt_cache')}: {cache_status}"),
-                f"{_('api.col_models')}: {model_names}",
+                facts_line(key_status, f"баланс: {balance_status}"),
+                facts_line(f"{_('api.prompt_cache')}: {cache_status}",
+                           f"{_('api.col_models')}: {model_names}"),
             ],
         )
 
@@ -670,7 +714,12 @@ async def _api_sync_models(provider_id: str):
 
 
 async def _api_models_menu(provider_id: str):
-    """Меню управления моделями провайдера."""
+    """Меню управления моделями провайдера.
+
+    Пробел отмечает модели чекбоксом `[x]`, пункт «Удалить выбранные» сносит
+    все отмеченные разом. Enter по модели — как раньше: редактирование/удаление
+    одной.
+    """
     from apis.config import remove_model_from_provider
     from apis.registry import get_definition, reload_providers
 
@@ -690,17 +739,28 @@ async def _api_models_menu(provider_id: str):
             for m in defn.models
         ]
         items.append({"label": _("api.add_model"), "hint": _("api.add_model_hint")})
+        items.append({"label": _("api.delete_selected"),
+                      "hint": _("api.delete_selected_hint")})
 
-        choice = await card_menu(
+        choice, checked = await card_menu(
             items,
             title=_("api.models_title", name=defn.name),
             facts=[f"{len(defn.models)} · {_('menu.model_subtitle')}"],
+            multi=True,
         )
         if choice is None:
             return
 
         if choice == len(defn.models):
             await _api_model_add(provider_id)
+            continue
+
+        if choice == len(defn.models) + 1:
+            # «Удалить выбранные»: сносим все отмеченные пробелом модели.
+            if checked and await confirm_delete(
+                    _("api.delete_selected_q", n=len(checked))):
+                for idx in sorted(checked, reverse=True):
+                    remove_model_from_provider(provider_id, defn.models[idx].id)
             continue
 
         model = defn.models[choice]

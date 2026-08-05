@@ -89,7 +89,6 @@ uv run python src/main.py cli
 | `/permissions` | Разрешения инструментов: разово, на сессию или навсегда |
 | `/mcp` · `/lsp` · `/skills` | MCP-серверы, LSP, скиллы |
 | `/agents` | Заготовки субагентов |
-| `/ssh` | SSH-хосты |
 | `/themes` · `/lang` · `/think` | Тема оформления, язык интерфейса, режим размышлений |
 | `/tool_format` | Формат tool-calls: fenced-блоки vs native function calling |
 | `/insights` | Аналитика всех сессий в HTML-отчёт |
@@ -104,7 +103,7 @@ uv run python src/main.py cli
 
 ## Возможности
 
-**Агент, который доводит до конца.** Агентный цикл до 500 итераций (`MAX_ITERATIONS`): сам читает код, вносит правки, запускает тесты и команды, проверяет результат и идёт до рабочего решения. Всё это стримится в реальном времени.
+**Агент, который доводит до конца.** Агентный цикл без ограничения по числу итераций: сам читает код, вносит правки, запускает тесты и команды, проверяет результат и идёт до рабочего решения. Всё это стримится в реальном времени.
 
 **Инструменты.** Shell, файлы (read / grep / patch_file / create_file), веб (web_search / web_fetch / image_search), DOCX (create_docx + docx_screenshot с рендером в PNG), память (memory_write / memory_list / memory_read), LSP (lsp_references / lsp_diagnostics), субагенты и скиллы. Два формата tool-calls: fenced-блоки `:::call` и native function calling (переключатель `/tool_format`, по умолчанию native).
 
