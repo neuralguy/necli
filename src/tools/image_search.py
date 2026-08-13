@@ -10,10 +10,13 @@
 
 from __future__ import annotations
 
+import re
+import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from logger import logger
 from tools._paths import clean_path, resolve_path
@@ -41,26 +44,30 @@ _EXT_BY_CT = {
 
 # query|max|size|type -> (timestamp, results)
 _search_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+_cache_lock = threading.Lock()
 
 
-# Кеш результатов поиска (LRU + TTL)
+# Кеш результатов поиска (LRU + TTL). Subagents may invoke this tool from
+# worker threads, so OrderedDict access must be serialized.
 def _cache_get(key: str) -> list[dict] | None:
-    item = _search_cache.get(key)
-    if item is None:
-        return None
-    ts, results = item
-    if time.time() - ts > _CACHE_TTL:
-        _search_cache.pop(key, None)
-        return None
-    _search_cache.move_to_end(key)
-    return results
+    with _cache_lock:
+        item = _search_cache.get(key)
+        if item is None:
+            return None
+        ts, results = item
+        if time.time() - ts > _CACHE_TTL:
+            _search_cache.pop(key, None)
+            return None
+        _search_cache.move_to_end(key)
+        return list(results)
 
 
 def _cache_put(key: str, results: list[dict]) -> None:
-    _search_cache[key] = (time.time(), results)
-    _search_cache.move_to_end(key)
-    while len(_search_cache) > _CACHE_MAX_ENTRIES:
-        _search_cache.popitem(last=False)
+    with _cache_lock:
+        _search_cache[key] = (time.time(), list(results))
+        _search_cache.move_to_end(key)
+        while len(_search_cache) > _CACHE_MAX_ENTRIES:
+            _search_cache.popitem(last=False)
 
 
 # Нормализованная форма результата
@@ -120,7 +127,7 @@ def _search_ddg(query: str, max_results: int, args: dict) -> list[dict]:
 
     out = []
     for r in raw or []:
-        out.append(  # noqa: PERF401
+        out.append(
             _norm(
                 image=r.get("image", ""),
                 title=r.get("title", ""),
@@ -140,9 +147,10 @@ def _safe_name(idx: int, url: str, content_type: str) -> str:
     base = f"image_{idx:02d}"
     ext = _EXT_BY_CT.get((content_type or "").split(";")[0].strip().lower())
     if not ext:
-        # пробуем расширение из URL
-        tail = url.split("?")[0].rsplit(".", 1)
-        ext = "." + tail[1].lower() if len(tail) == 2 and 1 <= len(tail[1]) <= 5 else ".jpg"
+        # URL path may contain slashes after the last dot (e.g. /a.x/y).
+        # Path.suffix + strict validation keeps the generated filename flat.
+        suffix = Path(urlsplit(url).path).suffix.lower()
+        ext = suffix if re.fullmatch(r"\.[a-z0-9]{1,5}", suffix) else ".jpg"
     return base + ext
 
 
@@ -150,8 +158,16 @@ def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
     """Качает одну картинку, валидирует Pillow. Возвращает dict со статусом."""
     import httpx
 
-    out = {"index": idx, "url": url, "ok": False, "path": None, "error": None,
-           "width": None, "height": None, "format": None}
+    out = {
+        "index": idx,
+        "url": url,
+        "ok": False,
+        "path": None,
+        "error": None,
+        "width": None,
+        "height": None,
+        "format": None,
+    }
     try:
         with httpx.stream(
             "GET",
@@ -166,7 +182,7 @@ def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
             for chunk in resp.iter_bytes():
                 chunks.extend(chunk)
                 if len(chunks) > _MAX_DOWNLOAD_BYTES:
-                    out["error"] = f"too large (>{_MAX_DOWNLOAD_BYTES // (1024*1024)}MB)"
+                    out["error"] = f"too large (>{_MAX_DOWNLOAD_BYTES // (1024 * 1024)}MB)"
                     return out
             data = bytes(chunks)
     except Exception as e:
@@ -255,7 +271,11 @@ def _search_and_download(
 # Точка входа
 def _err(msg: str, command: str = "image_search") -> ToolResult:
     return ToolResult(
-        name="image_search", status="error", output=msg, exit_code=1, command=command,
+        name="image_search",
+        status="error",
+        output=msg,
+        exit_code=1,
+        command=command,
     )
 
 
@@ -265,7 +285,7 @@ def execute_image_search(call: ToolCall) -> ToolResult:
     queries = args.get("queries", None)
     if not queries or not isinstance(queries, list):
         return _err(
-            'No queries provided. '
+            "No queries provided. "
             'Usage: {"queries": ["mountain sunset", "beach"], "max_results": 10}'
         )
 
@@ -275,7 +295,9 @@ def execute_image_search(call: ToolCall) -> ToolResult:
 
     if len(queries) > 5:
         queries = queries[:5]
-        logger.warning("image_search: truncated queries to 5 (got {})", len(args.get("queries", [])))
+        logger.warning(
+            "image_search: truncated queries to 5 (got {})", len(args.get("queries", []))
+        )
 
     try:
         max_results = int(args.get("max_results") or _MAX_RESULTS)
@@ -293,7 +315,11 @@ def execute_image_search(call: ToolCall) -> ToolResult:
     for qidx, query in enumerate(queries):
         try:
             results, image_paths, downloaded = _search_and_download(
-                query, max_results, args, dest_dir, offset=total_downloaded,
+                query,
+                max_results,
+                args,
+                dest_dir,
+                offset=total_downloaded,
             )
         except RuntimeError as e:
             all_lines.append(f"[Query {qidx + 1}: {query}]")
@@ -338,8 +364,10 @@ def execute_image_search(call: ToolCall) -> ToolResult:
 
     if not all_lines:
         return ToolResult(
-            name="image_search", status="ok",
-            output="No images found.", exit_code=0,
+            name="image_search",
+            status="ok",
+            output="No images found.",
+            exit_code=0,
         )
 
     result = ToolResult(

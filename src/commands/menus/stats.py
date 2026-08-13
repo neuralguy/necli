@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import models as app_models
 import session.storage as storage
-from config.i18n import get_lang
+from config.i18n import format_duration, get_lang
 from config.i18n import t as tr
 from logger import logger
 from session import Session
@@ -64,10 +64,7 @@ def _bar_plain(ratio: float, width: int) -> str:
 def _bar(ratio: float, width: int) -> str:
     plain = _bar_plain(ratio, width)
     filled = plain.count("█")
-    return (
-        f"{role_fg('bar_filled')}{'█' * filled}{RESET}"
-        f"{DIM}{'░' * (width - filled)}{RESET}"
-    )
+    return f"{role_fg('bar_filled')}{'█' * filled}{RESET}{DIM}{'░' * (width - filled)}{RESET}"
 
 
 def _plural(n: int, noun: str) -> str:
@@ -84,22 +81,7 @@ def _plural(n: int, noun: str) -> str:
 
 
 def _dur(seconds: float) -> str:
-    value = max(0.0, float(seconds))
-    if value < 1:
-        return f"{value * 1000:.0f}{tr('stats.unit_ms')}"
-    if value < 10:
-        return f"{value:.1f}{tr('stats.unit_s')}"
-    if value < 60:
-        return f"{int(value)}{tr('stats.unit_s')}"
-    if value < 3600:
-        return (
-            f"{int(value) // 60}{tr('stats.unit_min')} "
-            f"{int(value) % 60:02d}{tr('stats.unit_s')}"
-        )
-    return (
-        f"{int(value) // 3600}{tr('stats.unit_h')} "
-        f"{(int(value) % 3600) // 60:02d}{tr('stats.unit_min')}"
-    )
+    return format_duration(seconds, decimal_seconds=True, milliseconds=True)
 
 
 def _money(cost: float) -> str:
@@ -122,12 +104,10 @@ def _metric_grid(
     for start in range(0, len(metrics), columns):
         chunk = metrics[start : start + columns]
         values = "".join(
-            _cell(paint(value, role, bold=True), column_width)
-            for _label, value, role in chunk
+            _cell(paint(value, role, bold=True), column_width) for _label, value, role in chunk
         )
         labels = "".join(
-            _cell(f"{DIM}{label}{RESET}", column_width)
-            for label, _value, _role in chunk
+            _cell(f"{DIM}{label}{RESET}", column_width) for label, _value, _role in chunk
         )
         lines.extend((values, labels))
     return lines
@@ -256,10 +236,10 @@ def _collect_turns(session: Session) -> list[Turn]:
     return turns
 
 
-def collect(session: Session) -> Snapshot:
+def collect(session: Session, active_model: str = "") -> Snapshot:
     snap = Snapshot()
     snap.title = session.title or session.id
-    snap.model = session.last_model or ""
+    snap.model = active_model or session.last_model or ""
     snap.context_used = session.context_tokens
     snap.context_limit = app_models.get_context_limit(snap.model) or 200_000
     snap.turns = _collect_turns(session)
@@ -410,9 +390,7 @@ def _section_turns(snap: Snapshot, width: int, selected: int) -> Body:
     ]
     if turn.cache_read:
         details.append(tr("stats.cached_tokens", n=format_tokens(turn.cache_read)))
-    body.foot.append(
-        section(clip(" · ".join(details), width - GUTTER - 2), indent=GUTTER + 1)
-    )
+    body.foot.append(section(clip(" · ".join(details), width - GUTTER - 2), indent=GUTTER + 1))
     return body
 
 
@@ -455,10 +433,7 @@ def _section_history(
         stats["by_model"].items(),
         key=lambda item: (
             -float(item[1].get("cost") or 0),
-            -(
-                int(item[1].get("input_tokens") or 0)
-                + int(item[1].get("output_tokens") or 0)
-            ),
+            -(int(item[1].get("input_tokens") or 0) + int(item[1].get("output_tokens") or 0)),
             item[0].casefold(),
         ),
     )
@@ -505,9 +480,7 @@ def _section_history(
     )
 
     for name, data in items:
-        model_tokens = int(data.get("input_tokens") or 0) + int(
-            data.get("output_tokens") or 0
-        )
+        model_tokens = int(data.get("input_tokens") or 0) + int(data.get("output_tokens") or 0)
         cost_value = float(data.get("cost") or 0.0)
         share = cost_value / total_cost
         tokens = format_tokens(model_tokens)
@@ -540,9 +513,14 @@ def _section_history(
 class StatsOverlay(Overlay):
     """Три уровня статистики в нижней зоне Shell."""
 
-    def __init__(self, session: Session, period: int | None = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        period: int | None = None,
+        active_model: str = "",
+    ) -> None:
         super().__init__()
-        self.snap = collect(session)
+        self.snap = collect(session, active_model)
         self.periods: list[int | None] = list(PERIODS)
         if period is not None and period not in self.periods:
             self.periods.insert(1, period)
@@ -637,13 +615,9 @@ class StatsOverlay(Overlay):
         name = SECTIONS[self.section]
         pairs = [("←→", tr("stats.hint_section"))]
         if name == "history":
-            pairs.extend(
-                (("↑↓", tr("stats.hint_row")), ("p", tr("stats.hint_period")))
-            )
+            pairs.extend((("↑↓", tr("stats.hint_row")), ("p", tr("stats.hint_period"))))
         elif name == "turns":
-            pairs.extend(
-                (("↑↓", tr("stats.hint_row")), ("pgup/pgdn", tr("stats.hint_page")))
-            )
+            pairs.extend((("↑↓", tr("stats.hint_row")), ("pgup/pgdn", tr("stats.hint_page"))))
         pairs.append(("esc", tr("stats.hint_close")))
         return key_hints(*pairs)
 
@@ -690,9 +664,13 @@ def _flat(body: Body) -> list[str]:
     ]
 
 
-def _static_summary(session: Session, period: int | None) -> str:
+def _static_summary(
+    session: Session,
+    period: int | None,
+    active_model: str = "",
+) -> str:
     """Короткий headless-свод без попытки напечатать все интерактивные детали."""
-    snap = collect(session)
+    snap = collect(session, active_model)
     width = 78
     try:
         stats = storage.get_statistics(days=period)
@@ -708,16 +686,20 @@ def _static_summary(session: Session, period: int | None) -> str:
     return "\n".join(lines)
 
 
-async def stats_interactive(session: Session, period: int | None = None) -> None:
+async def stats_interactive(
+    session: Session,
+    period: int | None = None,
+    active_model: str = "",
+) -> None:
     """Открыть интерактивную статистику. Без Shell вывести короткий свод."""
     shell = get_shell()
     if shell is None:
         from rich.console import Console
         from rich.text import Text
 
-        Console().print(Text.from_ansi(_static_summary(session, period)))
+        Console().print(Text.from_ansi(_static_summary(session, period, active_model)))
         return
-    await shell.run_overlay(StatsOverlay(session, period))
+    await shell.run_overlay(StatsOverlay(session, period, active_model))
 
 
 __all__ = ["StatsOverlay", "collect", "stats_interactive"]

@@ -163,6 +163,7 @@ def _swap_single_quote_delimiters(s: str) -> str | None:
         return None
     return "".join(out)
 
+
 def greedy_extract_content_json(text: str) -> dict | None:
     text = text.strip()
 
@@ -437,6 +438,3 @@ def decode_json_string_value(raw: str) -> str:
         result.append(ch)
         i += 1
     return "".join(result)
-
-
-

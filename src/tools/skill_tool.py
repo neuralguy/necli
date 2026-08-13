@@ -1,5 +1,7 @@
 """Инструмент skill — загрузка скилла по имени."""
 
+import contextlib
+
 from config.i18n import t as _i18n
 from skills import list_skills, load_skill
 from tools.models import ToolCall, ToolResult
@@ -22,7 +24,8 @@ def execute_skill(call: ToolCall) -> ToolResult:
         available = [s.name for s in list_skills()]
         hint = (
             _i18n("skill.available", names=", ".join(available))
-            if available else _i18n("skill.none_installed")
+            if available
+            else _i18n("skill.none_installed")
         )
         return ToolResult(
             name="skill",
@@ -51,13 +54,8 @@ def _render_subagent_info() -> str:
     except Exception:
         return ""
     out = ""
-    try:
+    with contextlib.suppress(Exception):
         out += _build_subagent_models_block()
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         out += _build_agent_presets_block()
-    except Exception:
-        pass
     return out
-

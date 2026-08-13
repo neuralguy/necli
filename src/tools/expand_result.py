@@ -17,6 +17,7 @@ def execute_expand_tool_result(call: ToolCall) -> ToolResult:
 
     from agent.result_cache import get as _get_full
     from agent.result_cache import size as _size
+
     text = _get_full(rid)
     if text is None:
         return ToolResult(

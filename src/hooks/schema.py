@@ -50,11 +50,11 @@ class HookSpec:
     """Одиночный hook (одна команда/запрос)."""
 
     type: HookType = "command"
-    command: str = ""            # для type=command
-    url: str = ""                # для type=http
-    if_: str | None = None    # permission-style фильтр ('if' в JSON)
+    command: str = ""  # для type=command
+    url: str = ""  # для type=http
+    if_: str | None = None  # permission-style фильтр ('if' в JSON)
     timeout: float = 30.0
-    is_async: bool = False       # 'async' в JSON — не блокировать выполнение
+    is_async: bool = False  # 'async' в JSON — не блокировать выполнение
     headers: dict[str, str] = field(default_factory=dict)  # для http
 
     @classmethod

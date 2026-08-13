@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
-import re
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from config.paths import BASE_DIR
+from config._atomic import atomic_write_text
+from config.paths import BASE_DIR, safe_child_path
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ SKILL_FILENAME = "SKILL.md"
 
 _active_skills: set[str] = set()
 _pending_messages: list[str] = []
+_state_lock = threading.RLock()
 
 from _frontmatter import parse_frontmatter as _parse_frontmatter
 
@@ -41,9 +43,6 @@ class SkillInfo:
 
 def get_skills_dir() -> Path:
     return USER_SKILLS_DIR
-
-
-
 
 
 def _load_body(skill_path: Path) -> str:
@@ -100,19 +99,24 @@ def load_skill(name: str) -> SkillInfo | None:
         if skill.name == name:
             return skill
     for base in (USER_SKILLS_DIR, DEFAULT_SKILLS_DIR):
-        skill_dir = base / name
-        if skill_dir.exists():
+        skill_dir = safe_child_path(base, name)
+        if skill_dir is not None and skill_dir.is_dir():
             return _load_skill_info(skill_dir)
     return None
 
 
 def create_skill(name: str, description: str, content: str) -> SkillInfo | None:
     USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-    skill_dir = USER_SKILLS_DIR / name
+    skill_dir = safe_child_path(USER_SKILLS_DIR, name)
+    if skill_dir is None:
+        raise ValueError(f"Invalid skill name: {name!r}")
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_md = skill_dir / SKILL_FILENAME
-    text = f"---\nname: {name}\ndescription: {description}\n---\n\n{content}\n"
-    skill_md.write_text(text, encoding="utf-8")
+    safe_description = " ".join(str(description).splitlines()).strip()
+    text = (
+        f"---\nname: {skill_dir.name}\ndescription: {safe_description}\n---\n\n{content.rstrip()}\n"
+    )
+    atomic_write_text(skill_md, text)
     return _load_skill_info(skill_dir)
 
 
@@ -122,7 +126,8 @@ def remove_skill(name: str) -> bool:
         logger.warning("skill remove: not found %s", name)
         return False
     shutil.rmtree(skill.path)
-    _active_skills.discard(name)
+    with _state_lock:
+        _active_skills.discard(skill.name)
     logger.info("skill remove: %s", name)
     return True
 
@@ -136,7 +141,6 @@ def activate_skill(name: str) -> None:
     # при загрузке по имени директории они могут расходиться, и тогда
     # _active_skills/gating (is_skill_active, registry) рассинхронизировались бы.
     canonical = skill.name
-    _active_skills.add(canonical)
     logger.info("skill activate: %s", canonical)
     msg = (
         f"━━━ СКИЛЛ АКТИВИРОВАН: {canonical} ━━━\n"
@@ -144,30 +148,42 @@ def activate_skill(name: str) -> None:
         f"{skill.body}\n"
         f"━━━ КОНЕЦ СКИЛЛА: {canonical} ━━━"
     )
-    _pending_messages.append(msg)
+    with _state_lock:
+        _active_skills.add(canonical)
+        _pending_messages.append(msg)
 
 
 def deactivate_skill(name: str) -> None:
-    _active_skills.discard(name)
     logger.info("skill deactivate: %s", name)
     msg = (
         f"━━━ СКИЛЛ ДЕАКТИВИРОВАН: {name} ━━━\n"
         f"Скилл '{name}' больше не действует. "
         f"Не следуй его инструкциям."
     )
-    _pending_messages.append(msg)
+    with _state_lock:
+        _active_skills.discard(name)
+        _pending_messages.append(msg)
 
 
 def is_skill_active(name: str) -> bool:
-    return name in _active_skills
+    with _state_lock:
+        return name in _active_skills
+
+
+def get_active_skills() -> set[str]:
+    """Snapshot of skills explicitly enabled through the interactive menu."""
+    with _state_lock:
+        return set(_active_skills)
 
 
 def consume_pending_messages() -> list[str]:
-    msgs = list(_pending_messages)
-    _pending_messages.clear()
-    return msgs
+    with _state_lock:
+        msgs = list(_pending_messages)
+        _pending_messages.clear()
+        return msgs
 
 
 def reset_active_skills() -> None:
-    _active_skills.clear()
-    _pending_messages.clear()
+    with _state_lock:
+        _active_skills.clear()
+        _pending_messages.clear()

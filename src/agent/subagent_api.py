@@ -37,6 +37,8 @@ from apis.messages import (
 )
 from apis.registry import get_provider, resolve_api_model
 from apis.tool_schemas import get_tool_schemas
+from config.constants import Limits
+from config.i18n import format_duration
 from system_prompt import build_system_prompt, build_tool_results
 from tools import parse_tool_calls, strip_tool_calls
 from tools._paths import get_working_dir, use_working_dir
@@ -52,7 +54,8 @@ logger = logging.getLogger(__name__)
 # кумулятив по итерациям (тот рос бы O(N²) и ложно стопил нормальную длинную
 # работу). 1M токенов активного контекста — заведомо аномалия для фокусной
 # задачи субагента (число итераций не ограничено).
-MAX_SUBAGENT_CONTEXT_TOKENS = 1_000_000
+MAX_SUBAGENT_CONTEXT_TOKENS = Limits.MAX_SUBAGENT_CONTEXT_TOKENS
+MAX_SUBAGENT_ITERATIONS = Limits.MAX_SUBAGENT_ITERATIONS
 
 # Таймаут на ОДИН вызов модели субагентом. Прокси (onlysq) умеет зависать на
 # стриме (в логах ответы по 38с и дольше); без таймаута повисший ainvoke/astream
@@ -103,11 +106,13 @@ def _shared_scratchpad_path(working_dir: str) -> str:
     .data/subagents/<run-id>/sub-<N>/. Scratchpad лежит на уровень выше,
     общий для всех субагентов прогона: .data/subagents/<run-id>/shared.md."""
     import os
+
     return os.path.join(os.path.dirname(working_dir.rstrip("/")), "shared.md")
 
 
 def _read_scratchpad(working_dir: str) -> str:
     import os
+
     path = _shared_scratchpad_path(working_dir)
     try:
         if os.path.isfile(path):
@@ -121,9 +126,11 @@ def _read_scratchpad(working_dir: str) -> str:
 def _project_context(working_dir: str) -> str:
     """Краткий контекст проекта для субагента: статистика + начало AGENTS.md."""
     import os
+
     parts = []
     try:
         from agent.project_stats import count_project_stats, format_project_stats
+
         fc, tl = count_project_stats(working_dir)
         if fc:
             parts.append(format_project_stats(fc, tl))
@@ -141,6 +148,7 @@ def _project_context(working_dir: str) -> str:
         except Exception:
             logger.debug("subagent read %s failed", fname, exc_info=True)
     return "\n".join(parts)
+
 
 # Инструменты, недоступные субагентам (poll — нет интерактива, subagent — нет
 # вложенности). web_search разрешён: субагент должен уметь искать в сети.
@@ -172,6 +180,7 @@ def resolve_subagent_model(
 
     # 1. Точное совпадение в провайдере главного агента.
     from apis.registry import get_definitions
+
     home = get_definitions().get(default_provider_id)
     if home and home.enabled:
         for m in home.models:
@@ -179,7 +188,8 @@ def resolve_subagent_model(
                 return (default_provider_id, m.id)
         # Подстрока тоже допустима, но только если единственная.
         sub_matches = [
-            m.id for m in home.models
+            m.id
+            for m in home.models
             if q_lower in m.id.lower() or q_lower in m.display_name.lower()
         ]
         if len(sub_matches) == 1:
@@ -231,7 +241,9 @@ class _ApiSubagentRunner:
         self.isolate = isolate
         # isolate=True → работаем в изолированном worktree (handle.path);
         # isolate=False → пишем прямо в общую рабочую директорию проекта.
-        self.working_dir = handle.path if handle is not None else (project_root or get_working_dir())
+        self.working_dir = (
+            handle.path if handle is not None else (project_root or get_working_dir())
+        )
         self.role = _normalize_role(role)
         self.preset = preset  # AgentPreset | None
         self.dep_context = dep_context or ""
@@ -248,6 +260,8 @@ class _ApiSubagentRunner:
         self._last_input_tokens = 0
         # Кумулятив (input+output по всем вызовам) — только для лога/справки.
         self._spent_tokens = 0
+
+        self.activity_start_time = time.monotonic()
 
         self.session = ApiSession(provider_id, model_id)
         self.use_native = self.session.use_native_tools
@@ -296,6 +310,7 @@ class _ApiSubagentRunner:
         # а его mode-block прямо обещает доступность web_search и пр. Даём ему
         # полный набор (все гейтящие скиллы считаем «активными»).
         from skills.registry import SKILL_TOOLS as _SK
+
         all_skills = set(_SK)
         base = build_system_prompt(
             proof=proof,
@@ -339,10 +354,7 @@ class _ApiSubagentRunner:
             mode_block += f"\n━━━ ROLE ━━━\n{role_desc}\n"
 
         if self.preset:
-            mode_block += (
-                f"\n━━━ AGENT PRESET: {self.preset.name} ━━━\n"
-                f"{self.preset.body}\n"
-            )
+            mode_block += f"\n━━━ AGENT PRESET: {self.preset.name} ━━━\n{self.preset.body}\n"
 
         proj_ctx = _project_context(self.working_dir)
         if proj_ctx:
@@ -376,8 +388,10 @@ class _ApiSubagentRunner:
             )
 
         import os as _os
+
         progress_path = _os.path.join(
-            _os.path.dirname(self.working_dir.rstrip("/")), "progress.md",
+            _os.path.dirname(self.working_dir.rstrip("/")),
+            "progress.md",
         )
         mode_block += (
             "\n━━━ PEER PROGRESS LOG (read-once reference, never poll) ━━━\n"
@@ -408,10 +422,10 @@ class _ApiSubagentRunner:
         # Субагент не гейтит инструменты скиллами (см. _build_system_prompt) —
         # передаём все гейтящие скиллы как активные, гасим только запрещённые.
         from skills.registry import SKILL_TOOLS as _SK
+
         schemas = get_tool_schemas("agent", set(_SK))
         return [
-            s for s in schemas
-            if s.get("function", {}).get("name") not in _BLOCKED_FOR_SUBAGENTS
+            s for s in schemas if s.get("function", {}).get("name") not in _BLOCKED_FOR_SUBAGENTS
         ]
 
     def _bind_llm(self, use_tools: bool) -> tuple:
@@ -451,11 +465,14 @@ class _ApiSubagentRunner:
         вытесняет устаревшие/крупные/древние чтения, дедуплицирует пути.
         """
         from apis._context_pruner import prune_messages
+
         messages, stats = prune_messages(self.session.messages)
         if stats["pruned_blocks"]:
             logger.info(
                 "subagent %d context pruner: evicted %d block(s), saved ~%d chars",
-                self.index + 1, stats["pruned_blocks"], stats["saved_chars"],
+                self.index + 1,
+                stats["pruned_blocks"],
+                stats["saved_chars"],
             )
         return messages
 
@@ -549,13 +566,15 @@ class _ApiSubagentRunner:
                 if self.buffer is not None and self.buffer.cancel_requested:
                     break
                 if call.tool_name in _BLOCKED_FOR_SUBAGENTS:
-                    results.append(tools.ToolResult(
-                        name=call.tool_name,
-                        status="error",
-                        output=f"Tool '{call.tool_name}' is not available for subagents.",
-                        exit_code=1,
-                        command=call.command,
-                    ))
+                    results.append(
+                        tools.ToolResult(
+                            name=call.tool_name,
+                            status="error",
+                            output=f"Tool '{call.tool_name}' is not available for subagents.",
+                            exit_code=1,
+                            command=call.command,
+                        )
+                    )
                     continue
                 if self.buffer:
                     self.buffer.on_tool_start(call.tool_name, call.command, call.args)
@@ -589,11 +608,7 @@ class _ApiSubagentRunner:
         if len(text) <= limit:
             return text
         half = limit // 2
-        return (
-            text[:half]
-            + f"\n... [{len(text)} chars, truncated] ...\n"
-            + text[-half:]
-        )
+        return text[:half] + f"\n... [{len(text)} chars, truncated] ...\n" + text[-half:]
 
     def _append_tool_results_native(
         self,
@@ -622,11 +637,13 @@ class _ApiSubagentRunner:
                 content = self._truncate_tool_output(r.output or "")
                 if r.status == "error":
                     content = f"[error exit={r.exit_code}]\n{content}"
-            self.session.messages.append(ToolMessage(
-                content=content,
-                tool_call_id=tc_id,
-                name=name,
-            ))
+            self.session.messages.append(
+                ToolMessage(
+                    content=content,
+                    tool_call_id=tc_id,
+                    name=name,
+                )
+            )
 
     def _append_tool_results_text(self, results: list[tools.ToolResult]) -> None:
         """Все результаты одним HumanMessage (для text-режима)."""
@@ -635,9 +652,11 @@ class _ApiSubagentRunner:
             d = r.to_dict()
             d["output"] = self._truncate_tool_output(d.get("output") or "")
             result_dicts.append(d)
-        self.session.messages.append(HumanMessage(
-            content=build_tool_results(result_dicts),
-        ))
+        self.session.messages.append(
+            HumanMessage(
+                content=build_tool_results(result_dicts),
+            )
+        )
 
     async def run(self) -> tuple[str, int, str | None]:
         """Запускает мини-агентный цикл. Возвращает (final_text, iterations, error).
@@ -649,6 +668,17 @@ class _ApiSubagentRunner:
         _execute_tool_calls (синхронный блок без await), где он и нужен
         handler'ам инструментов.
         """
+        from logger import bind, info, unbind
+
+        bind(subagent=f"subagent-{self.index + 1}")
+        info(
+            "subagent.start",
+            index=self.index,
+            mode=self.mode,
+            provider=self.provider_id,
+            model=self.model_id,
+        )
+
         iterations = 0
         try:
             self.session.messages.append(SystemMessage(content=self._build_system_prompt()))
@@ -658,6 +688,28 @@ class _ApiSubagentRunner:
             progress_nudges = 0
             while True:
                 iterations += 1
+                if iterations > MAX_SUBAGENT_ITERATIONS:
+                    logger.warning(
+                        "Subagent %s exceeded %d iterations, stopping",
+                        self.index,
+                        MAX_SUBAGENT_ITERATIONS,
+                    )
+                    final = strip_tool_calls(raw_text).strip()
+                    final = (
+                        final
+                        + f"\n\n[Subagent stopped: iteration limit ({MAX_SUBAGENT_ITERATIONS}) reached]"
+                    ).strip()
+                    if self.buffer:
+                        self.buffer.on_done(final)
+                    info(
+                        "subagent.end",
+                        index=self.index,
+                        iterations=iterations,
+                        elapsed=time.monotonic() - self.activity_start_time,
+                        error="stopped: iteration limit reached",
+                    )
+                    unbind("subagent")
+                    return final, iterations, "stopped: iteration limit reached"
                 # Context-size backstop: если АКТИВНЫЙ контекст одного вызова
                 # (input последнего обмена) раздулся за потолок — это runaway-петля
                 # read/patch/re-read, которую прунер не смог удержать. Останавливаемся
@@ -669,8 +721,11 @@ class _ApiSubagentRunner:
                     logger.warning(
                         "Subagent %s context too large (%d > %d) at iter %d "
                         "(cumulative billed: %d) — stopping",
-                        self.index, ctx, MAX_SUBAGENT_CONTEXT_TOKENS,
-                        iterations, self._spent_tokens,
+                        self.index,
+                        ctx,
+                        MAX_SUBAGENT_CONTEXT_TOKENS,
+                        iterations,
+                        self._spent_tokens,
                     )
                     final = strip_tool_calls(raw_text).strip()
                     final = (final + "\n\n[Subagent stopped: context size limit reached]").strip()
@@ -681,7 +736,19 @@ class _ApiSubagentRunner:
                     # Возвращаем error (а не None), чтобы главный агент
                     # узнали о неполноте, а не считали это полным успехом. Сделанный
                     # текст сохраняется в final — он не теряется.
-                    return final, iterations, "stopped: context size limit reached (work likely incomplete)"
+                    info(
+                        "subagent.end",
+                        index=self.index,
+                        iterations=iterations,
+                        elapsed=time.monotonic() - self.activity_start_time,
+                        error="stopped: context size limit reached",
+                    )
+                    unbind("subagent")
+                    return (
+                        final,
+                        iterations,
+                        "stopped: context size limit reached (work likely incomplete)",
+                    )
 
                 self.status_cb(self.index, f"Iteration {iterations}")
                 if self.buffer:
@@ -689,19 +756,24 @@ class _ApiSubagentRunner:
 
                 try:
                     raw_text, native_tool_calls = await asyncio.wait_for(
-                        self._call_model(), timeout=MODEL_CALL_TIMEOUT_SEC,
+                        self._call_model(),
+                        timeout=MODEL_CALL_TIMEOUT_SEC,
                     )
                 except (asyncio.TimeoutError, TimeoutError):
                     logger.warning(
                         "Subagent %d model call timed out (%.0fs) at iter %d",
-                        self.index + 1, MODEL_CALL_TIMEOUT_SEC, iterations,
+                        self.index + 1,
+                        MODEL_CALL_TIMEOUT_SEC,
+                        iterations,
                     )
                     # Повисший провайдер: не зависаем навсегда. Подсказываем
                     # модели продолжить на следующей итерации; если повторяется —
                     # упрёмся в лимит итераций и завершимся с тем, что есть.
-                    self.session.messages.append(HumanMessage(
-                        content="(previous model call timed out — continue concisely)",
-                    ))
+                    self.session.messages.append(
+                        HumanMessage(
+                            content="(previous model call timed out — continue concisely)",
+                        )
+                    )
                     continue
                 raw_text = sanitize_response(raw_text)
                 self._append_assistant(raw_text, native_tool_calls)
@@ -721,16 +793,26 @@ class _ApiSubagentRunner:
                     final = strip_tool_calls(raw_text).strip()
                     if _looks_like_progress_only(final) and progress_nudges < 2:
                         progress_nudges += 1
-                        self.session.messages.append(HumanMessage(
-                            content=(
-                                "Your last message looks like progress/status, not the required final answer. "
-                                "Continue now. If you need tools, call them; otherwise provide the concrete "
-                                "FINAL ANSWER FORMAT from the system instructions."
-                            ),
-                        ))
+                        self.session.messages.append(
+                            HumanMessage(
+                                content=(
+                                    "Your last message looks like progress/status, not the required final answer. "
+                                    "Continue now. If you need tools, call them; otherwise provide the concrete "
+                                    "FINAL ANSWER FORMAT from the system instructions."
+                                ),
+                            )
+                        )
                         continue
                     if self.buffer:
                         self.buffer.on_done(final)
+                    info(
+                        "subagent.end",
+                        index=self.index,
+                        iterations=iterations,
+                        elapsed=time.monotonic() - self.activity_start_time,
+                        error=None,
+                    )
+                    unbind("subagent")
                     return final, iterations, None
 
                 # execute_call синхронный (shell может жить минуту). Выносим
@@ -756,6 +838,14 @@ class _ApiSubagentRunner:
             err = f"{type(e).__name__}: {e}"
             if self.buffer:
                 self.buffer.on_error(err)
+            info(
+                "subagent.end",
+                index=self.index,
+                iterations=iterations,
+                elapsed=time.monotonic() - self.activity_start_time,
+                error=err,
+            )
+            unbind("subagent")
             # Возвращаем фактическое число выполненных итераций, а не 0.
             return "", iterations, err
 
@@ -766,9 +856,18 @@ def _looks_like_progress_only(text: str) -> bool:
         return True
     low = stripped.lower()
     markers = (
-        "читаю", "прочитаю", "проверю", "соберу", "завершаю",
-        "инструментальные вызовы", "не удалось продолжить",
-        "i will", "i'll", "reading", "checking", "let me",
+        "читаю",
+        "прочитаю",
+        "проверю",
+        "соберу",
+        "завершаю",
+        "инструментальные вызовы",
+        "не удалось продолжить",
+        "i will",
+        "i'll",
+        "reading",
+        "checking",
+        "let me",
     )
     return len(stripped) < 300 and any(m in low for m in markers)
 
@@ -859,6 +958,7 @@ def _build_dep_context(task, results_by_index: dict, max_chars: int = 12000) -> 
 
 def _progress_log_path(run_dir: str | None) -> str | None:
     import os
+
     if not run_dir:
         return None
     return os.path.join(run_dir, "progress.md")
@@ -908,7 +1008,7 @@ async def _append_progress(run_dir: str | None, result, total: int) -> None:
                 if getattr(result, "files_changed", None):
                     block.append(f"files ({len(result.files_changed)}):")
                     for f in result.files_changed[:30]:
-                        block.append(f"  {f}")  # noqa: PERF401
+                        block.append(f"  {f}")
                 if getattr(result, "diff_stat", ""):
                     block.append("")
                     block.append(result.diff_stat)
@@ -918,7 +1018,7 @@ async def _append_progress(run_dir: str | None, result, total: int) -> None:
     else:
         head = (
             f"## Subagent {n}/{total}{phase}{label} [{result.mode}] — DONE "
-            f"({result.iterations} iters, {result.elapsed:.1f}s)"
+            f"({result.iterations} iters, {format_duration(result.elapsed, decimal_seconds=True)})"
         )
         block = [head, (result.response or "").strip()]
         if result.branch:
@@ -933,7 +1033,7 @@ async def _append_progress(run_dir: str | None, result, total: int) -> None:
         block.append("")
     async with _PROGRESS_LOCK:
         try:
-            with open(path, "a", encoding="utf-8") as fh:  # noqa: ASYNC230
+            with open(path, "a", encoding="utf-8") as fh:
                 fh.write("\n".join(block) + "\n")
         except Exception:
             logger.debug("subagent: append progress log failed", exc_info=True)
@@ -971,13 +1071,17 @@ def _finalize_subagent(result, task, handle, project_root: str) -> None:
     except Exception as e:
         logger.error(
             "subagent_git: finalize sub=%d failed: %s",
-            handle.sub_idx + 1, e, exc_info=True,
+            handle.sub_idx + 1,
+            e,
+            exc_info=True,
         )
     try:
         cleanup_worktree(project_root, handle)
     except Exception as e:
         logger.warning(
-            "subagent_git: cleanup_worktree sub=%d failed: %s", handle.sub_idx + 1, e,
+            "subagent_git: cleanup_worktree sub=%d failed: %s",
+            handle.sub_idx + 1,
+            e,
         )
 
 
@@ -1015,7 +1119,9 @@ async def run_api_subagents(
                 b.on_error(f"Dependency setup failed: {dep_error}")
         results = [
             SubagentResult(
-                task_index=i, mode=task.mode, response="",
+                task_index=i,
+                mode=task.mode,
+                response="",
                 error=f"Dependency setup failed: {dep_error}",
                 phase=getattr(task, "phase", "") or "",
                 label=getattr(task, "label", "") or "",
@@ -1033,6 +1139,7 @@ async def run_api_subagents(
     # = без лимита.
     try:
         from config.ui import ui as _ui
+
         max_conc = int(_ui.get("subagent.max_concurrency", 12))
     except Exception:
         max_conc = 12
@@ -1066,8 +1173,11 @@ async def run_api_subagents(
                     raw = await runner.run()
             text, iters, err = raw
             result = SubagentResult(
-                task_index=i, mode=task.mode, response=text,
-                iterations=iters, elapsed=runner.buffer.elapsed if runner.buffer else 0.0,
+                task_index=i,
+                mode=task.mode,
+                response=text,
+                iterations=iters,
+                elapsed=runner.buffer.elapsed if runner.buffer else 0.0,
                 error=err,
                 model_label=runner.model_id,
                 phase=getattr(task, "phase", "") or "",
@@ -1078,7 +1188,9 @@ async def run_api_subagents(
             if buf:
                 buf.on_error(error)
             result = SubagentResult(
-                task_index=i, mode=task.mode, response="",
+                task_index=i,
+                mode=task.mode,
+                response="",
                 error=error,
                 elapsed=runner.buffer.elapsed if runner.buffer else 0.0,
                 model_label=runner.model_id,
@@ -1087,7 +1199,9 @@ async def run_api_subagents(
             )
         except Exception as e:
             result = SubagentResult(
-                task_index=i, mode=task.mode, response="",
+                task_index=i,
+                mode=task.mode,
+                response="",
                 error=f"{type(e).__name__}: {e}",
                 elapsed=runner.buffer.elapsed if runner.buffer else 0.0,
                 model_label=runner.model_id,
@@ -1107,11 +1221,13 @@ async def run_api_subagents(
             if preset_name:
                 try:
                     from agent.agent_presets import load_preset
+
                     preset = load_preset(preset_name)
                     if preset is None:
                         logger.warning(
                             "subagent: preset '%s' not found (task %d), ignoring",
-                            preset_name, i + 1,
+                            preset_name,
+                            i + 1,
                         )
                 except Exception:
                     logger.warning("subagent: load_preset failed", exc_info=True)
@@ -1169,11 +1285,18 @@ async def run_api_subagents(
                 buf.bind_cancel(None)
             if isinstance(raw, BaseException):
                 logger.error("subagent: wave coro crashed: %s", raw, exc_info=raw)
-                error = "Cancelled by user." if isinstance(raw, asyncio.CancelledError) else f"{type(raw).__name__}: {raw}"
+                error = (
+                    "Cancelled by user."
+                    if isinstance(raw, asyncio.CancelledError)
+                    else f"{type(raw).__name__}: {raw}"
+                )
                 if buf and buf.status not in ("done", "error"):
                     buf.on_error(error)
                 raw = SubagentResult(
-                    task_index=i, mode=task.mode, response="", error=error,
+                    task_index=i,
+                    mode=task.mode,
+                    response="",
+                    error=error,
                     elapsed=buf.elapsed if buf else 0.0,
                     phase=getattr(task, "phase", "") or "",
                     label=getattr(task, "label", "") or "",
@@ -1183,8 +1306,11 @@ async def run_api_subagents(
             results_by_index[raw.task_index] = raw
 
     return [
-        results_by_index.get(i) or SubagentResult(
-            task_index=i, mode=tasks[i].mode, response="",
+        results_by_index.get(i)
+        or SubagentResult(
+            task_index=i,
+            mode=tasks[i].mode,
+            response="",
             error="Subagent produced no result.",
             phase=getattr(tasks[i], "phase", "") or "",
             label=getattr(tasks[i], "label", "") or "",

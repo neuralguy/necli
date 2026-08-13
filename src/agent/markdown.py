@@ -6,6 +6,8 @@ from rich import box
 from rich.align import Align
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import Markdown, TableElement
+from rich.segment import Segment
+from rich.style import Style
 from rich.table import Table
 
 from config.themes import t
@@ -14,9 +16,7 @@ from config.themes import t
 class ResponseTable(TableElement):
     """Compact, high-contrast table used in AI responses."""
 
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         table = Table(
             box=box.SQUARE,
             border_style=t("muted"),
@@ -46,3 +46,37 @@ class ResponseMarkdown(Markdown):
     """Markdown with the response-specific table element."""
 
     elements: ClassVar = {**Markdown.elements, "table_open": ResponseTable}
+
+
+class ThoughtMarkdown(ResponseMarkdown):
+    """Markdown for thoughts that preserves soft line breaks and stays muted."""
+
+    def __init__(self, markup: str, *, style: str) -> None:
+        super().__init__(
+            markup,
+            style=style,
+            code_theme="monokai",
+            inline_code_theme="monokai",
+        )
+        self._muted_style = style
+        for token in self.parsed:
+            for child in token.children or ():
+                if child.type == "softbreak":
+                    child.type = "hardbreak"
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        muted = console.get_style(self._muted_style)
+        pale = Style(dim=True)
+        for segment in super().__rich_console__(console, options):
+            if segment.control:
+                yield segment
+                continue
+            current = console.get_style(segment.style or "none")
+            if current.color == muted.color:
+                if current.bold:
+                    current += Style(color=t("accent"))
+                elif current.italic:
+                    current += Style(color=t("purple"))
+                elif current.strike:
+                    current += Style(color=t("warning"))
+            yield Segment(segment.text, current + pale)

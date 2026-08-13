@@ -18,10 +18,12 @@ from ui import overlays
 _TOGGLES = [
     ("autoprune_file_dedup", "autoprune.file_dedup", "autoprune.file_dedup_hint"),
     ("autoprune_tool_folding", "autoprune.tool_folding", "autoprune.tool_folding_hint"),
-    ("autoprune_round_compression", "autoprune.round_compression",
-     "autoprune.round_compression_hint"),
-    ("autoprune_safety_compress", "autoprune.safety_compress",
-     "autoprune.safety_compress_hint"),
+    (
+        "autoprune_round_compression",
+        "autoprune.round_compression",
+        "autoprune.round_compression_hint",
+    ),
+    ("autoprune_safety_compress", "autoprune.safety_compress", "autoprune.safety_compress_hint"),
 ]
 
 # (ключ настройки, ключ label) — value-пункты меню.
@@ -36,6 +38,7 @@ def _autoprune_active() -> bool:
     """True когда autoprune активен (у активного провайдера выключен prompt cache)."""
     try:
         from apis.agent_adapter import get_api_session
+
         sess = get_api_session()
         if sess is None or sess.llm is None:
             return False
@@ -70,20 +73,26 @@ async def autoprune_interactive() -> None:
         items = []
         for key, lkey, hkey in _TOGGLES:
             on = bool(config.get(key, True))
-            items.append({
-                "icon": "✓" if on else "✗",
-                "icon_style": "success" if on else "error",
-                "label": _(lkey),
-                "hint": _(hkey) if hkey else "",
-            })
+            items.append(
+                {
+                    "icon": "✓" if on else "✗",
+                    "icon_style": "success" if on else "error",
+                    "label": _(lkey),
+                    "hint": _(hkey) if hkey else "",
+                    "action": True,
+                }
+            )
         for key, lkey in _VALUES:
-            items.append({
-                "icon": "✎",
-                "icon_style": "dim",
-                "label": _(lkey),
-                "badge": _fmt_value(key),
-                "badge_style": "warning",
-            })
+            items.append(
+                {
+                    "icon": "✎",
+                    "icon_style": "dim",
+                    "label": _(lkey),
+                    "badge": _fmt_value(key),
+                    "badge_style": "warning",
+                    "action": True,
+                }
+            )
         items.append({"icon": " ", "label": _("common.back")})
 
         choice = await card_menu(
@@ -103,7 +112,7 @@ async def autoprune_interactive() -> None:
             key, lkey, _hkey = _TOGGLES[choice]
             new_val = not bool(config.get(key, True))
             config.set_value(key, new_val)
-            logger.info("autoprune toggle: %s → %s", key, new_val)
+            logger.info("autoprune toggle: {} → {}", key, new_val)
             continue
 
         # Value-пункты.
@@ -118,4 +127,4 @@ async def autoprune_interactive() -> None:
             if not raw:
                 continue
             config.set_value(key, int(raw))
-            logger.info("autoprune value: %s → %s", key, raw)
+            logger.info("autoprune value: {} → {}", key, raw)

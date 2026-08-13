@@ -45,18 +45,55 @@ console = Console()
 
 
 _PROVIDER_PRESETS = [
-    ("openai", "OpenAI", "api.openai.com", "https://api.openai.com/v1", "openai_compatible", "openai"),
-    ("anthropic", "Anthropic", "api.anthropic.com", "https://api.anthropic.com", "anthropic", "anthropic"),
-    ("google", "Google Gemini", "generativelanguage.googleapis.com",
-     "https://generativelanguage.googleapis.com", "google", "google"),
-    ("openrouter", "OpenRouter", "openrouter.ai", "https://openrouter.ai/api/v1",
-     "openai_compatible", "openai"),
-    ("groq", "Groq", "api.groq.com", "https://api.groq.com/openai/v1",
-     "openai_compatible", "openai"),
-    ("xai", "xAI Grok", "api.x.ai", "https://api.x.ai/v1",
-     "openai_compatible", "openai"),
-    ("ollama", "Ollama 🏠", "localhost:11434", "http://localhost:11434/v1",
-     "openai_compatible", "openai"),
+    (
+        "openai",
+        "OpenAI",
+        "api.openai.com",
+        "https://api.openai.com/v1",
+        "openai_compatible",
+        "openai",
+    ),
+    (
+        "anthropic",
+        "Anthropic",
+        "api.anthropic.com",
+        "https://api.anthropic.com",
+        "anthropic",
+        "anthropic",
+    ),
+    (
+        "google",
+        "Google Gemini",
+        "generativelanguage.googleapis.com",
+        "https://generativelanguage.googleapis.com",
+        "google",
+        "google",
+    ),
+    (
+        "openrouter",
+        "OpenRouter",
+        "openrouter.ai",
+        "https://openrouter.ai/api/v1",
+        "openai_compatible",
+        "openai",
+    ),
+    (
+        "groq",
+        "Groq",
+        "api.groq.com",
+        "https://api.groq.com/openai/v1",
+        "openai_compatible",
+        "openai",
+    ),
+    ("xai", "xAI Grok", "api.x.ai", "https://api.x.ai/v1", "openai_compatible", "openai"),
+    (
+        "ollama",
+        "Ollama 🏠",
+        "localhost:11434",
+        "http://localhost:11434/v1",
+        "openai_compatible",
+        "openai",
+    ),
 ]
 
 
@@ -77,6 +114,7 @@ def _clear_screen() -> None:
     if get_shell() is not None:
         return
     import sys
+
     sys.stdout.write("\x1b[2J\x1b[H")
     sys.stdout.flush()
 
@@ -123,7 +161,10 @@ async def _step_language(start: int = 0) -> tuple[bool, int]:
         for code in SUPPORTED_LANGS
     ]
     choice = await overlays.select_menu(
-        items, current=start, title=_("lang.subtitle"), allow_forward=True,
+        items,
+        current=start,
+        title=_("lang.subtitle"),
+        allow_forward=True,
     )
     if choice is None:
         return False, start
@@ -137,8 +178,12 @@ def _theme_list_panel(names: list[str], selected: int, current: str, width: int)
     swatch_roles = ("accent", "success", "warning", "error", "info", "magenta", "purple")
 
     table = Table(
-        show_header=False, border_style="dim", padding=(0, 1),
-        show_edge=False, show_lines=False, expand=True,
+        show_header=False,
+        border_style="dim",
+        padding=(0, 1),
+        show_edge=False,
+        show_lines=False,
+        expand=True,
     )
     table.add_column("Name", no_wrap=True, ratio=1)
     table.add_column("Palette", no_wrap=True, ratio=2)
@@ -162,17 +207,24 @@ def _theme_list_panel(names: list[str], selected: int, current: str, width: int)
             sw.append("██", style=colors[r])
             sw.append(" ", style="default")
         from rich.style import Style as RStyle
+
         row_bg = RStyle(bgcolor=bg_select) if is_sel else RStyle.null()
         table.add_row(name_cell, sw, style=row_bg)
 
     panel = Panel(
-        table, title=_("themes.title"), title_align="left",
-        subtitle=f"{selected + 1}/{len(names)}", subtitle_align="right",
-        border_style="dim", padding=(0, 1), width=width,
+        table,
+        title=_("themes.title"),
+        title_align="left",
+        subtitle=f"{selected + 1}/{len(names)}",
+        subtitle_align="right",
+        border_style="dim",
+        padding=(0, 1),
+        width=width,
     )
     buf = StringIO()
-    Console(file=buf, highlight=False, force_terminal=True,
-            width=width, color_system="truecolor").print(panel)
+    Console(
+        file=buf, highlight=False, force_terminal=True, width=width, color_system="truecolor"
+    ).print(panel)
     return buf.getvalue()
 
 
@@ -203,8 +255,11 @@ async def _step_theme(start: int = 0) -> tuple[bool, int]:
 
     choice = await overlays.panel_menu(
         render_fn,
-        _("themes.hint_apply") if _("themes.hint_apply") != "themes.hint_apply" else "↑↓ select · enter apply · esc skip",
-        len(names), start,
+        _("themes.hint_apply")
+        if _("themes.hint_apply") != "themes.hint_apply"
+        else "↑↓ select · enter apply · esc skip",
+        len(names),
+        start,
         allow_back=True,
         allow_forward=True,
     )
@@ -224,15 +279,15 @@ async def _step_provider(start: int = 0) -> tuple[bool, int]:
 
     _show_hero(3, 3, "onboarding.title_provider")
 
-    items = [
-        {"label": name, "hint": host}
-        for _pid, name, host, *_ in _PROVIDER_PRESETS
-    ]
+    items = [{"label": name, "hint": host} for _pid, name, host, *_ in _PROVIDER_PRESETS]
     items.append({"label": _("onboarding.skip_provider"), "hint": _("onboarding.skip_hint")})
 
     choice = await overlays.select_menu(
-        items, current=start, title=_("onboarding.pick_provider"),
-        allow_back=True, allow_forward=True,
+        items,
+        current=start,
+        title=_("onboarding.pick_provider"),
+        allow_back=True,
+        allow_forward=True,
     )
     if choice is None or choice == len(_PROVIDER_PRESETS):
         _ensure_default_provider()
@@ -242,8 +297,11 @@ async def _step_provider(start: int = 0) -> tuple[bool, int]:
 
     pid, name, _host, base_url, ptype, api_format = _PROVIDER_PRESETS[choice]
     add_api_config(
-        provider_id=pid, name=name, base_url=base_url,
-        provider_type=ptype, api_format=api_format,
+        provider_id=pid,
+        name=name,
+        base_url=base_url,
+        provider_type=ptype,
+        api_format=api_format,
     )
     reload_providers()
     print_static(f"[{tc('success')}]✓[/{tc('success')}] {_('api.added', name=name)}")
@@ -265,17 +323,24 @@ async def _step_provider(start: int = 0) -> tuple[bool, int]:
 
 async def _ask_api_key(pid: str, name: str) -> None:
     from apis.config import set_api_key as _set_key
+
     print_static("")
     print_static(f"[dim]{_('onboarding.key_prompt_hint')}[/dim]")
     # password=True: ключ не должен оставаться на экране и в scrollback.
-    key = (await overlays.ask_text(
-        f"{_('api.field_api_key')} ({_('onboarding.optional')}):", password=True,
-    ) or "").strip()
+    key = (
+        await overlays.ask_text(
+            f"{_('api.field_api_key')} ({_('onboarding.optional')}):",
+            password=True,
+        )
+        or ""
+    ).strip()
     if key:
         _set_key(pid, key)
         print_static(f"[{tc('success')}]✓[/{tc('success')}] {_('api.key_set')}")
     else:
-        print_static(f"  [{tc('warning')}]⚠[/{tc('warning')}] {_('onboarding.key_skipped', name=name)}")
+        print_static(
+            f"  [{tc('warning')}]⚠[/{tc('warning')}] {_('onboarding.key_skipped', name=name)}"
+        )
 
 
 def _ensure_default_provider() -> None:
@@ -298,8 +363,11 @@ def _ensure_default_provider() -> None:
 
     pid, name, _host, base_url, ptype, api_format = _PROVIDER_PRESETS[0]
     add_api_config(
-        provider_id=pid, name=name, base_url=base_url,
-        provider_type=ptype, api_format=api_format,
+        provider_id=pid,
+        name=name,
+        base_url=base_url,
+        provider_type=ptype,
+        api_format=api_format,
     )
     reload_providers()
     defn = get_definition(pid)
@@ -339,4 +407,5 @@ def run_onboarding() -> None:
     путём — единственным работающим, пока Application не поднят.
     """
     from ui.menu import run_ui_sync
+
     run_ui_sync(run_onboarding_async())

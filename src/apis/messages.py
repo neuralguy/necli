@@ -42,7 +42,9 @@ class HumanMessage(BaseMessage):
 class ToolMessage(BaseMessage):
     role = "tool"
 
-    def __init__(self, content: Any = "", tool_call_id: str = "", name: str = "", **kwargs: Any) -> None:
+    def __init__(
+        self, content: Any = "", tool_call_id: str = "", name: str = "", **kwargs: Any
+    ) -> None:
         super().__init__(content, **kwargs)
         self.tool_call_id = tool_call_id
         self.name = name or "tool"
@@ -103,7 +105,8 @@ class AIMessageChunk(AIMessage):
 
         # tool_call_chunks: накапливаем по index, склеивая args как строки
         merged_tc_chunks = _merge_tool_call_chunks(
-            self.tool_call_chunks, other.tool_call_chunks,
+            self.tool_call_chunks,
+            other.tool_call_chunks,
         )
 
         # tool_calls: финальные структуры — берём результат свёртки tc_chunks
@@ -145,6 +148,7 @@ def _merge_tool_call_chunks(a: list, b: list) -> list:
 def _tc_chunks_to_tool_calls(chunks: list) -> list:
     """Конвертирует аккумулированные tool_call_chunks в финальные tool_calls с распарсенным args."""
     import json
+
     result = []
     for ch in chunks or []:
         args_raw = ch.get("args") or ""
@@ -161,12 +165,14 @@ def _tc_chunks_to_tool_calls(chunks: list) -> list:
             args = args_raw
         else:
             args = {}
-        result.append({
-            "id": ch.get("id") or "",
-            "name": ch.get("name") or "",
-            "args": args,
-            "type": "tool_call",
-        })
+        result.append(
+            {
+                "id": ch.get("id") or "",
+                "name": ch.get("name") or "",
+                "args": args,
+                "type": "tool_call",
+            }
+        )
     return result
 
 

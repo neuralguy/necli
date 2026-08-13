@@ -15,19 +15,24 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Literal
 
 import config
+from config._sync import synchronized
 
 Decision = Literal["ask", "allow", "deny"]
 Scope = Literal["session", "process", "forever"]
 
 _PROCESS: dict[str, Decision] = {}
 _SESSION: dict[str, Decision] = {}
+_LOCK = threading.RLock()
 
 
 # ── чтение/запись forever-уровня ──
 
+
+@synchronized(_LOCK)
 def _forever_all() -> dict[str, Decision]:
     raw = config.get("tool_permissions", {})
     if not isinstance(raw, dict):
@@ -35,6 +40,7 @@ def _forever_all() -> dict[str, Decision]:
     return {k: v for k, v in raw.items() if v in ("ask", "allow", "deny")}
 
 
+@synchronized(_LOCK)
 def _set_forever(tool: str, decision: Decision) -> None:
     all_ = _forever_all()
     if decision == "ask":
@@ -46,6 +52,8 @@ def _set_forever(tool: str, decision: Decision) -> None:
 
 # ── публичное API ──
 
+
+@synchronized(_LOCK)
 def _lookup(tool: str) -> tuple[Decision, Scope] | None:
     """Находит эффективное решение и его уровень.
 
@@ -64,6 +72,8 @@ def _lookup(tool: str) -> tuple[Decision, Scope] | None:
             return store["*"], scope
     return None
 
+
+@synchronized(_LOCK)
 def get_decision(tool: str) -> Decision:
     """Возвращает текущее эффективное решение для инструмента.
 
@@ -76,12 +86,14 @@ def get_decision(tool: str) -> Decision:
     return found[0] if found else "ask"
 
 
+@synchronized(_LOCK)
 def get_scope(tool: str) -> Scope | None:
     """Возвращает уровень, на котором установлено решение (None если ask по дефолту)."""
     found = _lookup(tool)
     return found[1] if found else None
 
 
+@synchronized(_LOCK)
 def set_decision(tool: str, decision: Decision, scope: Scope) -> None:
     if decision == "ask":
         # Сброс на указанном уровне
@@ -101,6 +113,7 @@ def set_decision(tool: str, decision: Decision, scope: Scope) -> None:
         _set_forever(tool, decision)
 
 
+@synchronized(_LOCK)
 def reset_tool(tool: str) -> None:
     """Сбрасывает все три уровня → 'ask' для конкретного инструмента."""
     _SESSION.pop(tool, None)
@@ -108,15 +121,15 @@ def reset_tool(tool: str) -> None:
     _set_forever(tool, "ask")
 
 
+@synchronized(_LOCK)
 def reset_session() -> None:
     """Очищает только session-уровень. Вызывается по /new."""
     _SESSION.clear()
 
 
+@synchronized(_LOCK)
 def reset_all() -> None:
     """Полный сброс всех уровней."""
     _SESSION.clear()
     _PROCESS.clear()
     config.set_value("tool_permissions", {})
-
-

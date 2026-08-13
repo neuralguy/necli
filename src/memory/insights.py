@@ -21,6 +21,7 @@ copy-кнопки, навигация) и сохраняется в .data/insigh
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import html
 import json
@@ -50,10 +51,13 @@ _LANG_NAMES = {
     "zh": "Chinese (中文)",
 }
 
+
 def _today() -> str:
     return _dt.date.today().isoformat()
 
+
 # ── Сбор данных ──────────────────────────────────────────────────────────────
+
 
 def _load_all_sessions() -> list[dict]:
     """Все сессии с загруженными сообщениями, новые первыми."""
@@ -65,6 +69,7 @@ def _load_all_sessions() -> list[dict]:
             continue
         out.append({"meta": meta, "session": sess})
     return out
+
 
 def collect_metrics(loaded: list[dict]) -> dict:
     """Локальные (без модели) агрегаты по всем сессиям."""
@@ -109,13 +114,15 @@ def collect_metrics(loaded: list[dict]) -> dict:
                     tool_counts[tool] = tool_counts.get(tool, 0) + 1
             elif m.role == "tool_result":
                 total_tool_results += 1
-                body = (m.content or "")
+                body = m.content or ""
                 low = body.lower()
                 if "traceback" in low:
                     error_kinds["Traceback"] = error_kinds.get("Traceback", 0) + 1
                     error_hits += 1
                 elif "command not found" in low or "no such file" in low:
-                    error_kinds["Command/File not found"] = error_kinds.get("Command/File not found", 0) + 1
+                    error_kinds["Command/File not found"] = (
+                        error_kinds.get("Command/File not found", 0) + 1
+                    )
                     error_hits += 1
                 elif "permission denied" in low:
                     error_kinds["Permission denied"] = error_kinds.get("Permission denied", 0) + 1
@@ -148,8 +155,12 @@ def collect_metrics(loaded: list[dict]) -> dict:
     avg_session_size = round(sum(session_sizes) / len(session_sizes), 1) if session_sizes else 0
     msgs_per_day = round(total_user / len(active_days), 1) if active_days else 0
 
-    periods = [("Morning (6-12)", range(6, 12)), ("Afternoon (12-18)", range(12, 18)),
-               ("Evening (18-24)", range(18, 24)), ("Night (0-6)", range(6))]
+    periods = [
+        ("Morning (6-12)", range(6, 12)),
+        ("Afternoon (12-18)", range(12, 18)),
+        ("Evening (18-24)", range(18, 24)),
+        ("Night (0-6)", range(6)),
+    ]
     time_of_day = [(label, sum(hour_counts.get(h, 0) for h in rng)) for label, rng in periods]
 
     return {
@@ -172,6 +183,7 @@ def collect_metrics(loaded: list[dict]) -> dict:
         "first_ts": first_ts,
         "last_ts": last_ts,
     }
+
 
 def build_transcript(loaded: list[dict]) -> str:
     """Транскрипт всех сессий для модели (свежие ближе к инструкции при усечении)."""
@@ -198,7 +210,9 @@ def build_transcript(loaded: list[dict]) -> str:
         full = "…(old sessions truncated)…\n" + full[-_MAX_TRANSCRIPT_CHARS:]
     return full
 
+
 # ── Промпт и парсинг ─────────────────────────────────────────────────────────
+
 
 def build_prompt(transcript: str, metrics: dict, manifest: str, lang: str) -> str:
     types = ", ".join(MEMORY_TYPES)
@@ -266,13 +280,14 @@ def build_prompt(transcript: str, metrics: dict, manifest: str, lang: str) -> st
         "--- TRANSCRIPT ---\n" + transcript + "\n--- END ---"
     )
 
+
 def parse_analysis(raw: str) -> dict:
     text = (raw or "").strip()
     if not text:
         raise ValueError("empty model response")
     if text.startswith("```"):
         text = text.strip("`")
-        text = text[text.find("\n") + 1:] if "\n" in text else text
+        text = text[text.find("\n") + 1 :] if "\n" in text else text
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
@@ -284,7 +299,9 @@ def parse_analysis(raw: str) -> dict:
         raise ValueError("model response is not a JSON object")
     return data
 
+
 # ── Запись памяти ────────────────────────────────────────────────────────────
+
 
 def save_memories(analysis: dict, working_dir: str | None = None) -> int:
     items = analysis.get("memories") or []
@@ -306,18 +323,20 @@ def save_memories(analysis: dict, working_dir: str | None = None) -> int:
         if not name or not body:
             continue
         try:
-            write_memory(name, body, mtype=mtype, today=today,
-                         working_dir=working_dir, scope=scope)
+            write_memory(name, body, mtype=mtype, today=today, working_dir=working_dir, scope=scope)
             saved += 1
         except Exception as e:
-            logger.debug("insights: write memory '%s' failed: %s", name, e, exc_info=True)
-    logger.info("insights: saved %d/%d memory fact(s)", saved, len(items))
+            logger.debug("insights: write memory '{}' failed: {}", name, e, exc_info=True)
+    logger.info("insights: saved {}/{} memory fact(s)", saved, len(items))
     return saved
+
 
 # ── HTML-рендер ──────────────────────────────────────────────────────────────
 
+
 def _esc(v) -> str:
     return html.escape(str(v))
+
 
 def _bars(pairs, color: str) -> str:
     """Барный чарт из [(label, count)]."""
@@ -335,6 +354,7 @@ def _bars(pairs, color: str) -> str:
         )
     return "".join(rows)
 
+
 def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -> str:
     a = analysis
     generated = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -343,33 +363,49 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
         f, last = metrics.get("first_ts"), metrics.get("last_ts")
         if not f or not last:
             return ""
-        return (_dt.datetime.fromtimestamp(f).strftime("%Y-%m-%d") + " → "
-                + _dt.datetime.fromtimestamp(last).strftime("%Y-%m-%d"))
+        return (
+            _dt.datetime.fromtimestamp(f).strftime("%Y-%m-%d")
+            + " → "
+            + _dt.datetime.fromtimestamp(last).strftime("%Y-%m-%d")
+        )
 
     glance = a.get("glance") or {}
     glance_html = ""
-    for key, label in (("working", "What's working"), ("hindering", "What's hindering you"),
-                       ("quick_wins", "Quick wins to try"), ("ambitious", "Ambitious workflows")):
+    for key, label in (
+        ("working", "What's working"),
+        ("hindering", "What's hindering you"),
+        ("quick_wins", "Quick wins to try"),
+        ("ambitious", "Ambitious workflows"),
+    ):
         if glance.get(key):
-            glance_html += (f'<div class="glance-section"><strong>{label}:</strong> '
-                            f'{_esc(glance[key])}</div>')
+            glance_html += (
+                f'<div class="glance-section"><strong>{label}:</strong> {_esc(glance[key])}</div>'
+            )
 
-    areas_html = "".join(
-        f'<div class="project-area"><div class="area-header">'
-        f'<span class="area-name">{_esc(x.get("name", ""))}</span>'
-        f'<span class="area-count">{_esc(x.get("sessions", ""))}</span></div>'
-        f'<div class="area-desc">{_esc(x.get("desc", ""))}</div></div>'
-        for x in (a.get("project_areas") or []) if isinstance(x, dict)
-    ) or '<p class="empty">—</p>'
+    areas_html = (
+        "".join(
+            f'<div class="project-area"><div class="area-header">'
+            f'<span class="area-name">{_esc(x.get("name", ""))}</span>'
+            f'<span class="area-count">{_esc(x.get("sessions", ""))}</span></div>'
+            f'<div class="area-desc">{_esc(x.get("desc", ""))}</div></div>'
+            for x in (a.get("project_areas") or [])
+            if isinstance(x, dict)
+        )
+        or '<p class="empty">—</p>'
+    )
 
-    wins_html = "".join(
-        f'<div class="big-win"><div class="big-win-title">{_esc(x.get("title", ""))}</div>'
-        f'<div class="big-win-desc">{_esc(x.get("desc", ""))}</div></div>'
-        for x in (a.get("big_wins") or []) if isinstance(x, dict)
-    ) or '<p class="empty">—</p>'
+    wins_html = (
+        "".join(
+            f'<div class="big-win"><div class="big-win-title">{_esc(x.get("title", ""))}</div>'
+            f'<div class="big-win-desc">{_esc(x.get("desc", ""))}</div></div>'
+            for x in (a.get("big_wins") or [])
+            if isinstance(x, dict)
+        )
+        or '<p class="empty">—</p>'
+    )
 
     friction_html = ""
-    for x in (a.get("friction") or []):
+    for x in a.get("friction") or []:
         if not isinstance(x, dict):
             continue
         ex = "".join(f"<li>{_esc(e)}</li>" for e in (x.get("examples") or []) if str(e).strip())
@@ -381,28 +417,40 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
     friction_html = friction_html or '<p class="empty">—</p>'
 
     features_html = ""
-    for x in (a.get("features_to_try") or []):
+    for x in a.get("features_to_try") or []:
         if not isinstance(x, dict):
             continue
         ex = x.get("example", "")
-        ex_block = (f'<div class="feature-code"><code>{_esc(ex)}</code>'
-                    f'<button class="copy-btn" onclick="copyText(this)">Copy</button></div>') if ex else ""
+        ex_block = (
+            (
+                f'<div class="feature-code"><code>{_esc(ex)}</code>'
+                f'<button class="copy-btn" onclick="copyText(this)">Copy</button></div>'
+            )
+            if ex
+            else ""
+        )
         features_html += (
             f'<div class="feature-card"><div class="feature-title">{_esc(x.get("title", ""))}</div>'
             f'<div class="feature-oneliner">{_esc(x.get("oneliner", ""))}</div>'
             f'<div class="feature-why"><strong>Why for you:</strong> {_esc(x.get("why", ""))}</div>'
-            f'{ex_block}</div>'
+            f"{ex_block}</div>"
         )
     features_html = features_html or '<p class="empty">—</p>'
 
     patterns_html = ""
-    for x in (a.get("usage_patterns") or []):
+    for x in a.get("usage_patterns") or []:
         if not isinstance(x, dict):
             continue
         p = x.get("prompt", "")
-        p_block = (f'<div class="pattern-prompt"><div class="prompt-label">Paste into necli:</div>'
-                   f'<code>{_esc(p)}</code>'
-                   f'<button class="copy-btn" onclick="copyText(this)">Copy</button></div>') if p else ""
+        p_block = (
+            (
+                f'<div class="pattern-prompt"><div class="prompt-label">Paste into necli:</div>'
+                f"<code>{_esc(p)}</code>"
+                f'<button class="copy-btn" onclick="copyText(this)">Copy</button></div>'
+            )
+            if p
+            else ""
+        )
         patterns_html += (
             f'<div class="pattern-card"><div class="pattern-title">{_esc(x.get("title", ""))}</div>'
             f'<div class="pattern-summary">{_esc(x.get("summary", ""))}</div>'
@@ -411,14 +459,24 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
     patterns_html = patterns_html or '<p class="empty">—</p>'
 
     horizon_html = ""
-    for x in (a.get("horizon") or []):
+    for x in a.get("horizon") or []:
         if not isinstance(x, dict):
             continue
         p = x.get("prompt", "")
-        p_block = (f'<div class="pattern-prompt"><div class="prompt-label">Paste into necli:</div>'
-                   f'<code>{_esc(p)}</code>'
-                   f'<button class="copy-btn" onclick="copyText(this)">Copy</button></div>') if p else ""
-        tip = f'<div class="horizon-tip"><strong>Getting started:</strong> {_esc(x.get("tip", ""))}</div>' if x.get("tip") else ""
+        p_block = (
+            (
+                f'<div class="pattern-prompt"><div class="prompt-label">Paste into necli:</div>'
+                f"<code>{_esc(p)}</code>"
+                f'<button class="copy-btn" onclick="copyText(this)">Copy</button></div>'
+            )
+            if p
+            else ""
+        )
+        tip = (
+            f'<div class="horizon-tip"><strong>Getting started:</strong> {_esc(x.get("tip", ""))}</div>'
+            if x.get("tip")
+            else ""
+        )
         horizon_html += (
             f'<div class="horizon-card"><div class="horizon-title">{_esc(x.get("title", ""))}</div>'
             f'<div class="horizon-possible">{_esc(x.get("possible", ""))}</div>{tip}{p_block}</div>'
@@ -442,12 +500,31 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
     fun = a.get("fun_ending") or {}
     fun_html = ""
     if fun.get("headline"):
-        fun_html = (f'<div class="fun-ending"><div class="fun-headline">"{_esc(fun.get("headline"))}"</div>'
-                    f'<div class="fun-detail">{_esc(fun.get("detail", ""))}</div></div>')
+        fun_html = (
+            f'<div class="fun-ending"><div class="fun-headline">"{_esc(fun.get("headline"))}"</div>'
+            f'<div class="fun-detail">{_esc(fun.get("detail", ""))}</div></div>'
+        )
 
-    intents_bars = _bars([(x.get("label"), x.get("count")) for x in (a.get("intents") or []) if isinstance(x, dict)], "#2563eb")
-    sess_bars = _bars([(x.get("label"), x.get("count")) for x in (a.get("session_types") or []) if isinstance(x, dict)], "#8b5cf6")
-    sat_bars = _bars([(x.get("label"), x.get("count")) for x in (a.get("satisfaction") or []) if isinstance(x, dict)], "#eab308")
+    intents_bars = _bars(
+        [(x.get("label"), x.get("count")) for x in (a.get("intents") or []) if isinstance(x, dict)],
+        "#2563eb",
+    )
+    sess_bars = _bars(
+        [
+            (x.get("label"), x.get("count"))
+            for x in (a.get("session_types") or [])
+            if isinstance(x, dict)
+        ],
+        "#8b5cf6",
+    )
+    sat_bars = _bars(
+        [
+            (x.get("label"), x.get("count"))
+            for x in (a.get("satisfaction") or [])
+            if isinstance(x, dict)
+        ],
+        "#eab308",
+    )
     tools_bars = _bars(metrics.get("top_tools", []), "#0891b2")
     err_bars = _bars(metrics.get("error_kinds", []), "#dc2626")
     tod_bars = _bars(metrics.get("time_of_day", []), "#8b5cf6")
@@ -543,7 +620,7 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
 <body>
   <div class="container">
     <h1>necli · Interaction Insights</h1>
-    <p class="subtitle">{metrics.get('total_user', 0)} user messages across {metrics.get('total_sessions', 0)} sessions · {_esc(span_str())} · generated {generated}</p>
+    <p class="subtitle">{metrics.get("total_user", 0)} user messages across {metrics.get("total_sessions", 0)} sessions · {_esc(span_str())} · generated {generated}</p>
 
     <div class="at-a-glance">
       <div class="glance-title">At a Glance</div>
@@ -562,12 +639,12 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
     </nav>
 
     <div class="stats-row">
-      <div class="stat"><div class="stat-value">{metrics.get('total_user', 0)}</div><div class="stat-label">Messages</div></div>
-      <div class="stat"><div class="stat-value">{metrics.get('total_sessions', 0)}</div><div class="stat-label">Sessions</div></div>
-      <div class="stat"><div class="stat-value">{metrics.get('total_tool_calls', 0)}</div><div class="stat-label">Tool Calls</div></div>
-      <div class="stat"><div class="stat-value">{metrics.get('active_days', 0)}</div><div class="stat-label">Active Days</div></div>
-      <div class="stat"><div class="stat-value">{metrics.get('msgs_per_day', 0)}</div><div class="stat-label">Msgs/Day</div></div>
-      <div class="stat"><div class="stat-value">{metrics.get('avg_session_size', 0)}</div><div class="stat-label">Msgs/Session</div></div>
+      <div class="stat"><div class="stat-value">{metrics.get("total_user", 0)}</div><div class="stat-label">Messages</div></div>
+      <div class="stat"><div class="stat-value">{metrics.get("total_sessions", 0)}</div><div class="stat-label">Sessions</div></div>
+      <div class="stat"><div class="stat-value">{metrics.get("total_tool_calls", 0)}</div><div class="stat-label">Tool Calls</div></div>
+      <div class="stat"><div class="stat-value">{metrics.get("active_days", 0)}</div><div class="stat-label">Active Days</div></div>
+      <div class="stat"><div class="stat-value">{metrics.get("msgs_per_day", 0)}</div><div class="stat-label">Msgs/Day</div></div>
+      <div class="stat"><div class="stat-value">{metrics.get("avg_session_size", 0)}</div><div class="stat-label">Msgs/Session</div></div>
     </div>
 
     <h2 id="section-work">What You Work On</h2>
@@ -646,6 +723,7 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
 </html>
 """
 
+
 def write_report(html_text: str) -> Path:
     _REPORT_DIR.mkdir(parents=True, exist_ok=True)
     ts = _dt.datetime.now().strftime("%Y-%m-%d-%H%M%S")
@@ -653,7 +731,9 @@ def write_report(html_text: str) -> Path:
     path.write_text(html_text, encoding="utf-8")
     return path
 
+
 # ── Оркестрация ──────────────────────────────────────────────────────────────
+
 
 async def generate_insights(working_dir: str | None = None, *, persist_memory: bool = True) -> dict:
     """Полный цикл: собрать → проанализировать моделью → отрендерить → записать.
@@ -664,30 +744,39 @@ async def generate_insights(working_dir: str | None = None, *, persist_memory: b
     from apis.agent_adapter import api_insights
 
     t0 = time.monotonic()
-    loaded = _load_all_sessions()
+    # История может включать тысячи файлов и большой транскрипт. Эти этапы
+    # намеренно уходят с UI loop, иначе даже фоновая задача подвешивает ввод
+    # до первого await сетевого запроса и снова при рендере большого HTML.
+    loaded = await asyncio.to_thread(_load_all_sessions)
     if not loaded:
         raise RuntimeError("no sessions to analyze")
 
     lang = get_lang()
-    metrics = collect_metrics(loaded)
-    transcript = build_transcript(loaded)
-    manifest = format_manifest(working_dir)
+    metrics, transcript, manifest = await asyncio.gather(
+        asyncio.to_thread(collect_metrics, loaded),
+        asyncio.to_thread(build_transcript, loaded),
+        asyncio.to_thread(format_manifest, working_dir),
+    )
     prompt = build_prompt(transcript, metrics, manifest, lang)
 
     logger.info(
-        "insights: %d sessions, transcript=%d chars, lang=%s",
-        metrics["total_sessions"], len(transcript), lang,
+        "insights: {} sessions, transcript={} chars, lang={}",
+        metrics["total_sessions"],
+        len(transcript),
+        lang,
     )
     raw = await api_insights(prompt)
     analysis = parse_analysis(raw)
 
-    saved = save_memories(analysis, working_dir) if persist_memory else 0
-    html_text = render_html(analysis, metrics, saved, lang)
-    path = write_report(html_text)
+    saved = await asyncio.to_thread(save_memories, analysis, working_dir) if persist_memory else 0
+    html_text = await asyncio.to_thread(render_html, analysis, metrics, saved, lang)
+    path = await asyncio.to_thread(write_report, html_text)
 
     logger.info(
-        "insights: report=%s saved_memories=%d in %.1fs",
-        path, saved, time.monotonic() - t0,
+        "insights: report={} saved_memories={} in {:.1f}s",
+        path,
+        saved,
+        time.monotonic() - t0,
     )
     return {
         "report_path": path,

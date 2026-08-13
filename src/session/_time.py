@@ -14,6 +14,7 @@ def format_msk(ts: float, short: bool = False) -> str:
 def format_relative(ts: float) -> str:
     """Unix timestamp → относительное время ('2 minutes ago', 'Sep 03')."""
     import time
+
     now = time.time()
     diff = now - ts
     if diff < 0:

@@ -15,25 +15,25 @@ def _latex_fragment_to_unicode(latex: str) -> str:
         return latex
 
 
-_DISPLAY_MATH_RE = re.compile(r'\$\$(.*?)\$\$', re.DOTALL)
+_DISPLAY_MATH_RE = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
 # Inline math $...$, tightened to avoid mangling currency like "$5 and $10":
 # the opening $ must not be followed by whitespace, the closing $ must not be
 # preceded by whitespace, and the closing $ must not be directly followed by a
 # digit (which signals a second currency amount, not a math delimiter).
-_INLINE_MATH_RE = re.compile(r'(?<!\\)\$(?!\s)(.+?)(?<!\s)(?<!\\)\$(?!\d)')
+_INLINE_MATH_RE = re.compile(r"(?<!\\)\$(?!\s)(.+?)(?<!\s)(?<!\\)\$(?!\d)")
 _LATEX_BLOCK_RE = re.compile(
-    r'\\\[(.*?)\\\]'
-    r'|\\\((.*?)\\\)',
+    r"\\\[(.*?)\\\]"
+    r"|\\\((.*?)\\\)",
     re.DOTALL,
 )
 
 
 _LATEX_FENCE_RE = re.compile(
-    r'(?:```|~~~)(?:latex|math)\s*\n(.*?)(?:```|~~~)',
+    r"(?:```|~~~)(?:latex|math)\s*\n(.*?)(?:```|~~~)",
     re.DOTALL | re.IGNORECASE,
 )
 _BARE_FENCE_MATH_RE = re.compile(
-    r'(?:```|~~~)\s*\n(\s*\$\$.*?\$\$\s*)\n(?:```|~~~)',
+    r"(?:```|~~~)\s*\n(\s*\$\$.*?\$\$\s*)\n(?:```|~~~)",
     re.DOTALL,
 )
 
@@ -44,8 +44,12 @@ def latex_to_unicode(text: str) -> str:
     Handles $...$, $$...$$, \\[...\\], \\(...\\) and ```latex/```math fenced blocks.
     Regular code blocks (```python, ```bash, etc.) are preserved as-is.
     """
-    if '$' not in text and '\\(' not in text and '\\[' not in text \
-            and not _LATEX_FENCE_RE.search(text):
+    if (
+        "$" not in text
+        and "\\(" not in text
+        and "\\[" not in text
+        and not _LATEX_FENCE_RE.search(text)
+    ):
         return text
 
     # Convert ```latex / ```math / ~~~latex / ~~~math blocks first
@@ -62,12 +66,13 @@ def latex_to_unicode(text: str) -> str:
 
     # Protect remaining code blocks from conversion
     code_blocks: list[str] = []
+
     def _save_code(m: re.Match) -> str:
         code_blocks.append(m.group(0))
-        return f'\x00CODE{len(code_blocks) - 1}\x00'
+        return f"\x00CODE{len(code_blocks) - 1}\x00"
 
-    protected = re.sub(r'(?:```|~~~).*?(?:```|~~~)', _save_code, result, flags=re.DOTALL)
-    protected = re.sub(r'`[^`]+`', _save_code, protected)
+    protected = re.sub(r"(?:```|~~~).*?(?:```|~~~)", _save_code, result, flags=re.DOTALL)
+    protected = re.sub(r"`[^`]+`", _save_code, protected)
 
     def _replace_match(m: re.Match) -> str:
         latex = (m.group(1) or m.group(2)) if (m.lastindex and m.lastindex >= 2) else m.group(1)
@@ -85,7 +90,7 @@ def latex_to_unicode(text: str) -> str:
 
     # Restore code blocks
     for i, block in enumerate(code_blocks):
-        protected = protected.replace(f'\x00CODE{i}\x00', block)
+        protected = protected.replace(f"\x00CODE{i}\x00", block)
 
     return protected
 
@@ -131,6 +136,7 @@ def format_size(size: int) -> str:
         return f"{size / (1024 * 1024):.1f}M"
     return f"{size / (1024 * 1024 * 1024):.1f}G"
 
+
 def format_tokens(n: int) -> str:
     if n < 1000:
         return str(n)
@@ -162,6 +168,5 @@ def progress_bar(current: int, total: int, width: int = 10) -> str:
     filled_str = "▮" * filled
     empty_str = "▯" * empty
     return (
-        BAR_FILLED_START + filled_str + BAR_FILLED_END
-        + BAR_EMPTY_START + empty_str + BAR_EMPTY_END
+        BAR_FILLED_START + filled_str + BAR_FILLED_END + BAR_EMPTY_START + empty_str + BAR_EMPTY_END
     )

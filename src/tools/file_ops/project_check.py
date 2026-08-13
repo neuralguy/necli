@@ -21,7 +21,11 @@ def _has_tsconfig(root: Path) -> bool:
 def _run(cmd: list[str], cwd: Path) -> tuple[int, str]:
     try:
         r = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=_TIMEOUT,
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
         )
         out = (r.stdout or "") + (r.stderr or "")
         return r.returncode, out.strip()
@@ -34,11 +38,10 @@ def _run(cmd: list[str], cwd: Path) -> tuple[int, str]:
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT) -> str:
-    if len(text) <= limit:
-        return text
-    head = text[: limit // 2]
-    tail = text[-limit // 2 :]
-    return f"{head}\n... [{len(text) - limit} chars skipped] ...\n{tail}"
+    """Обрезает длинный текст, сохраняя начало и конец (единый формат)."""
+    from tools.text_utils import truncate_middle
+
+    return truncate_middle(text, limit)
 
 
 def run_project_check(working_dir: str, changed_files: set[str]) -> str:
@@ -53,10 +56,7 @@ def run_project_check(working_dir: str, changed_files: set[str]) -> str:
     if not root.is_dir():
         return ""
 
-    ts_files = [
-        f for f in changed_files
-        if Path(f).suffix in _TS_EXT and (root / f).is_file()
-    ]
+    ts_files = [f for f in changed_files if Path(f).suffix in _TS_EXT and (root / f).is_file()]
 
     blocks: list[str] = []
 

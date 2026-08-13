@@ -6,6 +6,8 @@ import time
 
 import config
 import models as app_models
+from config._atomic import atomic_write_json
+from config.paths import safe_child_path
 from logger import logger
 from session._time import format_msk
 from session.message import Message
@@ -48,12 +50,15 @@ def save(session: Session):
         _save_summary(session)
         try:
             from session.notes import save_session_notes
+
             save_session_notes(session)
         except Exception:
             logger.debug("session notes save failed", exc_info=True)
         logger.debug(
             "session.save: {} messages={} cost=${:.4f}",
-            session.id[:16], len(session.messages), session.total_cost,
+            session.id[:16],
+            len(session.messages),
+            session.total_cost,
         )
     except Exception as e:
         logger.opt(exception=True).error("session.save failed for {}: {}", session.id, e)
@@ -74,33 +79,37 @@ def _save_history(session: Session):
         "compressed_stats": session._compressed_stats,
     }
     path = session.dir / "history.json"
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(path, data)
 
 
 def _save_summary(session: Session):
     path = session.dir / "summary.json"
-    path.write_text(
-        json.dumps(session.summary(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(path, session.summary())
 
 
 def load(session_id: str) -> Session | None:
-    session_dir = config.SESSIONS_DIR / session_id
-    if session_dir.exists():
+    key = str(session_id or "").strip()
+    if not key or safe_child_path(config.SESSIONS_DIR, key) is None:
+        return None
+    if not config.SESSIONS_DIR.is_dir():
+        return None
+
+    session_dir = safe_child_path(config.SESSIONS_DIR, key)
+    if session_dir is not None and session_dir.is_dir():
         return _load_from_dir(session_dir)
 
-    matches = []
-    for d in config.SESSIONS_DIR.iterdir():
-        if d.is_dir() and d.name.startswith(session_id):
-            matches.append(d)  # noqa: PERF401
+    try:
+        dirs = [d for d in config.SESSIONS_DIR.iterdir() if d.is_dir()]
+    except OSError:
+        logger.debug("session.load: cannot list {}", config.SESSIONS_DIR, exc_info=True)
+        return None
+
+    matches = [d for d in dirs if d.name.startswith(key)]
     if len(matches) == 1:
         return _load_from_dir(matches[0])
 
     if not matches:
-        for d in config.SESSIONS_DIR.iterdir():
-            if d.is_dir() and session_id in d.name:
-                matches.append(d)  # noqa: PERF401
+        matches = [d for d in dirs if key in d.name]
         if len(matches) == 1:
             return _load_from_dir(matches[0])
 
@@ -114,40 +123,82 @@ def _load_from_dir(session_dir) -> Session | None:
         return None
     try:
         data = json.loads(history_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
+        if not isinstance(data, dict):
+            raise ValueError("history root must be a JSON object")
+        raw_messages = data.get("messages", [])
+        if not isinstance(raw_messages, list) or not all(isinstance(m, dict) for m in raw_messages):
+            raise ValueError("history.messages must be a list of objects")
+    except (json.JSONDecodeError, OSError, ValueError) as e:
         logger.error("session.load: parse error in {}: {}", history_path, e)
         return None
 
+    # Directory name is the authoritative id. Trusting history.json here would
+    # let a corrupt/tampered file redirect subsequent saves outside sessions/.
     session = Session(
-        session_id=data.get("id", session_dir.name),
+        session_id=session_dir.name,
         site=data.get("site", ""),
         working_dir=data.get("working_dir", ""),
     )
     session.title = data.get("title", "")
     session.created_at = data.get("created_at", time.time())
     session.updated_at = data.get("updated_at", session.created_at)
-    session.messages = [Message.from_dict(m) for m in data.get("messages", [])]
-    session._compressed_stats = data.get("compressed_stats")
+    try:
+        session.messages = [Message.from_dict(m) for m in raw_messages]
+    except (KeyError, TypeError, ValueError) as e:
+        logger.error("session.load: invalid message in {}: {}", history_path, e)
+        return None
+    compressed_stats = data.get("compressed_stats")
+    session._compressed_stats = compressed_stats if isinstance(compressed_stats, dict) else None
 
     return session
 
 
-def list_sessions(limit: int = 20) -> list[dict]:
+def list_sessions(limit: int = 20, fast: bool = False) -> list[dict]:
+    """Метаданные сессий, новые первыми.
+
+    Отбор идёт в две фазы: сначала дешёвое чтение summary.json у всех
+    сессий (без пересчёта цен и без чтения history.json) — только для
+    сортировки; дорогое уточнение — только для попавших в limit.
+    Иначе панель приветствия с 4 последними сессиями платила бы за все сотни.
+    """
     sessions = []
     if not config.SESSIONS_DIR.exists():
         return sessions
-    for session_dir in config.SESSIONS_DIR.iterdir():
+    try:
+        session_dirs = list(config.SESSIONS_DIR.iterdir())
+    except OSError:
+        logger.debug("session.list: cannot list {}", config.SESSIONS_DIR, exc_info=True)
+        return sessions
+    for session_dir in session_dirs:
         if not session_dir.is_dir():
             continue
-        info = _read_summary(session_dir)
+        info = _read_summary(session_dir, fast=True)
         if not info:
             info = _read_summary_from_history(session_dir)
         if info and info.get("messages", 0) > 0:
             sessions.append(info)
     sessions.sort(key=lambda s: s.get("updated_at", s.get("created_at", 0)), reverse=True)
     if limit > 0:
-        return sessions[:limit]
+        sessions = sessions[:limit]
+    for info in sessions:
+        data = info.pop(_SUMMARY_RAW, None)
+        if not fast and data is not None:
+            _enrich_summary(info, data)
     return sessions
+
+
+def _enrich_summary(info: dict, data: dict) -> None:
+    """Досчитывает in-place то, что в fast-режиме намеренно пропущено."""
+    session_dir = config.SESSIONS_DIR / info["id"]
+    try:
+        info["tokens"] = _get_context_tokens(data, session_dir)
+        info["cost"] = _recalc_summary_total_cost(data)
+        if str(info.get("title", "")).rstrip().endswith(("...", "\u2026")):
+            hist = _read_summary_from_history(session_dir)
+            if hist and hist.get("title"):
+                info["title"] = hist["title"]
+    except Exception:
+        logger.debug("_enrich_summary: {} failed", session_dir, exc_info=True)
 
 
 def _get_context_tokens(summary_data: dict, session_dir) -> int:
@@ -164,6 +215,11 @@ def _get_context_tokens(summary_data: dict, session_dir) -> int:
     return summary_data.get("total_tokens", 0)
 
 
+# Сырой summary.json, проброшенный из fast-чтения в _enrich_summary. Ключ
+# удаляется в list_sessions, так что наружу он не вытекает.
+_SUMMARY_RAW = "_summary_raw"
+
+
 def _preview_title(content: str) -> str:
     return " ".join(str(content).split())
 
@@ -177,22 +233,24 @@ def _first_user_message_title(msgs: list, fallback: str) -> str:
     return fallback
 
 
-def _read_summary(session_dir) -> dict | None:
+def _read_summary(session_dir, *, fast: bool = False) -> dict | None:
     summary_path = session_dir / "summary.json"
     if not summary_path.exists():
         return None
     try:
         data = json.loads(summary_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("summary root must be a JSON object")
         created = data.get("created_at", 0)
         updated = data.get("updated_at", created)
-        title = data.get("title", "")
-        if str(title).rstrip().endswith(("...", "…")):
+        title = str(data.get("title", ""))
+        if not fast and title.rstrip().endswith(("...", "…")):
             hist = _read_summary_from_history(session_dir)
             if hist and hist.get("title"):
                 title = hist["title"]
 
         return {
-            "id": data.get("id", session_dir.name),
+            "id": session_dir.name,
             "title": title,
             "site": data.get("site", ""),
             "working_dir": data.get("working_dir", ""),
@@ -201,10 +259,19 @@ def _read_summary(session_dir) -> dict | None:
             "updated_at": updated,
             "updated": data.get("updated", format_msk(updated, short=True)),
             "messages": data.get("messages", 0),
-            "tokens": _get_context_tokens(data, session_dir),
-            "cost": _recalc_summary_total_cost(data),
+            "tokens": (
+                data.get("context_tokens", data.get("total_tokens", 0))
+                if fast
+                else _get_context_tokens(data, session_dir)
+            ),
+            "cost": (
+                float(data.get("total_cost", 0.0) or 0.0)
+                if fast
+                else _recalc_summary_total_cost(data)
+            ),
             "models": data.get("models", []),
             "last_model": data.get("last_model", ""),
+            **({_SUMMARY_RAW: data} if fast else {}),
         }
     except Exception:
         logger.debug("_read_summary: parse {} failed", summary_path, exc_info=True)
@@ -213,8 +280,11 @@ def _read_summary(session_dir) -> dict | None:
 
 def _recalc_summary_total_cost(data: dict) -> float:
     cbm = data.get("cost_by_model") or {}
-    if not cbm:
-        return float(data.get("total_cost", 0.0) or 0.0)
+    if not isinstance(cbm, dict) or not cbm:
+        try:
+            return float(data.get("total_cost", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
     total = _compressed_total_cost(data)
     for model, mdata in cbm.items():
         if model in ("unknown", ""):
@@ -229,7 +299,11 @@ def _read_summary_from_history(session_dir) -> dict | None:
         return None
     try:
         data = json.loads(history_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("history root must be a JSON object")
         msgs = data.get("messages", [])
+        if not isinstance(msgs, list) or not all(isinstance(m, dict) for m in msgs):
+            raise ValueError("history.messages must be a list of objects")
         msg_count = sum(1 for m in msgs if m.get("role") == "user")
         total_tokens = sum(m.get("tokens", 0) for m in msgs)
 
@@ -245,7 +319,7 @@ def _read_summary_from_history(session_dir) -> dict | None:
         updated = data.get("updated_at", created)
 
         return {
-            "id": data.get("id", session_dir.name),
+            "id": session_dir.name,
             "title": _first_user_message_title(msgs, data.get("title", "")),
             "site": data.get("site", ""),
             "working_dir": data.get("working_dir", ""),
@@ -266,8 +340,10 @@ def _read_summary_from_history(session_dir) -> dict | None:
 
 def _empty_statistics(days: int | None = None) -> dict:
     stats: dict = {
-        "total_sessions": 0, "total_messages": 0,
-        "total_input_tokens": 0, "total_output_tokens": 0,
+        "total_sessions": 0,
+        "total_messages": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
         "total_cost": 0.0,
         "by_model": {},
     }
@@ -279,8 +355,11 @@ def _empty_statistics(days: int | None = None) -> dict:
 def _ensure_model_stats(stats: dict, model: str) -> dict:
     if model not in stats["by_model"]:
         stats["by_model"][model] = {
-            "sessions": 0, "messages": 0, "input_tokens": 0,
-            "output_tokens": 0, "cost": 0.0,
+            "sessions": 0,
+            "messages": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": 0.0,
         }
     return stats["by_model"][model]
 
@@ -292,7 +371,11 @@ def _get_period_statistics_from_history(days: int) -> dict:
         return stats
 
     input_roles = {"user", "system", "tool_result"}
-    for session_dir in config.SESSIONS_DIR.iterdir():
+    try:
+        session_dirs = list(config.SESSIONS_DIR.iterdir())
+    except OSError:
+        return stats
+    for session_dir in session_dirs:
         if not session_dir.is_dir():
             continue
         # summary.updated_at — авторитетный признак последней активности сессии:
@@ -313,6 +396,8 @@ def _get_period_statistics_from_history(days: int) -> dict:
             continue
         try:
             data = json.loads(history_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("messages", []), list):
+                continue
         except Exception:
             continue
 
@@ -323,6 +408,8 @@ def _get_period_statistics_from_history(days: int) -> dict:
         input_buffer: list[int] = []
 
         for msg in data.get("messages", []):
+            if not isinstance(msg, dict):
+                continue
             role = msg.get("role", "")
             timestamp = float(msg.get("timestamp") or 0)
             tokens = int(msg.get("tokens") or 0)
@@ -350,10 +437,7 @@ def _get_period_statistics_from_history(days: int) -> dict:
                 output_tokens = tokens
 
             price_in, price_out = app_models.get_pricing(model)
-            cost = (
-                input_tokens * price_in / 1_000_000
-                + output_tokens * price_out / 1_000_000
-            )
+            cost = input_tokens * price_in / 1_000_000 + output_tokens * price_out / 1_000_000
 
             model_stats = _ensure_model_stats(stats, model)
             model_stats["input_tokens"] += input_tokens
@@ -395,7 +479,11 @@ def get_statistics(days: int | None = None) -> dict:
     if not config.SESSIONS_DIR.exists():
         return stats
 
-    for session_dir in config.SESSIONS_DIR.iterdir():
+    try:
+        session_dirs = list(config.SESSIONS_DIR.iterdir())
+    except OSError:
+        return stats
+    for session_dir in session_dirs:
         if not session_dir.is_dir():
             continue
         summary_path = session_dir / "summary.json"
@@ -403,6 +491,8 @@ def get_statistics(days: int | None = None) -> dict:
             continue
         try:
             data = json.loads(summary_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
         except Exception:
             continue
 
@@ -413,8 +503,11 @@ def get_statistics(days: int | None = None) -> dict:
         session_input = 0
         session_output = 0
         session_total_cost = _compressed_total_cost(data)
-        for model, mdata in data.get("cost_by_model", {}).items():
-            if model in ("unknown", ""):
+        cost_by_model = data.get("cost_by_model", {})
+        if not isinstance(cost_by_model, dict):
+            cost_by_model = {}
+        for model, mdata in cost_by_model.items():
+            if model in ("unknown", "") or not isinstance(mdata, dict):
                 continue
             session_models.add(model)
             m_input = mdata.get("input_tokens", 0)
@@ -453,4 +546,3 @@ def get_statistics(days: int | None = None) -> dict:
                     stats["by_model"][m]["messages"] += per_model
 
     return stats
-

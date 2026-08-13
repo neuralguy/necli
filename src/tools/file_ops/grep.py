@@ -46,7 +46,10 @@ def execute_grep(call: ToolCall) -> ToolResult:
     command = f"grep {path_arg}"
     if not root.is_dir() and not root.is_file():
         return ToolResult(
-            name="grep", status="error", exit_code=1, command=command,
+            name="grep",
+            status="error",
+            exit_code=1,
+            command=command,
             output=f"Search path is not a file or directory: {path_arg}",
         )
 
@@ -56,15 +59,25 @@ def execute_grep(call: ToolCall) -> ToolResult:
     include = _includes(args.get("include"))
     if not pattern and not include:
         return ToolResult(
-            name="grep", status="error", exit_code=1, command=command,
+            name="grep",
+            status="error",
+            exit_code=1,
+            command=command,
             output="Provide pattern to search file contents or include to list matching files.",
         )
 
     try:
-        regex = re.compile(pattern, 0 if args.get("case_sensitive") else re.IGNORECASE) if pattern else None
+        regex = (
+            re.compile(pattern, 0 if args.get("case_sensitive") else re.IGNORECASE)
+            if pattern
+            else None
+        )
     except re.error as exc:
         return ToolResult(
-            name="grep", status="error", exit_code=1, command=command,
+            name="grep",
+            status="error",
+            exit_code=1,
+            command=command,
             output=f"Invalid regular expression: {exc}",
         )
 
@@ -98,7 +111,10 @@ def execute_grep(call: ToolCall) -> ToolResult:
 
     if not results:
         return ToolResult(
-            name="grep", status="ok", exit_code=0, command=command,
+            name="grep",
+            status="ok",
+            exit_code=0,
+            command=command,
             output="No matches found.",
         )
     summary = f"{len(results)} result(s)"
@@ -107,6 +123,9 @@ def execute_grep(call: ToolCall) -> ToolResult:
     if len(results) >= limit:
         summary += f" (limited to {limit})"
     return ToolResult(
-        name="grep", status="ok", exit_code=0, command=command,
+        name="grep",
+        status="ok",
+        exit_code=0,
+        command=command,
         output=f"{summary}:\n" + "\n".join(results),
     )

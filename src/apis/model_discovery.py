@@ -21,7 +21,9 @@ from logger import logger
 _PRESERVE_PRICES_PROVIDERS = {"openai", "anthropic", "google", "xai"}
 
 
-async def _fetch_openai_compatible(base_url: str, headers: dict[str, str], timeout: int) -> list[dict]:
+async def _fetch_openai_compatible(
+    base_url: str, headers: dict[str, str], timeout: int
+) -> list[dict]:
     """GET {base_url}/models → список моделей в OpenAI-формате."""
     url = base_url.rstrip("/") + "/models"
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=30.0)) as client:
@@ -65,13 +67,15 @@ async def _fetch_openai_compatible(base_url: str, headers: dict[str, str], timeo
             except (TypeError, ValueError):
                 pass
         display_name = item.get("name") or item.get("display_name") or model_id
-        result.append({
-            "id": model_id,
-            "display_name": display_name,
-            "context_window": int(ctx),
-            "input_price": float(input_price),
-            "output_price": float(output_price),
-        })
+        result.append(
+            {
+                "id": model_id,
+                "display_name": display_name,
+                "context_window": int(ctx),
+                "input_price": float(input_price),
+                "output_price": float(output_price),
+            }
+        )
     return result
 
 
@@ -98,15 +102,17 @@ async def _fetch_ollama(base_url: str, timeout: int) -> list[dict]:
         # context_length из details или дефолт
         details = m.get("details") or {}
         ctx = details.get("context_length") or 32768
-        size_gb = (m.get("size") or 0) / (1024 ** 3)
+        size_gb = (m.get("size") or 0) / (1024**3)
         hint = f"{size_gb:.1f}GB" if size_gb else ""
-        result.append({
-            "id": name,
-            "display_name": f"{name} ({hint})" if hint else name,
-            "context_window": int(ctx),
-            "input_price": 0.0,
-            "output_price": 0.0,
-        })
+        result.append(
+            {
+                "id": name,
+                "display_name": f"{name} ({hint})" if hint else name,
+                "context_window": int(ctx),
+                "input_price": 0.0,
+                "output_price": 0.0,
+            }
+        )
     return result
 
 
@@ -180,6 +186,7 @@ def discover_models(provider_id: str) -> list[dict]:
 
     if running is not None:
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, _discover_async(provider_id))
             return future.result(timeout=60)
@@ -215,8 +222,12 @@ def sync_models(provider_id: str, *, replace: bool = False) -> dict[str, Any]:
             removed.append(old_id)
         for m in discovered:
             add_model_to_provider(
-                provider_id, m["id"], m["display_name"],
-                m["context_window"], m["input_price"], m["output_price"],
+                provider_id,
+                m["id"],
+                m["display_name"],
+                m["context_window"],
+                m["input_price"],
+                m["output_price"],
             )
             added.append(m["id"])
     else:
@@ -230,8 +241,12 @@ def sync_models(provider_id: str, *, replace: bool = False) -> dict[str, Any]:
             in_price = 0.0 if preserve_prices else m["input_price"]
             out_price = 0.0 if preserve_prices else m["output_price"]
             add_model_to_provider(
-                provider_id, m["id"], m["display_name"],
-                m["context_window"], in_price, out_price,
+                provider_id,
+                m["id"],
+                m["display_name"],
+                m["context_window"],
+                in_price,
+                out_price,
             )
             added.append(m["id"])
 

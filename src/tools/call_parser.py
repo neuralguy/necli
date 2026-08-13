@@ -12,17 +12,31 @@ from logger import logger
 from ._html_unescape import has_html_entities as _has_html_entities
 from ._html_unescape import maybe_unescape as _maybe_unescape_html
 from .json_repair import robust_json_loads as _robust_json_loads
+from .models import TOOL_TITLE_ARG as _TOOL_DISPLAY_ARG
 from .models import ToolCall
 
-NAMED_TOOLS = frozenset({
-    "read", "grep", "patch_file",
-    "create_file", "poll", "skill", "shell", "web_search", "web_fetch",
-    "subagent", "create_docx", "docx_screenshot", "expand_tool_result",
-    "lsp_references", "lsp_diagnostics",
-    "memory_write", "memory_list", "memory_read",
-})
+NAMED_TOOLS = frozenset(
+    {
+        "read",
+        "grep",
+        "patch_file",
+        "create_file",
+        "poll",
+        "skill",
+        "shell",
+        "web_search",
+        "web_fetch",
+        "subagent",
+        "docx",
+        "pptx",
+        "expand_tool_result",
+        "lsp_references",
+        "lsp_diagnostics",
+        "memory",
+    }
+)
 
-_CONTENT_TOOLS = frozenset({"create_file", "create_docx"})
+_CONTENT_TOOLS = frozenset({"create_file"})
 _PATCH_TOOLS = frozenset({"patch_file"})
 
 # Fence: :::call <tool> ... call:::
@@ -69,26 +83,23 @@ _STRIP_CALL_TRUNCATED_RE = re.compile(
 )
 
 _ATTR_RE = re.compile(
-    r'(?P<key>[a-zA-Z_]\w*)\s*=\s*'
+    r"(?P<key>[a-zA-Z_]\w*)\s*=\s*"
     r'(?:"(?P<qval>(?:[^"\\]|\\.)*)"|(?P<bval>\S+))'
 )
 
 _INT_ATTRS = frozenset({"line", "depth", "context", "max_results"})
-_BOOL_ATTRS = frozenset({
-    "all", "force", "ignore_case", "literal", "long", "fetch",
-    "background",
-})
+_BOOL_ATTRS = frozenset(
+    {
+        "all",
+        "force",
+        "ignore_case",
+        "literal",
+        "long",
+        "fetch",
+        "background",
+    }
+)
 
-_TOOL_DISPLAY_ARG = {
-    "web_fetch": "urls",
-    "web_search": "queries",
-    "skill": "name",
-    "memory_read": "name",
-    "memory_write": "name",
-    "poll": "question",
-    "subagent": "prompt",
-    "expand_tool_result": "id",
-}
 
 def _coerce_attr(key, val):
     if key in _INT_ATTRS:
@@ -104,6 +115,7 @@ def _coerce_attr(key, val):
             return False
     return val
 
+
 def _parse_attrs(header):
     attrs = {}
     if not header or not header.strip():
@@ -111,11 +123,12 @@ def _parse_attrs(header):
     for m in _ATTR_RE.finditer(header):
         key = m.group("key")
         if m.group("qval") is not None:
-            val = m.group("qval").replace(r'\"', '"').replace(r"\\", "\\")
+            val = m.group("qval").replace(r"\"", '"').replace(r"\\", "\\")
         else:
             val = m.group("bval")
         attrs[key] = _coerce_attr(key, val)
     return attrs
+
 
 _SECTION_LINE_RE = re.compile(
     r"^[ \t]*---[ \t]+(FIND|REPLACE|INSERT)[ \t]+---[ \t]*$",
@@ -185,7 +198,7 @@ def _split_patch_sections(body):
         # (модели часто пишут его по аналогии с FIND/REPLACE).
         end_m = _END_MARKER_RE.search(content)
         if end_m:
-            content = content[:end_m.start()]
+            content = content[: end_m.start()]
         if content.endswith("\n"):
             content = content[:-1]
         sections.append((kind, content))
@@ -197,6 +210,7 @@ def _split_patch_sections(body):
     while len(sections) > 1 and sections[-1][1] == "":
         sections.pop()
     return sections
+
 
 def _build_patch_args(body, attrs):
     args = {}
@@ -222,10 +236,12 @@ def _build_patch_args(body, attrs):
         elif kind == "REPLACE":
             if pending_find is None:
                 continue
-            pairs.append({
-                "find": _maybe_unescape_html(pending_find),
-                "replace": _maybe_unescape_html(content),
-            })
+            pairs.append(
+                {
+                    "find": _maybe_unescape_html(pending_find),
+                    "replace": _maybe_unescape_html(content),
+                }
+            )
             pending_find = None
 
     if len(pairs) == 1:
@@ -236,8 +252,10 @@ def _build_patch_args(body, attrs):
 
     return args if args else None
 
+
 def _strip_one_trailing_newline(s):
     return s[:-1] if s.endswith("\n") else s
+
 
 def _parse_content_tool(body, attrs):
     if "path" not in attrs:
@@ -251,6 +269,7 @@ def _parse_content_tool(body, attrs):
     if "encoding" in attrs:
         args["encoding"] = attrs["encoding"]
     return args
+
 
 def _parse_json_body(body):
     body = body.strip()
@@ -266,10 +285,12 @@ def _parse_json_body(body):
     # приехать html-эскейпленными (прокси OnlySQ эскейпит и аргументы tool_calls).
     # Канонический unescape_nested рекурсивно проходит dict/list/str.
     from tools._html_unescape import unescape_nested as _unescape_nested
+
     parsed = _unescape_nested(parsed)
     if not isinstance(parsed, dict):
         return {"value": parsed}
     return parsed
+
 
 def _is_known_tool(tool_name: str) -> bool:
     if tool_name in NAMED_TOOLS:
@@ -280,9 +301,10 @@ def _is_known_tool(tool_name: str) -> bool:
     # реестр, статический set лишь ускоряет частый путь.
     try:
         from tools.registry import TOOL_REGISTRY
+
         return tool_name in TOOL_REGISTRY
     except Exception:
-        logger.debug("TOOL_REGISTRY lookup failed for %r", tool_name, exc_info=True)
+        logger.debug("TOOL_REGISTRY lookup failed for {!r}", tool_name, exc_info=True)
         return False
 
 
@@ -293,15 +315,11 @@ def _is_known_tool(tool_name: str) -> bool:
 # сам матчит 2-3 двоеточия, исполнение ::call больше НЕ зависит от этой функции —
 # она лишь приводит маркеры к каноничным `:::` перед записью в историю/диспелй,
 # чтобы хранимый текст был единообразным.
-_MALFORMED_OPEN_FIX_RE = re.compile(
-    r"(?m)^([ \t]*):{2,3}call([ \t]+)([a-zA-Z_]\w*)"
-)
+_MALFORMED_OPEN_FIX_RE = re.compile(r"(?m)^([ \t]*):{2,3}call([ \t]+)([a-zA-Z_]\w*)")
 # Кривое закрытие: голый маркер `call::` на своей строке → `call:::`. Требуем
 # 2-3 двоеточия (не голое слово `call`, чтобы не задеть прозу/код, где `call`
 # может стоять отдельной строкой).
-_MALFORMED_CLOSE_FIX_RE = re.compile(
-    r"(?m)^([ \t]*)call:{2,3}([ \t]*)$"
-)
+_MALFORMED_CLOSE_FIX_RE = re.compile(r"(?m)^([ \t]*)call:{2,3}([ \t]*)$")
 
 
 def normalize_call_markers(text: str) -> str:
@@ -336,7 +354,8 @@ def parse_call_block(tool_name, attrs_header, body, raw):
     if not _is_known_tool(tool_name):
         logger.warning(
             "parse_call_block: unknown tool '{}' (body_preview={!r})",
-            tool_name, (body or "")[:120],
+            tool_name,
+            (body or "")[:120],
         )
         return None
 
@@ -385,12 +404,13 @@ def parse_call_block(tool_name, attrs_header, body, raw):
     if args is None:
         logger.warning(
             "parse_call_block: tool '{}' parsed to None (body_preview={!r})",
-            tool_name, (body or "")[:160],
+            tool_name,
+            (body or "")[:160],
         )
         return None
 
     # Content and patch tools REQUIRE path. Without it, the block is malformed.
-    if tool_name in _CONTENT_TOOLS or tool_name in _PATCH_TOOLS:  # noqa: SIM102
+    if tool_name in _CONTENT_TOOLS or tool_name in _PATCH_TOOLS:
         if not isinstance(args, dict) or not args.get("path"):
             logger.warning(
                 "parse_call_block: tool '{}' missing 'path' in fence header",
@@ -438,6 +458,7 @@ def parse_call_block(tool_name, attrs_header, body, raw):
         raw=raw,
     )
 
+
 def iter_call_blocks(text):
     masked = _mask_code_regions(text)
     for m in _CALL_BLOCK_RE.finditer(masked):
@@ -453,6 +474,7 @@ def iter_call_blocks(text):
         )
         yield real, call
 
+
 def parse_call_calls(text):
     # Чиним кривые маркеры (::call → :::call) перед финальным разбором, чтобы
     # near-miss модели всё равно ИСПОЛНИЛСЯ, а не потерялся. Только здесь —
@@ -463,6 +485,7 @@ def parse_call_calls(text):
         if call is not None:
             calls.append(call)
     return calls
+
 
 def strip_call_calls(text):
     # Находим спаны блоков по маске, удаляем из оригинала с конца.
@@ -486,8 +509,10 @@ def strip_call_calls(text):
         result = result[:s] + result[e:]
     return result
 
+
 def has_call_calls(text):
     return bool(_CALL_BLOCK_RE.search(_mask_code_regions(text)))
+
 
 def find_next_complete_call(text, offset=0):
     masked = _mask_code_regions(text)
@@ -505,6 +530,7 @@ def find_next_complete_call(text, offset=0):
         "body": real.group("body"),
         "raw": real.group(0),
     }
+
 
 def find_next_partial_call(text, offset=0):
     masked = _mask_code_regions(text)
@@ -526,6 +552,7 @@ def find_next_partial_call(text, offset=0):
         "raw": real.group(0),
     }
 
+
 def find_next_call_start(text, offset=0):
     masked = _mask_code_regions(text)
     c = _CALL_BLOCK_RE.search(masked, offset)
@@ -537,3 +564,16 @@ def find_next_call_start(text, offset=0):
     if p:
         return p.start()
     return None
+
+
+__all__ = [
+    "find_next_call_start",
+    "find_next_complete_call",
+    "find_next_partial_call",
+    "has_call_calls",
+    "iter_call_blocks",
+    "normalize_call_markers",
+    "parse_call_block",
+    "parse_call_calls",
+    "strip_call_calls",
+]

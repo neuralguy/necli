@@ -51,22 +51,33 @@ def _find_at_reference(text, cursor_pos):
             return None
     if at_pos < 0:
         return None
-    return left[at_pos + 1:]
+    return left[at_pos + 1 :]
+
 
 def _slash_commands():
     """Команды + метаданные для автокомплита.
 
-    Возвращает [(name, desc_key, args_hint, toggle_config_key)], отсортировано
+    Возвращает [(name, desc_key, args_hint, toggle_config_key, action)], отсортировано
     по категории и canonical name. Берётся из commands/registry.
     """
     from commands.registry import CATEGORIES, COMMANDS
+
     cat_order = {cat: i for i, (cat, _) in enumerate(CATEGORIES)}
     items = []
     for c in COMMANDS:
         if not c.completable:
             continue
-        items.append((c.name, c.desc_key, c.args_hint, c.toggle_config_key, cat_order.get(c.category, 99)))
-    items.sort(key=lambda x: (x[4], x[0]))
+        items.append(
+            (
+                c.name,
+                c.desc_key,
+                c.args_hint,
+                c.toggle_config_key,
+                c.action,
+                cat_order.get(c.category, 99),
+            )
+        )
+    items.sort(key=lambda x: (x[5], x[0]))
     return items
 
 
@@ -79,7 +90,8 @@ class SlashCommandCompleter(Completer):
             return
         text_lower = text.lower()
         from config.settings import get as _cfg_get
-        for name, desc_key, args_hint, toggle_key, _order in _slash_commands():
+
+        for name, desc_key, args_hint, toggle_key, _action, _order in _slash_commands():
             if not name.startswith(text_lower):
                 continue
             if toggle_key:
@@ -92,7 +104,7 @@ class SlashCommandCompleter(Completer):
                 name,
                 start_position=-len(text),
                 display=name + suffix,
-                display_meta=_(desc_key),
+                display_meta=_(desc_key).rstrip().rstrip(".。!;"),
             )
 
 
@@ -143,7 +155,7 @@ class FileAtCompleter(Completer):
             name_part = rel_path.rstrip("/")
             if "/" in name_part:
                 name_part = name_part.rsplit("/", 1)[-1]
-            if filter_lower and not name_part.lower().startswith(filter_lower):  # noqa: SIM102
+            if filter_lower and not name_part.lower().startswith(filter_lower):
                 if filter_lower not in name_part.lower():
                     continue
             start_position = -len(ref)

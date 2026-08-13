@@ -48,7 +48,7 @@ from commands.helpers import (
 from commands.interactive_state import InteractiveState
 from commands.interactive_status import build_status_line
 from commands.slash import _handle_slash
-from commands.slash_handler import handle_slash_result
+from commands.slash_handler import handle_slash_result, stop_background_commit_tasks
 from config.i18n import t as tr
 from config.themes import t
 from session import Session
@@ -107,6 +107,7 @@ def _start_data_cleanup() -> None:
     def _worker() -> None:
         try:
             from config.data_cleanup import maybe_cleanup
+
             maybe_cleanup()
         except Exception:
             logger.debug("data cleanup worker failed", exc_info=True)
@@ -125,6 +126,7 @@ def _set_activity_status(state: InteractiveState, status: str) -> None:
         return
     try:
         from ui.terminal_title import set_session_terminal_title
+
         set_session_terminal_title(state.session, status)
     except Exception:
         logger.debug("terminal activity status update failed", exc_info=True)
@@ -150,6 +152,7 @@ def _make_status_refresher(state: InteractiveState) -> Callable[[], None]:
     выполнение _refresh_status оттуда читало бы очередь параллельно с
     loop-потоком. Перекидываем refresh на loop приложения.
     """
+
     def _refresh() -> None:
         shell = get_shell()
         loop = getattr(shell, "_loop", None) if shell is not None else None
@@ -164,6 +167,7 @@ def _make_status_refresher(state: InteractiveState) -> Callable[[], None]:
                 logger.debug("status refresh reschedule failed", exc_info=True)
             return
         _refresh_status(state)
+
     return _refresh
 
 
@@ -194,6 +198,9 @@ def _refresh_status(state: InteractiveState) -> None:
             # иначе Ctrl+O увидит ctx без prompt_input.
             ctx.prompt_input = state.prompt_input
             ctx.refresh_status = _make_status_refresher(state)
+            # Ctrl+O исполняется в потоке run_in_terminal, где ContextVar
+            # не виден — храним ссылку на ctx в состоянии для этого потока.
+            state.current_ctx = ctx
     except Exception:
         logger.debug("rebind ctx status failed", exc_info=True)
 
@@ -209,7 +216,11 @@ def _ctrl_o_replay(state: InteractiveState) -> None:
     try:
         from agent.display import is_expanded_preview
         from agent.render_replay import clear_terminal, replay
-        ctx = get_current_ctx()
+
+        # get_current_ctx() здесь вернёт None: run_in_terminal исполняет нас в
+        # отдельном потоке, а ctx живёт в ContextVar главного потока. Берём
+        # ссылку, сохранённую _refresh_status в главном потоке.
+        ctx = getattr(state, "current_ctx", None)
         if ctx is None:
             return
         store = getattr(ctx, "render_store", None)
@@ -228,31 +239,44 @@ def _ctrl_o_replay(state: InteractiveState) -> None:
 @click.option("--model", "-m", default=None)
 @click.option("--workdir", "-w", default=None)
 @click.option("--resume", "-r", default=None)
-@click.option("--api", "-A", "api_provider", default=None,
-              help="API provider (e.g. openai, anthropic). Activates the selected provider on startup.")
+@click.option(
+    "--api",
+    "-A",
+    "api_provider",
+    default=None,
+    help="API provider (e.g. openai, anthropic). Activates the selected provider on startup.",
+)
 def interactive(model, workdir, resume, api_provider):
     """Interactive chat session (API-only)."""
 
     if api_provider:
         from apis.registry import get_definition, reload_providers
+
         reload_providers()
         defn = get_definition(api_provider)
         if not defn:
-            console.print(f"[{t('error')}]{tr('boot.api_not_found', name=api_provider)}[/{t('error')}]")
+            console.print(
+                f"[{t('error')}]{tr('boot.api_not_found', name=api_provider)}[/{t('error')}]"
+            )
             console.print(f"[dim]{tr('boot.add_via_api')}[/dim]")
             return
-        saved_model = config.get_active_api_model() if config.get_active_api() == api_provider else ""
+        saved_model = (
+            config.get_active_api_model() if config.get_active_api() == api_provider else ""
+        )
         if saved_model and defn.get_model_info(saved_model):
             api_model = saved_model
         else:
             api_model = defn.default_model or (defn.models[0].id if defn.models else "")
         if not api_model:
-            console.print(f"[{t('error')}]{tr('boot.no_models_for', name=api_provider)}[/{t('error')}]")
+            console.print(
+                f"[{t('error')}]{tr('boot.no_models_for', name=api_provider)}[/{t('error')}]"
+            )
             return
         config.set_active_api(api_provider)
         config.set_active_api_model(api_model)
 
     from commands.onboarding import _ensure_default_provider, needs_onboarding, run_onboarding
+
     # Онбординг идёт ДО event loop и до Shell: он выбирает язык/тему/провайдера,
     # а модель ниже резолвится уже из свежего конфига. Его точка входа
     # переезжает на async (нужны оверлеи), поэтому корутину прокручиваем своим
@@ -291,9 +315,12 @@ def interactive(model, workdir, resume, api_provider):
 
         if resume:
             from session import storage as _storage
+
             session = _storage.load(resume)
             if not session:
-                console.print(f"[{t('error')}]{tr('boot.session_not_found', name=resume)}[/{t('error')}]")
+                console.print(
+                    f"[{t('error')}]{tr('boot.session_not_found', name=resume)}[/{t('error')}]"
+                )
                 return
         else:
             session = Session(working_dir=workdir)
@@ -311,12 +338,17 @@ def interactive(model, workdir, resume, api_provider):
         # включён. Сигнал в поток нужен только при переключении НА ЛЕТУ
         # (state.think_changed выставляется в /think-хендлере).
 
+        import logger as _runtime_logger
+
+        _runtime_logger.start_stall_monitor()
         try:
             from apis.agent_adapter import create_api_session, restore_api_session_history
             from apis.registry import get_definition
+
             _api_id = config.get_active_api()
             _api_model = config.get_active_api_model()
             create_api_session(_api_id, _api_model)
+            _maybe_cleanup_memory(state)
             _defn = get_definition(_api_id)
             if _defn and _api_model:
                 _minfo = _defn.get_model_info(_api_model)
@@ -332,23 +364,36 @@ def interactive(model, workdir, resume, api_provider):
             n_lsp = 0
             try:
                 from apis.lsp_client import init_lsp_from_config
+
                 n_lsp = init_lsp_from_config()
             except Exception as e:
                 logger.error("lsp init failed: %s", e, exc_info=True)
 
-            # ── MCP servers (инициализация до welcome — счётчик идёт в панель) ──
+            # ── MCP servers ───────────────────────────────────────────────
             n_mcp = 0
             mcp_tools = 0
             mcp_errors: list[tuple[str, str]] = []
-            try:
-                from apis.mcp_client import init_mcp_from_config, list_mcp_servers
-                n_mcp = init_mcp_from_config()
-                if n_mcp > 0:
+
+            def _init_mcp_boot():
+                try:
+                    from apis.mcp_client import init_mcp_from_config, list_mcp_servers
+
+                    connected = init_mcp_from_config()
                     infos = list_mcp_servers()
-                    mcp_tools = sum(i.get("tool_count", 0) for i in infos if i.get("status") == "connected")
-                    mcp_errors = [(i["id"], i.get("error", "")) for i in infos if i.get("status") == "error"]
-            except Exception as e:
-                logger.error("mcp init failed: %s", e, exc_info=True)
+                    tools = sum(
+                        i.get("tool_count", 0) for i in infos if i.get("status") == "connected"
+                    )
+                    errors = [
+                        (i["id"], i.get("error", "")) for i in infos if i.get("status") == "error"
+                    ]
+                    return connected, tools, errors
+                except Exception as e:
+                    logger.error("mcp init failed: %s", e, exc_info=True)
+                    return 0, 0, []
+
+            mcp_boot_task = asyncio.create_task(
+                asyncio.to_thread(_init_mcp_boot), name="mcp-startup"
+            )
 
             # ── Telegram bridge (если включён) — стартуем ДО welcome, чтобы
             # статус бота попал в шапку рядом с lsp/mcp ──
@@ -364,6 +409,7 @@ def interactive(model, workdir, resume, api_provider):
                         if ok:
                             tg_info = info
                             from agent.tg_menu import _build_reply_keyboard, register_tg_menu
+
                             register_tg_menu(state)
                             tg_bridge.send(
                                 f"🟢 <b>necli-api</b> started\n"
@@ -373,7 +419,9 @@ def interactive(model, workdir, resume, api_provider):
                                 reply_markup=_build_reply_keyboard(),
                             )
                         else:
-                            tg_warn = f"  [{t('warning')}]⚠ Telegram: {escape(info)}[/{t('warning')}]"
+                            tg_warn = (
+                                f"  [{t('warning')}]⚠ Telegram: {escape(info)}[/{t('warning')}]"
+                            )
                     except Exception as e:
                         tg_warn = f"  [{t('warning')}]⚠ Telegram: {escape(str(e))}[/{t('warning')}]"
                         logger.error("tg start failed: %s", e, exc_info=True)
@@ -382,19 +430,24 @@ def interactive(model, workdir, resume, api_provider):
 
             # Captureим welcome в строку, сохраняем для replay, печатаем в stdout
             with console.capture() as _wcap:
-                _print_welcome(state.cur_model, session, workdir=workdir, n_lsp=n_lsp,
-                               n_mcp=n_mcp, mcp_tools=mcp_tools, tg_info=tg_info)
+                _print_welcome(
+                    state.cur_model,
+                    session,
+                    workdir=workdir,
+                    n_lsp=n_lsp,
+                    n_mcp=n_mcp,
+                    mcp_tools=mcp_tools,
+                    tg_info=tg_info,
+                )
             _welcome_text = _wcap.get()
             if _welcome_text:
                 console.print(_welcome_text, end="", highlight=False, markup=False)
             try:
                 import agent.render_replay as _rr
+
                 _rr._LAST_WELCOME_CAPTURE = _welcome_text
             except Exception:
                 logger.debug("store welcome capture failed", exc_info=True)
-
-            for _sid, _err in mcp_errors:
-                console.print(f"  [{t('warning')}]⚠ MCP/{_sid}:[/{t('warning')}] [dim]{escape(_err)}[/dim]")
 
             if tg_warn:
                 console.print(tg_warn)
@@ -402,6 +455,7 @@ def interactive(model, workdir, resume, api_provider):
             if resume and _resume_loaded:
                 try:
                     from agent.render_replay import print_session_history
+
                     print_session_history(session, max_messages=20)
                 except Exception:
                     logger.debug("print_session_history failed", exc_info=True)
@@ -421,7 +475,9 @@ def interactive(model, workdir, resume, api_provider):
             shell.on_ctrl_o = lambda: _ctrl_o_replay(state)
 
             state.prompt_input = InputPrompt(
-                working_dir=workdir, on_mode_toggle=_toggle_mode, shell=shell,
+                working_dir=workdir,
+                on_mode_toggle=_toggle_mode,
+                shell=shell,
             )
             state.prompt_input.session = state.session
             state.prompt_input.status_provider = lambda: build_status_line(state)
@@ -430,6 +486,7 @@ def interactive(model, workdir, resume, api_provider):
             # задача сможет разбудить агента (авто-резюм) через _bg_pump.
             try:
                 from tools.background import register_event_loop
+
                 register_event_loop(asyncio.get_running_loop())
             except Exception:
                 logger.debug("background event-loop register failed", exc_info=True)
@@ -458,6 +515,26 @@ def interactive(model, workdir, resume, api_provider):
                 # синглтон, и set_status ушёл бы в никуда — рамка стартовала бы
                 # с пустой верхней линией.
                 _refresh_status(state)
+
+                if not mcp_boot_task.done():
+                    from rich.text import Text
+
+                    _mcp_spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+                    def _mcp_startup_frame():
+                        import time as _time
+
+                        frame = int(_time.monotonic() * 10) % len(_mcp_spin)
+                        return Text(f"  {_mcp_spin[frame]} MCP · connecting", style=t("info"))
+
+                    shell.set_dynamic("startup-mcp", _mcp_startup_frame)
+                try:
+                    n_mcp, mcp_tools, mcp_errors = await mcp_boot_task
+                finally:
+                    shell.clear_dynamic("startup-mcp")
+                for _sid, _err in mcp_errors:
+                    shell.print_static(f"⚠ MCP/{_sid}: {escape(_err)}")
+
                 pumps = [
                     asyncio.create_task(_tg_pump(state, tg_bridge), name="tg-pump"),
                     asyncio.create_task(_bg_pump(state), name="bg-pump"),
@@ -489,13 +566,12 @@ def interactive(model, workdir, resume, api_provider):
                             kind = SUBMIT_SLASH
 
                         if kind == SUBMIT_SLASH:
-                            if is_immediate_slash(text) and (
-                                immediate is None or immediate.done()
-                            ):
+                            if is_immediate_slash(text) and (immediate is None or immediate.done()):
                                 # Команды-виджеты идут мимо очереди, но строго по
                                 # одной: два оверлея одновременно Shell не держит.
                                 immediate = asyncio.create_task(
-                                    _run_slash(state, text), name="slash-now")
+                                    _run_slash(state, text), name="slash-now"
+                                )
                                 immediate.add_done_callback(_log_task_error)
                             else:
                                 queue.submit_slash(text)
@@ -503,9 +579,6 @@ def interactive(model, workdir, resume, api_provider):
 
                         if kind in (SUBMIT_USER, SUBMIT_TG):
                             if kind == SUBMIT_USER:
-                                # Маркеры многострочных вставок раскрываем здесь:
-                                # буфером владеет Shell, хука истории больше нет.
-                                text = state.prompt_input.expand_submitted(text)
                                 _mirror_user_to_tg(text, tg_bridge)
                             _set_activity_status(state, "working")
                             queue.submit_user(text)
@@ -520,25 +593,37 @@ def interactive(model, workdir, resume, api_provider):
                             with contextlib.suppress(asyncio.CancelledError, Exception):
                                 await task
                     await queue.stop()
+                    from agent.loop import stop_background_subagent_tasks
+
+                    await stop_background_subagent_tasks()
                     await _stop_recap_tasks(state)
+                    await _stop_memory_tasks(state)
                     await _stop_round_compress_task(state)
+                    await stop_background_commit_tasks()
+                    from commands.menus.insights import stop_background_insights_tasks
+
+                    await stop_background_insights_tasks()
                     await shell.stop()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await asyncio.wait_for(app_task, timeout=3)
-                    _cmd = paint(f"python {sys.argv[0]} cli --resume {state.session.id}",
-                                 "accent", bold=True)
-                    shell.print_exit_notice(tr('common.resume_hint', cmd=_cmd))
+                    _cmd = paint(
+                        f"python {sys.argv[0]} cli --resume {state.session.id}", "accent", bold=True
+                    )
+                    shell.print_exit_notice(tr("common.resume_hint", cmd=_cmd))
 
         finally:
             from session import storage as _storage
+
             _storage.save(state.session)
             try:
                 from apis.mcp_client import shutdown_mcp
+
                 shutdown_mcp()
             except Exception:
                 logger.debug("mcp shutdown failed", exc_info=True)
             try:
                 from apis.lsp_client import shutdown_lsp
+
                 shutdown_lsp()
             except Exception:
                 logger.debug("lsp shutdown failed", exc_info=True)
@@ -549,6 +634,7 @@ def interactive(model, workdir, resume, api_provider):
                     await tg.stop()
             except Exception:
                 logger.debug("tg stop failed", exc_info=True)
+            await _runtime_logger.stop_stall_monitor_async()
 
     asyncio.run(_run())
 
@@ -558,6 +644,7 @@ def _mirror_user_to_tg(text: str, tg_bridge) -> None:
     try:
         if tg_bridge.is_running:
             from agent.telegram_handler import TelegramEventHandler
+
             TelegramEventHandler(None).mirror_user(text)
     except Exception:
         logger.debug("tg mirror_user failed", exc_info=True)
@@ -606,6 +693,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     # абсолютные пути устаревают. Перенаправляем на актуальную папку.
     if message_images:
         from pathlib import Path as _Path
+
         sess_imgs = _Path(state.session.dir) / "clipboard_images"
         fixed = []
         for p in message_images:
@@ -625,13 +713,17 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     try:
         from agent.context import AgentContext
         from agent.loop import set_current_ctx
+
         _ctx = get_current_ctx()
         if _ctx is None:
-            _ctx = AgentContext(working_dir=state.workdir, mode=state.mode_state.get("mode", "agent"))
+            _ctx = AgentContext(
+                working_dir=state.workdir, mode=state.mode_state.get("mode", "agent")
+            )
             set_current_ctx(_ctx)
         _ctx.render_store.add_user(user, status=status)
     except Exception:
         import logging as _lg
+
         _lg.getLogger("agent.render_store").exception("add_user failed")
 
     # Панель над вводом обновляется на старте хода (счётчик сообщений уже
@@ -645,10 +737,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     # Маппинг [imageN] → реальный путь, чтобы агент мог открыть
     # вставленные картинки как файлы через инструменты (read и др.).
     if message_images:
-        image_lines = [
-            f"[image{i}] = {p}"
-            for i, p in enumerate(message_images, start=1)
-        ]
+        image_lines = [f"[image{i}] = {p}" for i, p in enumerate(message_images, start=1)]
         image_block = (
             "--- inserted images (open with file tools by path) ---\n"
             + "\n".join(image_lines)
@@ -658,7 +747,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     _, file_context_block, file_refs = expand_at_references(user, state.workdir)
     if file_context_block:
         ref_names = [r.raw for r in file_refs if not r.error]
-        files_str = ', '.join(ref_names[:5]) + ('...' if len(ref_names) > 5 else '')
+        files_str = ", ".join(ref_names[:5]) + ("..." if len(ref_names) > 5 else "")
         _static(f"[dim]📄 {tr('send.context_files', files=files_str)}[/dim]")
         agent_message = file_context_block + "\n\n" + agent_message
 
@@ -671,6 +760,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
             MODE_SWITCH_TO_PLANNING,
             MODE_SWITCH_TO_SWARM,
         )
+
         if state.mode_state["mode"] == "planning":
             mode_notice = MODE_SWITCH_TO_PLANNING
         elif state.mode_state["mode"] == "swarm":
@@ -682,6 +772,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
 
     if state.think_changed:
         from system_prompt import THINK_SWITCH_OFF, THINK_SWITCH_ON
+
         notice = THINK_SWITCH_ON if state.think_enabled else THINK_SWITCH_OFF
         agent_message = notice + "\n\n" + agent_message
         state.think_changed = False
@@ -694,9 +785,12 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     is_cont = state.msg_num > 1
 
     coro = gsagent.run_agent_interactive(
-        agent_message, model=state.cur_model, working_dir=state.workdir,
+        agent_message,
+        model=state.cur_model,
+        working_dir=state.workdir,
         is_continuation=is_cont,
-        session=state.session, history=history_for_msg,
+        session=state.session,
+        history=history_for_msg,
         images=message_images if message_images else None,
         mode=state.mode_state["mode"],
     )
@@ -705,9 +799,8 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     try:
         state.last_elapsed, _cancelled = await _run_with_interrupt(coro, state.session)
         _set_activity_status(state, "idle" if _cancelled else "done")
-    except Exception as e:
+    except Exception:
         _set_activity_status(state, "idle")
-        _static(f"\n  [{t('error')}]{tr('send.error_run', error=str(e))}[/{t('error')}]")
 
     # Если фото не прошло (модель без поддержки изображений или файл
     # повреждён) — убираем его из истории сессии, чтобы после /resume оно не
@@ -715,10 +808,17 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     if message_images:
         try:
             from apis.agent_adapter import get_api_session
+
             api_sess = get_api_session()
             if api_sess is not None and getattr(api_sess, "image_fallback", False):
                 user_message.attachments = []
                 logger.info("image fallback: photo removed from session history")
+            elif api_sess is not None:
+                cache = getattr(api_sess, "image_description_cache", {})
+                for attachment in user_message.attachments:
+                    description = cache.get(attachment.get("path", ""))
+                    if description:
+                        attachment["description"] = description
         except Exception:
             logger.debug("image fallback history cleanup failed", exc_info=True)
 
@@ -755,7 +855,7 @@ async def _run_slash(state: InteractiveState, text: str) -> None:
         return
 
     if text.startswith(_CMD_TG_ACTION):
-        await _apply_tg_action(state, text[len(_CMD_TG_ACTION):])
+        await _apply_tg_action(state, text[len(_CMD_TG_ACTION) :])
         _refresh_status(state)
         return
 
@@ -771,10 +871,13 @@ async def _run_slash(state: InteractiveState, text: str) -> None:
     try:
         _ctx = get_current_ctx()
         if _ctx is not None and getattr(_ctx, "render_store", None) is not None:
-            _ctx.render_store.add("raw_console", {
-                "command": text,
-                "output": _captured or "",
-            })
+            _ctx.render_store.add(
+                "raw_console",
+                {
+                    "command": text,
+                    "output": _captured or "",
+                },
+            )
     except Exception:
         logger.debug("store slash raw_console failed", exc_info=True)
     _refresh_status(state)
@@ -858,15 +961,18 @@ async def _bg_pump(state: InteractiveState) -> None:
 async def _apply_tg_action(state: InteractiveState, action: str) -> None:
     """Выполняет отложенное TG-действие в контексте очереди ходов."""
     from apis.telegram import get_bridge
+
     bridge = get_bridge()
     try:
         if action == "new_chat":
             from commands.slash_handler import _handle_new_chat
+
             await _handle_new_chat(state)
             if bridge.is_running:
                 bridge.send("↻ <b>New chat created</b>")
         elif action == "compress":
             from commands.slash_handler import _handle_compress
+
             await _handle_compress(state)
             if bridge.is_running:
                 bridge.send("🗜 <b>History compressed</b>")
@@ -880,9 +986,11 @@ async def _apply_tg_action(state: InteractiveState, action: str) -> None:
 
 async def _handle_tg_compress(state: InteractiveState):
     from commands.slash_handler import _handle_compress
+
     try:
         await _handle_compress(state)
         from apis.telegram import get_bridge
+
         b = get_bridge()
         if b.is_running:
             b.send("🗜 <b>History compressed</b>")
@@ -893,6 +1001,26 @@ async def _handle_tg_compress(state: InteractiveState):
 _AUTO_COMPRESS_THRESHOLD = 0.90
 _RECAP_EVERY = 10
 _MEMORY_EXTRACT_EVERY = 6
+
+
+def _maybe_cleanup_memory(state: InteractiveState) -> None:
+    """Launch the three-day memory audit without delaying CLI startup."""
+
+    async def _run_cleanup():
+        try:
+            from memory import maybe_cleanup_memories
+
+            await maybe_cleanup_memories(state.workdir)
+        except Exception:
+            logger.debug("memory cleanup failed", exc_info=True)
+
+    try:
+        task = asyncio.create_task(_run_cleanup(), name="memory-cleanup")
+        state.memory_background_tasks.add(task)
+        task.add_done_callback(state.memory_background_tasks.discard)
+        task.add_done_callback(_log_task_error)
+    except Exception:
+        logger.debug("memory cleanup launch failed", exc_info=True)
 
 
 def _maybe_extract_memory(state: InteractiveState) -> None:
@@ -916,6 +1044,7 @@ def _maybe_extract_memory(state: InteractiveState) -> None:
     async def _run_extract():
         try:
             from memory import extract_memories
+
             n = await extract_memories(transcript, working_dir=workdir)
             if n:
                 logger.info("memory extract: saved %d fact(s) at msg #%d", n, state.msg_num)
@@ -923,7 +1052,10 @@ def _maybe_extract_memory(state: InteractiveState) -> None:
             logger.debug("memory extract failed: %s", e, exc_info=True)
 
     try:
-        asyncio.ensure_future(_run_extract())  # noqa: RUF006
+        task = asyncio.create_task(_run_extract(), name="memory-extract")
+        state.memory_background_tasks.add(task)
+        task.add_done_callback(state.memory_background_tasks.discard)
+        task.add_done_callback(_log_task_error)
     except Exception:
         logger.debug("memory extract launch failed", exc_info=True)
 
@@ -1003,6 +1135,17 @@ def _schedule_recap_output(state: InteractiveState) -> None:
     output_task.add_done_callback(_log_task_error)
 
 
+async def _stop_memory_tasks(state: InteractiveState) -> None:
+    """Cancel outstanding fire-and-forget memory extraction on shutdown."""
+    tasks = set(state.memory_background_tasks)
+    state.memory_background_tasks.clear()
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
 async def _stop_recap_tasks(state: InteractiveState) -> None:
     """Отменить генерацию/доставку recap при завершении интерактивной сессии."""
     tasks = set(state.recap_background_tasks)
@@ -1037,6 +1180,7 @@ def _autoprune_active() -> bool:
     """
     try:
         from apis.agent_adapter import get_api_session
+
         sess = get_api_session()
         if sess is None or sess.llm is None:
             return False
@@ -1058,6 +1202,7 @@ async def _maybe_round_compress(state: InteractiveState) -> None:
     if not _autoprune_active():
         return
     from config.settings import get as _settings_get
+
     if not _settings_get("autoprune_round_compression", True):
         return
     every = int(_settings_get("autoprune_compress_every_rounds", 10) or 10)
@@ -1090,6 +1235,7 @@ async def _maybe_round_compress(state: InteractiveState) -> None:
         return
 
     from system_prompt import ROUND_COMPRESS_PROMPT
+
     history_text = sess.build_compress_text(upto_index=tail_index)
     if not history_text.strip():
         return
@@ -1247,10 +1393,13 @@ async def _maybe_auto_compress(state: InteractiveState) -> None:
             return
         logger.info(
             "auto-compress trigger: session=%s ctx=%s/%s (%.0f%%)",
-            state.session.id[:16], ctx_tokens, ctx_limit, ratio * 100,
+            state.session.id[:16],
+            ctx_tokens,
+            ctx_limit,
+            ratio * 100,
         )
         _static(
-            f"  [{t('warning')}]⚠[/{t('warning')}] {tr('send.auto_compress', used=f'{ctx_tokens:,}', limit=f'{ctx_limit:,}', pct=f'{int(ratio*100)}')}"
+            f"  [{t('warning')}]⚠[/{t('warning')}] {tr('send.auto_compress', used=f'{ctx_tokens:,}', limit=f'{ctx_limit:,}', pct=f'{int(ratio * 100)}')}"
         )
 
         sess = state.session
@@ -1323,7 +1472,9 @@ async def _resume_agent_for_background(state: InteractiveState) -> bool:
         logger.debug("bg-resume render_store add_user failed", exc_info=True)
 
     coro = gsagent.run_agent_interactive(
-        notice, model=state.cur_model, working_dir=state.workdir,
+        notice,
+        model=state.cur_model,
+        working_dir=state.workdir,
         is_continuation=True,
         session=state.session,
         mode=state.mode_state["mode"],
@@ -1332,9 +1483,8 @@ async def _resume_agent_for_background(state: InteractiveState) -> bool:
     try:
         state.last_elapsed, _cancelled = await _run_with_interrupt(coro, state.session)
         _set_activity_status(state, "idle" if _cancelled else "done")
-    except Exception as e:
+    except Exception:
         _set_activity_status(state, "idle")
-        _static(f"\n  [{t('error')}]{tr('send.error_run', error=str(e))}[/{t('error')}]")
     return True
 
 
@@ -1342,6 +1492,7 @@ def _bg_autoresume_enabled() -> bool:
     """Флаг авто-резюма агента при завершении фоновой задачи (default True)."""
     try:
         from config.settings import get as _settings_get
+
         return bool(_settings_get("background_autoresume", True))
     except Exception:
         return True

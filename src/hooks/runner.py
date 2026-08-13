@@ -51,7 +51,11 @@ def _run_command_hook(
             cwd=working_dir or str(BASE_DIR),
             env=env,
         )
-        return proc.returncode, (proc.stdout or "")[:_MAX_OUTPUT_CHARS], (proc.stderr or "")[:_MAX_OUTPUT_CHARS]
+        return (
+            proc.returncode,
+            (proc.stdout or "")[:_MAX_OUTPUT_CHARS],
+            (proc.stderr or "")[:_MAX_OUTPUT_CHARS],
+        )
     except subprocess.TimeoutExpired:
         logger.warning("hook command timed out after {}s: {}", spec.timeout, spec.command[:80])
         return 124, "", f"hook timed out after {spec.timeout}s"
@@ -189,7 +193,12 @@ def run_hooks(
             _apply_output(spec, code, out, err, outcome)
             # Блокирующее решение прерывает дальнейшие hooks события.
             if outcome.blocked:
-                logger.info("hook blocked event={} tool={}: {}", event, tool_name, outcome.block_reason[:120])
+                logger.info(
+                    "hook blocked event={} tool={}: {}",
+                    event,
+                    tool_name,
+                    outcome.block_reason[:120],
+                )
                 return outcome
 
     return outcome
@@ -201,9 +210,7 @@ def _spawn_async(spec: HookSpec, payload_json: str, working_dir: str | None) -> 
         if spec.type == "http":
             import threading
 
-            threading.Thread(
-                target=_run_http_hook, args=(spec, payload_json), daemon=True
-            ).start()
+            threading.Thread(target=_run_http_hook, args=(spec, payload_json), daemon=True).start()
             return
         import threading
 

@@ -20,14 +20,12 @@ class HelpSectionsOverlay(Overlay):
     def render(self, width: int) -> str:
         head = [
             paint("📖 Справка necli", "accent", bold=True),
-            paint("Многоуровневая интерактивная справка. "
-                  "Выберите раздел.", "dim_text"),
+            paint("Многоуровневая интерактивная справка. Выберите раздел.", "dim_text"),
             spacer(),
         ]
 
         budget = max(3, self._budget() - len(head))
-        start, end, above, below = scroll_window(
-            len(self.sections), self.selected, budget)
+        start, end, above, below = scroll_window(len(self.sections), self.selected, budget)
 
         lines = list(head)
         if above:
@@ -35,17 +33,22 @@ class HelpSectionsOverlay(Overlay):
 
         for i in range(start, end):
             s = self.sections[i]
-            sel = (i == self.selected)
-            label = f"{s.icon} {s.name}"
+            sel = i == self.selected
+            gap = "  " if i in (1, 3, 7) else " "
+            label = f"{s.icon}{gap}{s.name}"
             hint = s.desc
             pages_hint = f"{len(s.pages)} стр."
-            lines.append(row(
-                label, hint,
-                selected=sel, width=width,
-                badge=pages_hint,
-                mark=str(i + 1),
-                mark_role="dim_text",
-            ))
+            lines.append(
+                row(
+                    label,
+                    hint,
+                    selected=sel,
+                    width=width,
+                    badge=pages_hint,
+                    mark=str(i + 1),
+                    mark_role="dim_text",
+                )
+            )
 
         if below:
             lines.append(paint(f"  ↓ ещё {below}", "dim_text"))
@@ -57,8 +60,8 @@ class HelpSectionsOverlay(Overlay):
         # линией рамки). Раньше они дублировались ещё и футером внутри тела
         # оверлея — на экране одни и те же клавиши появлялись дважды.
         return key_hints(
-            ("↑↓", "выбор"), ("Enter", "открыть"), ("Esc", "выход"),
-            ("1-9", "быстрый выбор"))
+            ("↑↓", "выбор"), ("Enter", "открыть"), ("Esc", "выход"), ("1-9", "быстрый выбор")
+        )
 
     def version(self):
         return (self.selected, len(self.sections))
@@ -113,16 +116,14 @@ class HelpPagesOverlay(Overlay):
 
         # Заголовок: раздел — страница — номер
         head = two_column(
-            paint(f"{self.section.icon} {self.section.name} — {page.title}",
-                  "accent", bold=True),
+            paint(f"{self.section.icon} {self.section.name} — {page.title}", "accent", bold=True),
             paint(f"Стр. {self.page + 1}/{self.total_pages}", "dim_text"),
             width=width,
         )
 
         # Тело: двухколоночная раскладка
         body_height = max(1, budget - 3)  # заголовок + пустая + индикатор
-        body = render_two_columns(
-            page.left, page.right, width, body_height, paired=page.paired)
+        body = render_two_columns(page.left, page.right, width, body_height, paired=page.paired)
 
         # Индикатор страниц
         dots = []
@@ -140,8 +141,8 @@ class HelpPagesOverlay(Overlay):
 
     def hint(self) -> str:
         return key_hints(
-            ("←→", "страницы"), ("Esc", "назад"),
-            ("Home", "первая"), ("End", "последняя"))
+            ("←→", "страницы"), ("Esc", "назад"), ("Home", "первая"), ("End", "последняя")
+        )
 
     def version(self):
         return (self.page, self.section.name)
@@ -188,6 +189,7 @@ async def help_interactive() -> None:
     if shell is None:
         # Headless: печатаем плоский список
         from rich.console import Console
+
         con = Console()
         con.print("\n[bold]Справка necli[/bold]\n")
         for s in SECTIONS:

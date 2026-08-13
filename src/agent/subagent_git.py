@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -77,9 +78,7 @@ def _run_git(
             env=env,
         )
     except FileNotFoundError as e:
-        raise GitError(
-            "git CLI not found on system. Install git to use subagents."
-        ) from e
+        raise GitError("git CLI not found on system. Install git to use subagents.") from e
     except subprocess.TimeoutExpired as e:
         raise GitError(f"git {args[0]} timed out after {_GIT_TIMEOUT}s") from e
 
@@ -176,7 +175,6 @@ def _link_runtime_target(src: Path, dst: Path) -> bool:
     return False
 
 
-
 def _setup_symlinks(worktree: Path, root: Path) -> None:
     """Создаёт симлинки для _SYMLINK_TARGETS (.venv/venv/node_modules) из корня
     в worktree. .git/info/exclude НЕ трогаем (см. ниже почему).
@@ -215,7 +213,8 @@ def _setup_symlinks(worktree: Path, root: Path) -> None:
     if created:
         try:
             (worktree / ".necli_symlinks").write_text(
-                "\n".join(created) + "\n", encoding="utf-8",
+                "\n".join(created) + "\n",
+                encoding="utf-8",
             )
         except OSError as e:
             logger.warning("subagent_git: marker write failed: %s", e)
@@ -259,7 +258,10 @@ def create_worktree(
 
     logger.info(
         "subagent_git: created worktree sub=%d path=%s branch=%s base=%s",
-        sub_idx + 1, wt_dir, branch, base_sha[:8],
+        sub_idx + 1,
+        wt_dir,
+        branch,
+        base_sha[:8],
     )
     return WorktreeHandle(
         sub_idx=sub_idx,
@@ -295,13 +297,17 @@ def commit_worktree(handle: WorktreeHandle, message: str) -> None:
     marker = Path(wt) / ".necli_symlinks"
     if marker.is_file():
         try:
-            names = [n.strip() for n in marker.read_text(encoding="utf-8").splitlines() if n.strip()]
+            names = [
+                n.strip() for n in marker.read_text(encoding="utf-8").splitlines() if n.strip()
+            ]
         except OSError:
             names = []
         for n in names:
             _run_git(["rm", "--cached", "-f", "--ignore-unmatch", n], cwd=wt, check=False)
         # сам marker тоже не нужен в коммите
-        _run_git(["rm", "--cached", "-f", "--ignore-unmatch", ".necli_symlinks"], cwd=wt, check=False)
+        _run_git(
+            ["rm", "--cached", "-f", "--ignore-unmatch", ".necli_symlinks"], cwd=wt, check=False
+        )
 
     # Проверяем именно STAGED изменения (что реально попадёт в коммит), а не
     # `git status --porcelain`: последний показывает и untracked `.necli_symlinks`,
@@ -309,13 +315,16 @@ def commit_worktree(handle: WorktreeHandle, message: str) -> None:
     # субагента индекс пуст, но untracked marker оставался бы в porcelain →
     # has_changes=True → git commit падает с "nothing to commit" (exit=1).
     rc, out, _ = _run_git(
-        ["diff", "--cached", "--name-only"], cwd=wt, check=False,
+        ["diff", "--cached", "--name-only"],
+        cwd=wt,
+        check=False,
     )
     if rc != 0 or not out.strip():
         handle.has_changes = False
         logger.info(
             "subagent_git: sub=%d branch=%s — no changes",
-            handle.sub_idx + 1, handle.branch,
+            handle.sub_idx + 1,
+            handle.branch,
         )
         return
 
@@ -335,7 +344,8 @@ def summarize_changes(handle: WorktreeHandle, root: str) -> None:
     # количество коммитов от base
     rc, out, _ = _run_git(
         ["rev-list", "--count", f"{handle.base_sha}..HEAD"],
-        cwd=wt, check=False,
+        cwd=wt,
+        check=False,
     )
     if rc == 0 and out.strip().isdigit():
         handle.commits_count = int(out.strip())
@@ -343,7 +353,8 @@ def summarize_changes(handle: WorktreeHandle, root: str) -> None:
     # список файлов
     rc, out, _ = _run_git(
         ["diff", "--name-only", f"{handle.base_sha}..HEAD"],
-        cwd=wt, check=False,
+        cwd=wt,
+        check=False,
     )
     if rc == 0:
         handle.files_changed = [ln for ln in out.splitlines() if ln.strip()]
@@ -351,7 +362,8 @@ def summarize_changes(handle: WorktreeHandle, root: str) -> None:
     # diff stat
     rc, out, _ = _run_git(
         ["diff", "--stat", f"{handle.base_sha}..HEAD"],
-        cwd=wt, check=False,
+        cwd=wt,
+        check=False,
     )
     if rc == 0:
         handle.diff_stat = out.strip()
@@ -363,10 +375,8 @@ def summarize_worktree_changes(handle: WorktreeHandle) -> None:
     handle.commit_sha = _get_head_sha(wt) or ""
     fd, index_path = tempfile.mkstemp(prefix="necli-subagent-index-")
     os.close(fd)
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(index_path)
-    except OSError:
-        pass
     env = {"GIT_INDEX_FILE": index_path}
     try:
         rc, _, _ = _run_git(["read-tree", "HEAD"], cwd=wt, check=False, env_extra=env)
@@ -377,14 +387,28 @@ def summarize_worktree_changes(handle: WorktreeHandle) -> None:
         marker = Path(wt) / ".necli_symlinks"
         if marker.is_file():
             try:
-                names = [n.strip() for n in marker.read_text(encoding="utf-8").splitlines() if n.strip()]
+                names = [
+                    n.strip() for n in marker.read_text(encoding="utf-8").splitlines() if n.strip()
+                ]
             except OSError:
                 names = []
             for n in names:
-                _run_git(["rm", "--cached", "-f", "--ignore-unmatch", n], cwd=wt, check=False, env_extra=env)
-            _run_git(["rm", "--cached", "-f", "--ignore-unmatch", ".necli_symlinks"], cwd=wt, check=False, env_extra=env)
+                _run_git(
+                    ["rm", "--cached", "-f", "--ignore-unmatch", n],
+                    cwd=wt,
+                    check=False,
+                    env_extra=env,
+                )
+            _run_git(
+                ["rm", "--cached", "-f", "--ignore-unmatch", ".necli_symlinks"],
+                cwd=wt,
+                check=False,
+                env_extra=env,
+            )
 
-        rc, out, _ = _run_git(["diff", "--cached", "--name-only"], cwd=wt, check=False, env_extra=env)
+        rc, out, _ = _run_git(
+            ["diff", "--cached", "--name-only"], cwd=wt, check=False, env_extra=env
+        )
         if rc == 0:
             handle.files_changed = [ln for ln in out.splitlines() if ln.strip()]
         rc, out, _ = _run_git(["diff", "--cached", "--stat"], cwd=wt, check=False, env_extra=env)
@@ -392,10 +416,8 @@ def summarize_worktree_changes(handle: WorktreeHandle) -> None:
             handle.diff_stat = out.strip()
         handle.has_changes = bool(handle.files_changed)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(index_path)
-        except OSError:
-            pass
 
 
 def _remove_windows_junctions(path: Path) -> None:
@@ -418,6 +440,7 @@ def _remove_windows_junctions(path: Path) -> None:
         except Exception:
             logger.debug("subagent_git: runtime link cleanup failed: %s", target, exc_info=True)
 
+
 def cleanup_worktree(root: str, handle: WorktreeHandle) -> None:
     """Удаляет worktree (но НЕ ветку — её главный агент может ещё merge'ить).
 
@@ -426,7 +449,8 @@ def cleanup_worktree(root: str, handle: WorktreeHandle) -> None:
     """
     _run_git(
         ["worktree", "remove", "--force", handle.path],
-        cwd=root, check=False,
+        cwd=root,
+        check=False,
     )
     # если git не удалил каталог (например симлинки помешали) — добиваем вручную
     wt_path = Path(handle.path)
@@ -447,6 +471,7 @@ def cleanup_worktree(root: str, handle: WorktreeHandle) -> None:
 
 
 _STALE_BRANCH_AGE = 7200  # 2 часа в секундах
+
 
 def cleanup_stale_branches(root: str, current_run_id: str | None = None) -> int:
     """Удаляет ТОЛЬКО устаревшие ветки subagent/*.
@@ -470,7 +495,8 @@ def cleanup_stale_branches(root: str, current_run_id: str | None = None) -> int:
             "--format=%(refname:short) %(committerdate:unix)",
             "refs/heads/subagent/",
         ],
-        cwd=root, check=False,
+        cwd=root,
+        check=False,
     )
     if rc != 0 or not out.strip():
         return 0

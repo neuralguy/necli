@@ -13,23 +13,28 @@ from .call_parser import (
     strip_call_calls as _strip_call_calls,
 )
 
+
 def parse_tool_calls(text: str) -> list:
     if not text:
         return []
     return _parse_call_calls(text)
 
+
 def strip_tool_calls(text: str) -> str:
     if not text:
         return ""
     import re
+
     result = _strip_call_calls(text)
     # Уберём пустые :::call ... call::: обёртки (2-3 двоеточия — см. call_parser).
     result = re.sub(r"(?m)^[ \t]*:{2,3}call[^\n]*\n\s*\n?call:{2,3}", "", result)
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
 
+
 def has_tool_calls(text: str) -> bool:
     return _has_call_calls(text)
+
 
 def truncate_after_last_tool_call(text: str) -> str:
     if not text:
@@ -45,3 +50,11 @@ def truncate_after_last_tool_call(text: str) -> str:
     if last_end is None:
         return text
     return text[:last_end].rstrip()
+
+
+__all__ = [
+    "has_tool_calls",
+    "parse_tool_calls",
+    "strip_tool_calls",
+    "truncate_after_last_tool_call",
+]

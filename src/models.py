@@ -16,50 +16,52 @@ class ModelPricing:
     input: float
     output: float
 
+
 # Каноническое имя → display name в UI (неизменяемый каталог).
 # NOTE: значения сейчас идентичны ключам (display == canonical) и нигде не
 # читаются — каталог итерируется только по ключам (`for c in CANONICAL_MODELS`,
 # `list_models`). Идентичные значения оставлены намеренно как точка расширения,
 # если display-имя когда-нибудь разойдётся с каноническим ключом.
 CANONICAL_MODELS: dict[str, str] = {
-    "GPT-5.5":                 "GPT-5.5",
-    "GPT-5.4":                 "GPT-5.4",
-    "GPT-5.4 Mini":            "GPT-5.4 Mini",
-    "Claude Opus 4.8":         "Claude Opus 4.8",
-    "Claude Sonnet 4.6":       "Claude Sonnet 4.6",
-    "Claude Haiku 4.5":        "Claude Haiku 4.5",
-    "Gemini 3.1 Pro":          "Gemini 3.1 Pro",
-    "Gemini 3.5 Flash":        "Gemini 3.5 Flash",
-    "Gemini 3 Flash":          "Gemini 3 Flash",
-    "Grok 4.3":                "Grok 4.3",
-    "Grok 4.20":               "Grok 4.20",
-    "Grok 4.1 Fast":           "Grok 4.1 Fast",
+    "GPT-5.5": "GPT-5.5",
+    "GPT-5.4": "GPT-5.4",
+    "GPT-5.4 Mini": "GPT-5.4 Mini",
+    "Claude Opus 4.8": "Claude Opus 4.8",
+    "Claude Sonnet 4.6": "Claude Sonnet 4.6",
+    "Claude Haiku 4.5": "Claude Haiku 4.5",
+    "Gemini 3.1 Pro": "Gemini 3.1 Pro",
+    "Gemini 3.5 Flash": "Gemini 3.5 Flash",
+    "Gemini 3 Flash": "Gemini 3 Flash",
+    "Grok 4.3": "Grok 4.3",
+    "Grok 4.20": "Grok 4.20",
+    "Grok 4.1 Fast": "Grok 4.1 Fast",
 }
 
 MODEL_PRICING: dict[str, ModelPricing] = {
     # OpenAI
-    "GPT-5.5":                 ModelPricing(5.00,   30.00),
-    "GPT-5.4":                 ModelPricing(2.50,   15.00),
-    "GPT-5.4 Mini":            ModelPricing(0.75,   4.50),
+    "GPT-5.5": ModelPricing(5.00, 30.00),
+    "GPT-5.4": ModelPricing(2.50, 15.00),
+    "GPT-5.4 Mini": ModelPricing(0.75, 4.50),
     # Anthropic
-    "Claude Opus 4.8":         ModelPricing(5.00,   25.00),
-    "Claude Sonnet 4.6":       ModelPricing(3.00,   15.00),
-    "Claude Haiku 4.5":        ModelPricing(1.00,   5.00),
+    "Claude Opus 4.8": ModelPricing(5.00, 25.00),
+    "Claude Sonnet 4.6": ModelPricing(3.00, 15.00),
+    "Claude Haiku 4.5": ModelPricing(1.00, 5.00),
     # Google Gemini
-    "Gemini 3.1 Pro":          ModelPricing(2.00,   12.00),
-    "Gemini 3.5 Flash":        ModelPricing(1.50,   9.00),
-    "Gemini 3 Flash":          ModelPricing(0.50,   3.00),
+    "Gemini 3.1 Pro": ModelPricing(2.00, 12.00),
+    "Gemini 3.5 Flash": ModelPricing(1.50, 9.00),
+    "Gemini 3 Flash": ModelPricing(0.50, 3.00),
     # xAI Grok
-    "Grok 4.3":                ModelPricing(1.25,   2.50),
-    "Grok 4.20":               ModelPricing(2.00,   6.00),
-    "Grok 4.1 Fast":           ModelPricing(0.20,   0.50),
+    "Grok 4.3": ModelPricing(1.25, 2.50),
+    "Grok 4.20": ModelPricing(2.00, 6.00),
+    "Grok 4.1 Fast": ModelPricing(0.20, 0.50),
     # Groq (hosted open models)
-    "Kimi K2":                 ModelPricing(0.15,   0.60),
+    "Kimi K2": ModelPricing(0.15, 0.60),
 }
 
 _NO_PRICING = ModelPricing(0.0, 0.0)
 
 _DEFAULT_CONTEXT_LIMIT = 200_000
+
 
 def _lookup_api_context_window(model: str) -> int | None:
     if not model:
@@ -87,6 +89,7 @@ def _lookup_api_context_window(model: str) -> int | None:
                     except (TypeError, ValueError):
                         return None
     return None
+
 
 MODEL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("claude", ("claude", "opus", "sonnet", "haiku")),
@@ -118,6 +121,7 @@ def get_context_limit(model: str) -> int:
     if cw and cw > 0:
         return cw
     return _DEFAULT_CONTEXT_LIMIT
+
 
 def normalize_model_name(model_id: str) -> str:
     """Преобразует model id в читаемое display name.
@@ -152,8 +156,10 @@ def normalize_model_name(model_id: str) -> str:
             result += " " + tokens[i]
     return result
 
+
 def _normalize(s: str) -> str:
     return s.lower().replace(" ", "").replace("-", "").replace("_", "")
+
 
 def _resolve_from_api_providers(query: str) -> str | None:
     """Ищет модель среди API-провайдеров (по id или display_name, case-insensitive)."""
@@ -196,10 +202,7 @@ def resolve_model(name: str) -> str | None:
             return matches[0]
 
     query_words = query_lower.split()
-    word_matches = [
-        c for c in CANONICAL_MODELS
-        if all(w in c.lower() for w in query_words)
-    ]
+    word_matches = [c for c in CANONICAL_MODELS if all(w in c.lower() for w in query_words)]
     if len(word_matches) == 1:
         return word_matches[0]
     if word_matches:
@@ -221,8 +224,10 @@ def resolve_model(name: str) -> str | None:
     # Fallback: поиск среди моделей API-провайдеров
     return _resolve_from_api_providers(query)
 
+
 def list_models() -> list[str]:
     return sorted(CANONICAL_MODELS.keys())
+
 
 def _lookup_api_pricing(model: str) -> ModelPricing | None:
     """Ищет цены модели среди API-провайдеров (.data/apis.json).
@@ -251,6 +256,7 @@ def _lookup_api_pricing(model: str) -> ModelPricing | None:
                 out = float(m.get("output_price", 0.0) or 0.0)
                 return ModelPricing(inp, out)
     return None
+
 
 def get_pricing(model: str) -> tuple[float, float]:
     if model in MODEL_PRICING:

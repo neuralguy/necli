@@ -1,4 +1,4 @@
-"""Базовый HTTP-провайдер на httpx (без LangChain).
+"""Базовый HTTP-провайдер на httpx.
 
 Реализует OpenAI-совместимый клиент со стримингом, native tool calls,
 retry и backoff. Используется напрямую для custom провайдеров; openai_provider
@@ -15,7 +15,11 @@ from __future__ import annotations
 import asyncio
 import codecs
 import json
+import threading
+import time
+import uuid
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from typing import Any
 
 import httpx
@@ -35,6 +39,12 @@ class _RetryableStreamError(Exception):
         super().__init__(message)
 
 
+# Задержки между ретраями после rate limit (429): 5, 10, 15, 30 секунд.
+# При нескольких ключах между ретраями ротируем ключ, при одном —
+# ретраим на том же ключе.
+_RATE_LIMIT_DELAYS: tuple[float, ...] = (5.0, 10.0, 15.0, 30.0)
+
+
 def _is_transient_401(status_code: int, body: str) -> bool:
     """OnlySQ-прокси иногда отдаёт ложный 401 для Perplexity-моделей
     (sonar/pplx-*): upstream возвращает invalid_api_key, хотя ключ верный.
@@ -46,7 +56,9 @@ def _is_transient_401(status_code: int, body: str) -> bool:
     return "perplexity" in low or "invalid_api_key" in low or "invalid api key" in low
 
 
-def _format_api_error(provider_name: str, status_code: int, body: str, content_type: str = "") -> str:
+def _format_api_error(
+    provider_name: str, status_code: int, body: str, content_type: str = ""
+) -> str:
     text = (body or "").strip()
     low_text = text.lower()
     low_prefix = low_text[:500]
@@ -61,7 +73,11 @@ def _format_api_error(provider_name: str, status_code: int, body: str, content_t
             if ray_marker in text:
                 ray_tail = text.split(ray_marker, 1)[1]
                 ray_id = ray_tail.split("</", 1)[0].strip()
-                ray_id = " ".join(ray_id.replace("<strong class=\"font-semibold\">", "").replace("</strong>", "").split())
+                ray_id = " ".join(
+                    ray_id.replace('<strong class="font-semibold">', "")
+                    .replace("</strong>", "")
+                    .split()
+                )
                 if ray_id:
                     detail += f" (Ray ID: {ray_id})"
             if 500 <= status_code <= 599:
@@ -101,12 +117,18 @@ class _BoundProvider:
 
     async def ainvoke(self, messages: list[BaseMessage], **kwargs) -> AIMessage:
         return await self._provider.ainvoke(
-            messages, tools=self._tools, tool_choice=self._tool_choice, **kwargs,
+            messages,
+            tools=self._tools,
+            tool_choice=self._tool_choice,
+            **kwargs,
         )
 
     def astream(self, messages: list[BaseMessage], **kwargs) -> AsyncIterator[AIMessageChunk]:
         return self._provider.astream(
-            messages, tools=self._tools, tool_choice=self._tool_choice, **kwargs,
+            messages,
+            tools=self._tools,
+            tool_choice=self._tool_choice,
+            **kwargs,
         )
 
     def bind_tools(self, tools, tool_choice: str = "auto") -> _BoundProvider:
@@ -152,18 +174,32 @@ class BaseProvider:
         self._provider_id: str = ""
         self._proxy: str = ""
         self._api_credentials: list[dict[str, Any]] = []
-        self._credential_index: int = 0
+        # Один provider instance намеренно разделяется между главным агентом и
+        # субагентами ради стабильного session-id/prompt-cache. Индекс credential
+        # при этом обязан быть локальным для конкретного async task: иначе
+        # параллельная ротация ключа в одном запросе меняет key/proxy другого.
+        self._credential_index_ctx: ContextVar[int] = ContextVar(
+            f"provider_credential_index_{id(self)}",
+            default=0,
+        )
         self._prompt_cache_mode: str = "auto"
+        # Метки времени запросов по индексу ключа для per-key RPM-лимита.
+        # Lock нужен только на короткое резервирование временного слота; во
+        # время asyncio.sleep он не удерживается.
+        self._request_timestamps: dict[int, list[float]] = {}
+        self._rpm_lock = threading.Lock()
         # Доля цены входа для токенов, прочитанных из кэша (Anthropic: 0.1×,
         # OpenAI-совместимые: 0.5×). Переопределяется per-provider через
         # definition.extra["cache_read_factor"].
         self._cache_read_factor: float = 0.1
+        self._opencode_project_id = f"proj_{uuid.uuid4().hex}"
+        self._opencode_session_id = f"ses_{uuid.uuid4().hex}"
 
     # ── Утилиты ──
 
     @staticmethod
     def _calc_backoff(attempt: int, base: float = 2.0, maximum: float = 8.0) -> float:
-        return min(base * (2 ** attempt), maximum)
+        return min(base * (2**attempt), maximum)
 
     def _calc_timeout(self, params: dict[str, Any], base: int = 20) -> int:
         messages = params.get("messages", [])
@@ -172,6 +208,14 @@ class BaseProvider:
         except (TypeError, ValueError):
             total_chars = sum(len(str(m)) for m in messages)
         return min(max(base + total_chars // 1000, self.timeout), 300)
+
+    @property
+    def _credential_index(self) -> int:
+        return self._credential_index_ctx.get()
+
+    @_credential_index.setter
+    def _credential_index(self, value: int) -> None:
+        self._credential_index_ctx.set(int(value))
 
     # ── Tool binding (заменяет LangChain bind_tools) ──
 
@@ -183,11 +227,15 @@ class BaseProvider:
     def _get_api_key(self) -> str:
         if not self._api_credentials:
             return ""
-        return self._api_credentials[self._credential_index % len(self._api_credentials)].get("key", "")
+        return self._api_credentials[self._credential_index % len(self._api_credentials)].get(
+            "key", ""
+        )
 
     def _get_proxy(self) -> str:
         if self._api_credentials:
-            proxy = self._api_credentials[self._credential_index % len(self._api_credentials)].get("proxy", "")
+            proxy = self._api_credentials[self._credential_index % len(self._api_credentials)].get(
+                "proxy", ""
+            )
             if proxy:
                 return proxy
         return self._proxy
@@ -215,6 +263,64 @@ class BaseProvider:
             f"key={self._credential_index + 1}/{len(self._api_credentials)}"
         )
 
+    async def _handle_rate_limit(
+        self,
+        status_code: int,
+        last_error: Exception,
+        rate_limit_rotations: int,
+    ) -> int:
+        """Обработка rate limit (429): ждём 5/10/15/30с и ротируем ключ
+        (при нескольких ключах) либо ретраим на том же ключе.
+
+        Возвращает новый счётчик ротаций/ретраев. При исчерпании задержек
+        поднимает _all_credentials_failed_error.
+        """
+        if rate_limit_rotations >= len(_RATE_LIMIT_DELAYS):
+            raise self._all_credentials_failed_error(status_code, last_error) from last_error
+        delay = _RATE_LIMIT_DELAYS[rate_limit_rotations]
+        rate_limit_rotations += 1
+        if self._credential_count() > 1:
+            self._rotate_api_credential(f"HTTP {status_code}")
+        logger.warning(
+            f"{self._provider_name} HTTP {status_code} rate limit | "
+            f"пауза {delay:.0f}с | попытка {rate_limit_rotations}/{len(_RATE_LIMIT_DELAYS)}"
+        )
+        await asyncio.sleep(delay)
+        return rate_limit_rotations
+
+    async def _throttle_rpm(self) -> None:
+        """Ждёт, если текущий ключ превысил свой per-key RPM-лимит.
+
+        Лимит опционален: rpm <= 0 или отсутствует — без троттлинга.
+        """
+        if not self._api_credentials:
+            return
+        index = self._credential_index % len(self._api_credentials)
+        cred = self._api_credentials[index]
+        try:
+            rpm = float(cred.get("rpm") or 0)
+        except (TypeError, ValueError):
+            rpm = 0.0
+        if rpm <= 0:
+            return
+        interval = 60.0 / rpm
+        now = time.monotonic()
+        with self._rpm_lock:
+            stamps = self._request_timestamps.setdefault(index, [])
+            stamps[:] = [t for t in stamps if now - t < 60.0]
+            # Резервируем следующий слот под lock. Два одновременных task теперь
+            # не могут оба увидеть один и тот же last timestamp и стартовать
+            # одновременно после одинакового sleep.
+            scheduled_at = max(now, (stamps[-1] + interval) if stamps else now)
+            stamps.append(scheduled_at)
+        delay = scheduled_at - now
+        if delay > 0:
+            logger.info(
+                f"{self._provider_name} rpm limit {rpm:g}/min | "
+                f"key={index + 1}/{len(self._api_credentials)} | wait {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+
     def _cache_enabled(self) -> bool:
         """Включён ли prompt cache у провайдера (по _prompt_cache_mode)."""
         mode = str(self._prompt_cache_mode or "").lower()
@@ -233,7 +339,9 @@ class BaseProvider:
         inp = float(usage.get("input_tokens") or usage.get("input") or 0)
         out = float(usage.get("output_tokens") or usage.get("output") or 0)
         cache_read = float(usage.get("cache_read_input_tokens") or usage.get("cache_read") or 0)
-        cache_creation = float(usage.get("cache_creation_input_tokens") or usage.get("cache_creation") or 0)
+        cache_creation = float(
+            usage.get("cache_creation_input_tokens") or usage.get("cache_creation") or 0
+        )
         if inp <= 0 and out <= 0:
             return 0.0
         try:
@@ -244,10 +352,12 @@ class BaseProvider:
         if not self._cache_enabled():
             return (inp * in_price + out * out_price) / 1_000_000.0
         regular_input = max(0.0, inp - cache_read - cache_creation)
-        return (regular_input * in_price
-                + cache_creation * in_price
-                + cache_read * in_price * self._cache_read_factor
-                + out * out_price) / 1_000_000.0
+        return (
+            regular_input * in_price
+            + cache_creation * in_price
+            + cache_read * in_price * self._cache_read_factor
+            + out * out_price
+        ) / 1_000_000.0
 
     def spend_usage(self, usage: dict) -> None:
         """Списывает стоимость запроса с баланса текущего ключа.
@@ -271,7 +381,9 @@ class BaseProvider:
                 f"(key {self._credential_index + 1}/{len(self._api_credentials)})"
             )
 
-    def _all_credentials_failed_error(self, status_code: int, last_error: Exception | None) -> ValueError:
+    def _all_credentials_failed_error(
+        self, status_code: int, last_error: Exception | None
+    ) -> ValueError:
         return ValueError(
             f"{self._provider_name} API Error {status_code}: all "
             f"{self._credential_count()} configured API key(s) failed: {last_error}"
@@ -280,11 +392,24 @@ class BaseProvider:
     def _get_url(self) -> str:
         return self._api_url
 
-    def _get_headers(self) -> dict[str, str]:
+    def _opencode_headers(self) -> dict[str, str]:
+        if self._provider_id != "opencode":
+            return {}
         return {
+            "x-opencode-client": "cli",
+            "User-Agent": "opencode/latest/1.17.9/cli",
+            "x-opencode-project": self._opencode_project_id,
+            "x-opencode-session": self._opencode_session_id,
+            "x-opencode-request": f"msg_{uuid.uuid4().hex}",
+        }
+
+    def _get_headers(self) -> dict[str, str]:
+        headers = {
             "Authorization": f"Bearer {self._get_api_key()}",
             "Content-Type": "application/json",
         }
+        headers.update(self._opencode_headers())
+        return headers
 
     def _build_params(self, **kwargs: Any) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -318,7 +443,9 @@ class BaseProvider:
         if mode in {"anthropic", "anthropic_cache_control", "cache_control"}:
             return True
         if mode in {"on", "true"}:
-            return "claude" in (self.model or "").lower() or "anthropic/" in (self.model or "").lower()
+            return (
+                "claude" in (self.model or "").lower() or "anthropic/" in (self.model or "").lower()
+            )
         model = (self.model or "").lower()
         return "claude" in model or "anthropic/" in model
 
@@ -386,7 +513,9 @@ class BaseProvider:
         return await self._http_post(params)
 
     async def astream(
-        self, messages: list[BaseMessage], **kwargs,
+        self,
+        messages: list[BaseMessage],
+        **kwargs,
     ) -> AsyncIterator[AIMessageChunk]:
         self._reset_api_credential_index()
         params = self._build_params(**kwargs)
@@ -434,11 +563,12 @@ class BaseProvider:
             except _RetryableStreamError as e:
                 last_error = e
                 if e.status_code in self._CREDENTIAL_ROTATE_STATUS_CODES and not yielded_any:
-                    if rate_limit_rotations < self._credential_count() - 1:
-                        rate_limit_rotations += 1
-                        self._rotate_api_credential(f"HTTP {e.status_code}")
-                        continue
-                    raise self._all_credentials_failed_error(e.status_code, last_error) from e
+                    rate_limit_rotations = await self._handle_rate_limit(
+                        e.status_code,
+                        last_error,
+                        rate_limit_rotations,
+                    )
+                    continue
                 await _retry_or_reraise(e, f"HTTP {e.status_code}", partial_aborts=True)
                 attempt += 1
                 continue
@@ -449,7 +579,9 @@ class BaseProvider:
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ProtocolError) as e:
                 # Сервер оборвал SSE-стрим (peer closed / incomplete chunked read).
                 last_error = e
-                await _retry_or_reraise(e, f"dropped ({type(e).__name__}: {e})", partial_aborts=True)
+                await _retry_or_reraise(
+                    e, f"dropped ({type(e).__name__}: {e})", partial_aborts=True
+                )
                 attempt += 1
 
         raise ValueError(
@@ -457,25 +589,32 @@ class BaseProvider:
         )
 
     async def _astream_attempt(self, params: dict[str, Any]) -> AsyncIterator[AIMessageChunk]:
+        await self._throttle_rpm()
         proxy = self._get_proxy() or None
         dynamic_timeout = self._calc_timeout(params)
         full_reasoning = ""
         line_buffer = ""
         decoder = codecs.getincrementaldecoder("utf-8")()
+        saw_terminal = False
 
         client_kwargs: dict[str, Any] = {
             "timeout": httpx.Timeout(dynamic_timeout, connect=30.0),
-            "limits": httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0),
+            "limits": httpx.Limits(
+                max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0
+            ),
         }
         if proxy:
             client_kwargs["proxy"] = proxy
 
-        async with httpx.AsyncClient(**client_kwargs) as client, client.stream(
-            "POST",
-            self._get_url(),
-            json=params,
-            headers=self._get_headers(),
-        ) as resp:
+        async with (
+            httpx.AsyncClient(**client_kwargs) as client,
+            client.stream(
+                "POST",
+                self._get_url(),
+                json=params,
+                headers=self._get_headers(),
+            ) as resp,
+        ):
             if (
                 resp.status_code in self._RETRYABLE_STATUS_CODES
                 or resp.status_code in self._CREDENTIAL_ROTATE_STATUS_CODES
@@ -526,8 +665,15 @@ class BaseProvider:
                     line = line.strip()
                     if not line or not line.startswith("data:"):
                         continue
-                    data_str = line[len("data:"):].strip()
+                    data_str = line[len("data:") :].strip()
                     if data_str == "[DONE]":
+                        saw_terminal = True
+                        # Явно отмечаем корректное завершение даже у прокси,
+                        # которые не прислали finish_reason в предыдущем чанке.
+                        yield AIMessageChunk(
+                            content="",
+                            response_metadata={"stream_complete": True},
+                        )
                         return
 
                     try:
@@ -568,6 +714,10 @@ class BaseProvider:
                             )
                         continue
 
+                    finish_reason = choices[0].get("finish_reason")
+                    if finish_reason is not None:
+                        saw_terminal = True
+
                     delta = choices[0].get("delta", {})
                     content = delta.get("content") or ""
                     reasoning = delta.get("reasoning_content") or ""
@@ -590,10 +740,30 @@ class BaseProvider:
                         tool_call_chunks=tool_call_chunks,
                         additional_kwargs=({"reasoning_content": reasoning} if reasoning else {}),
                         response_metadata={
-                            "finish_reason": choices[0].get("finish_reason"),
+                            "finish_reason": finish_reason,
+                            "stream_complete": bool(finish_reason is not None),
                         },
                         usage_metadata=usage_metadata,
                     )
+
+            # HTTP body can end cleanly at the transport layer even when the
+            # upstream SSE generation was cut off. Without [DONE] or any
+            # non-null finish_reason this is an incomplete model response, not
+            # a successful stop. Surface it as metadata instead of silently
+            # treating EOF as completion.
+            if not saw_terminal:
+                logger.warning(
+                    "{} stream ended without [DONE] or finish_reason",
+                    self._provider_name,
+                )
+                yield AIMessageChunk(
+                    content="",
+                    response_metadata={
+                        "finish_reason": None,
+                        "stream_complete": False,
+                        "stream_incomplete": True,
+                    },
+                )
 
     @staticmethod
     def _convert_usage(usage: dict[str, Any] | None) -> dict[str, Any]:
@@ -626,8 +796,7 @@ class BaseProvider:
                 content = ""
             elif isinstance(content, list):
                 has_image = any(
-                    isinstance(p, dict) and p.get("type") == "image_url"
-                    for p in content
+                    isinstance(p, dict) and p.get("type") == "image_url" for p in content
                 )
                 if has_image:
                     normalized: list[Any] = []
@@ -691,12 +860,14 @@ class BaseProvider:
             if not isinstance(tc, dict):
                 continue
             func = tc.get("function") or {}
-            result.append({
-                "name": func.get("name") or None,
-                "args": func.get("arguments") or "",
-                "id": tc.get("id") or None,
-                "index": tc.get("index", 0),
-            })
+            result.append(
+                {
+                    "name": func.get("name") or None,
+                    "args": func.get("arguments") or "",
+                    "id": tc.get("id") or None,
+                    "index": tc.get("index", 0),
+                }
+            )
         return result
 
     def _parse_tool_calls(self, raw_tool_calls: Any) -> list[dict]:
@@ -710,7 +881,9 @@ class BaseProvider:
             else:
                 continue
             try:
-                args = json.loads(func_args_str) if isinstance(func_args_str, str) else func_args_str
+                args = (
+                    json.loads(func_args_str) if isinstance(func_args_str, str) else func_args_str
+                )
             except json.JSONDecodeError:
                 args = {}
             result.append({"name": func_name, "args": args, "id": tc_id, "type": "tool_call"})
@@ -741,8 +914,11 @@ class BaseProvider:
                 tool_calls=tool_calls,
                 usage_metadata=usage_metadata,
                 response_metadata=response_metadata,
-                additional_kwargs=({"reasoning_content": response_metadata["reasoning_content"]}
-                                   if response_metadata["reasoning_content"] else {}),
+                additional_kwargs=(
+                    {"reasoning_content": response_metadata["reasoning_content"]}
+                    if response_metadata["reasoning_content"]
+                    else {}
+                ),
             )
         except (KeyError, TypeError, ValueError) as e:
             logger.error(
@@ -752,105 +928,111 @@ class BaseProvider:
                 f"{self._provider_name}: failed to parse response: {type(e).__name__}: {e}"
             ) from e
 
+    async def _retry_request(
+        self,
+        make_request,
+        max_attempts: int | None = None,
+    ):
+        """Общая retry-логика для не-стриминговых HTTP-запросов.
+
+        make_request(attempt) — async-фабрика запроса, возвращающая httpx.Response
+        или бросающая _RetryableStreamError / timeout / transport-ошибку.
+        """
+        attempts = max_attempts or self.max_retries
+        name = self._provider_name
+        last_error: Exception | None = None
+        rate_limit_rotations = 0
+
+        for attempt in range(attempts):
+            try:
+                return await make_request(attempt)
+            except _RetryableStreamError as e:
+                last_error = e
+                if e.status_code in self._CREDENTIAL_ROTATE_STATUS_CODES:
+                    rate_limit_rotations = await self._handle_rate_limit(
+                        e.status_code,
+                        last_error,
+                        rate_limit_rotations,
+                    )
+                    continue
+                if attempt < attempts - 1:
+                    delay = self._calc_backoff(attempt)
+                    logger.warning(
+                        f"{name} HTTP {e.status_code} | "
+                        f"attempt={attempt + 1}/{attempts} | retry in {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            except (asyncio.TimeoutError, httpx.TimeoutException) as e:
+                last_error = TimeoutError(f"Request timeout: {e}")
+                if attempt < attempts - 1:
+                    await asyncio.sleep(self._calc_backoff(attempt))
+            except httpx.TransportError as e:
+                last_error = e
+                if attempt < attempts - 1:
+                    await asyncio.sleep(self._calc_backoff(attempt))
+
+        raise ValueError(f"{name} API Error after {attempts} attempts: {last_error}")
+
     async def _http_post(self, params: dict[str, Any]) -> AIMessage:
         name = self._provider_name
         url = self._get_url()
         dynamic_timeout = self._calc_timeout(params)
-        last_error: Exception | None = None
-        attempt = 0
-        rate_limit_rotations = 0
 
-        while attempt < self.max_retries:
+        async def _make_request(attempt: int) -> httpx.Response:
+            await self._throttle_rpm()
             headers = self._get_headers()
             proxy = self._get_proxy() or None
             client_kwargs: dict[str, Any] = {
                 "timeout": httpx.Timeout(dynamic_timeout, connect=30.0),
-                "limits": httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0),
+                "limits": httpx.Limits(
+                    max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0
+                ),
             }
             if proxy:
                 client_kwargs["proxy"] = proxy
 
-            try:
-                async with httpx.AsyncClient(**client_kwargs) as client:
-                    resp = await client.post(url, json=params, headers=headers)
-                if resp.status_code == 200:
-                    break
-                if resp.status_code in self._CREDENTIAL_ROTATE_STATUS_CODES:
-                    error_text = resp.text
-                    last_error = ValueError(
-                        _format_api_error(
-                            name,
-                            resp.status_code,
-                            error_text,
-                            resp.headers.get("content-type") or "",
-                        )
-                    )
-                    if rate_limit_rotations < self._credential_count() - 1:
-                        rate_limit_rotations += 1
-                        self._rotate_api_credential(f"HTTP {resp.status_code}")
-                        continue
-                    raise self._all_credentials_failed_error(resp.status_code, last_error)
-                if resp.status_code in self._RETRYABLE_STATUS_CODES:
-                    error_text = resp.text
-                    last_error = ValueError(
-                        _format_api_error(
-                            name,
-                            resp.status_code,
-                            error_text,
-                            resp.headers.get("content-type") or "",
-                        )
-                    )
-                    delay = self._calc_backoff(attempt)
-                    logger.warning(
-                        f"{name} HTTP {resp.status_code} | "
-                        f"attempt={attempt + 1}/{self.max_retries} | retry in {delay:.1f}s"
-                    )
-                    await asyncio.sleep(delay)
-                    attempt += 1
-                    continue
-                error_text = resp.text
-                if _is_transient_401(resp.status_code, error_text):
-                    last_error = ValueError(
-                        f"{name} transient 401 (upstream): {error_text}"
-                    )
-                    delay = self._calc_backoff(attempt)
-                    logger.warning(
-                        f"{name} transient 401 | "
-                        f"attempt={attempt + 1}/{self.max_retries} | retry in {delay:.1f}s"
-                    )
-                    await asyncio.sleep(delay)
-                    attempt += 1
-                    continue
-                raise ValueError(
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                resp = await client.post(url, json=params, headers=headers)
+            if resp.status_code == 200:
+                return resp
+            error_text = resp.text
+            if resp.status_code in self._CREDENTIAL_ROTATE_STATUS_CODES:
+                raise _RetryableStreamError(
+                    resp.status_code,
                     _format_api_error(
                         name,
                         resp.status_code,
                         error_text,
                         resp.headers.get("content-type") or "",
-                    )
+                    ),
                 )
-            except (asyncio.TimeoutError, httpx.TimeoutException) as e:
-                delay = self._calc_backoff(attempt)
-                logger.warning(
-                    f"{name} timeout | attempt={attempt + 1}/{self.max_retries} | retry in {delay:.1f}s | {e}"
+            if resp.status_code in self._RETRYABLE_STATUS_CODES:
+                raise _RetryableStreamError(
+                    resp.status_code,
+                    _format_api_error(
+                        name,
+                        resp.status_code,
+                        error_text,
+                        resp.headers.get("content-type") or "",
+                    ),
                 )
-                last_error = TimeoutError(f"Request timeout: {e}")
-                attempt += 1
-                if attempt < self.max_retries:
-                    await asyncio.sleep(delay)
-            except httpx.TransportError as e:
-                delay = self._calc_backoff(attempt)
-                logger.warning(
-                    f"{name} transport error | attempt={attempt + 1}/{self.max_retries} | retry in {delay:.1f}s | {e}"
+            if _is_transient_401(resp.status_code, error_text):
+                raise _RetryableStreamError(
+                    resp.status_code,
+                    f"{name} transient 401 (upstream): {error_text}",
                 )
-                last_error = e
-                attempt += 1
-                if attempt < self.max_retries:
-                    await asyncio.sleep(delay)
-        else:
             raise ValueError(
-                f"{name} API Error after {self.max_retries} attempts: {last_error}"
+                _format_api_error(
+                    name,
+                    resp.status_code,
+                    error_text,
+                    resp.headers.get("content-type") or "",
+                )
             )
+
+        resp = await self._retry_request(_make_request)
 
         content_type = (resp.headers.get("content-type") or "").lower()
         if "text/html" in content_type:
@@ -863,7 +1045,7 @@ class BaseProvider:
                 )
             )
 
-        # Парсинг вне retry-блока: его исключения (JSONDecodeError/KeyError)
+        # Парсинг вне retry-цикла: его исключения (JSONDecodeError/KeyError)
         # не должны ретраиться — это баги, а не сетевые ошибки.
         return self._parse_response(resp.json())
 

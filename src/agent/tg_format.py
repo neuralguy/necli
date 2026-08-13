@@ -27,7 +27,9 @@ _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 # **bold** / __bold__
 _BOLD_RE = re.compile(r"\*\*([^\*\n]+?)\*\*|__([^_\n]+?)__")
 # *italic* / _italic_  (после bold, чтобы не съесть **)
-_ITALIC_RE = re.compile(r"(?<![\*\w])\*(\S(?:[^\*\n]*?\S)?)\*(?![\*\w])|(?<![_\w])_(\S(?:[^_\n]*?\S)?)_(?![_\w])")
+_ITALIC_RE = re.compile(
+    r"(?<![\*\w])\*(\S(?:[^\*\n]*?\S)?)\*(?![\*\w])|(?<![_\w])_(\S(?:[^_\n]*?\S)?)_(?![_\w])"
+)
 # ~~strike~~
 _STRIKE_RE = re.compile(r"~~([^~\n]+?)~~")
 # [text](url)
@@ -81,7 +83,9 @@ def _inline(text: str) -> str:
         return f"<code>{_esc(code_spans[idx])}</code>"
 
     text = re.sub(
-        f"{_PLACEHOLDER_OPEN}C(\\d+){_PLACEHOLDER_CLOSE}", _restore_code, text,
+        f"{_PLACEHOLDER_OPEN}C(\\d+){_PLACEHOLDER_CLOSE}",
+        _restore_code,
+        text,
     )
 
     # 6. Возвращаем ссылки.
@@ -91,7 +95,9 @@ def _inline(text: str) -> str:
         return f'<a href="{_esc(url)}">{_esc(label)}</a>'
 
     text = re.sub(
-        f"{_PLACEHOLDER_OPEN}L(\\d+){_PLACEHOLDER_CLOSE}", _restore_link, text,
+        f"{_PLACEHOLDER_OPEN}L(\\d+){_PLACEHOLDER_CLOSE}",
+        _restore_link,
+        text,
     )
     return text
 

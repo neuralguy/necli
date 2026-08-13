@@ -27,8 +27,10 @@ class StreamToolMatch:
     complete: bool
     attrs_header: str = ""
 
+
 def _find_next_tool_start(text: str, offset: int) -> int | None:
     return _find_next_call_start_block(text, offset)
+
 
 def _find_next_complete_tool(text: str, offset: int) -> StreamToolMatch | None:
     info = _find_next_complete_call_block(text, offset)
@@ -46,6 +48,7 @@ def _find_next_complete_tool(text: str, offset: int) -> StreamToolMatch | None:
         attrs_header=info.get("attrs_header", ""),
     )
 
+
 def _find_next_partial_tool(text: str, offset: int) -> StreamToolMatch | None:
     info = _find_next_partial_call_block(text, offset)
     if info is None:
@@ -61,6 +64,7 @@ def _find_next_partial_tool(text: str, offset: int) -> StreamToolMatch | None:
         complete=False,
         attrs_header=info.get("attrs_header", ""),
     )
+
 
 # Служебный маркер прокси (OnlySQ и пр.): "usem*resume*", "m*resume*",
 # "*resume*" — сигнал «продолжай генерацию» между раундами выполнения

@@ -22,6 +22,7 @@ class InteractiveState:
 
     workdir: str = ""
     prompt_input: object = None  # ui.prompt.InputPrompt
+    current_ctx: object = None  # agent.loop.AgentContext (для Ctrl+O из потока run_in_terminal)
 
     mode_state: dict = field(default_factory=lambda: {"mode": "agent", "changed": False})
     think_enabled: bool = False
@@ -30,9 +31,12 @@ class InteractiveState:
 
     recap_task: object = None  # asyncio.Task генерации рекапа текущего раунда
     recap_background_tasks: set[object] = field(default_factory=set)
+    memory_background_tasks: set[object] = field(default_factory=set)
 
     def save_session(self) -> None:
         try:
             storage.save(self.session)
         except Exception as e:
-            console.print(f"  [{t('warning')}]⚠[/{t('warning')}] [dim]Save error: {escape(str(e))}[/dim]")
+            console.print(
+                f"  [{t('warning')}]⚠[/{t('warning')}] [dim]Save error: {escape(str(e))}[/dim]"
+            )

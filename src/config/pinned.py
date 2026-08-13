@@ -1,11 +1,14 @@
 """Pinned session IDs — отдельный JSON под .data/pinned_sessions.json."""
 
 import json
+import threading
 
+from config._atomic import atomic_write_json
 from config.paths import BASE_DIR
 from logger import logger
 
 _PATH = BASE_DIR / "pinned_sessions.json"
+_LOCK = threading.RLock()
 
 
 def _load() -> set[str]:
@@ -24,7 +27,7 @@ def _load() -> set[str]:
 def _save(ids: set[str]) -> None:
     try:
         _PATH.parent.mkdir(parents=True, exist_ok=True)
-        _PATH.write_text(json.dumps(sorted(ids), ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(_PATH, sorted(ids))
     except Exception as e:
         logger.error("pinned.save failed: {}", e)
 
@@ -35,11 +38,12 @@ def get_pinned() -> set[str]:
 
 def toggle(sid: str) -> bool:
     """Toggle pin для session_id. Возвращает новое состояние (True = pinned)."""
-    ids = _load()
-    if sid in ids:
-        ids.discard(sid)
+    with _LOCK:
+        ids = _load()
+        if sid in ids:
+            ids.discard(sid)
+            _save(ids)
+            return False
+        ids.add(sid)
         _save(ids)
-        return False
-    ids.add(sid)
-    _save(ids)
-    return True
+        return True

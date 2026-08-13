@@ -40,6 +40,7 @@ def _locate_find_in_file(file_path: str, find_text: str) -> int:
         return 1
     try:
         from tools._paths import resolve_path
+
         p = resolve_path(file_path)
         if not p.exists():
             return 1

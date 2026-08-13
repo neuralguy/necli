@@ -1,6 +1,8 @@
 import os
 import re
 import subprocess
+import threading
+import time
 
 from wcwidth import wcswidth
 
@@ -16,8 +18,13 @@ from ui.formatting import (
 )
 
 _MARKER_RE = re.compile(
-    re.escape(BAR_FILLED_START) + "|" + re.escape(BAR_FILLED_END)
-    + "|" + re.escape(BAR_EMPTY_START) + "|" + re.escape(BAR_EMPTY_END)
+    re.escape(BAR_FILLED_START)
+    + "|"
+    + re.escape(BAR_FILLED_END)
+    + "|"
+    + re.escape(BAR_EMPTY_START)
+    + "|"
+    + re.escape(BAR_EMPTY_END)
 )
 
 
@@ -34,24 +41,77 @@ def _term_width() -> int:
         return 80
 
 
-def _git_section(workdir: str | None) -> str:
-    """Секция «ветка +N ~N -N» (строки) или "" вне git-репо.
+# Git-статус — декоративная часть UI, поэтому он не имеет права блокировать
+# основной asyncio loop. Executor вызывает refresh_status после каждого tool,
+# а _query_git делает несколько subprocess.run с timeout=2s. При серии native
+# tool calls это раньше ставило в loop очередь синхронных git-сканов и могло
+# задерживать следующий API request на десятки секунд/минуты.
+_GIT_CACHE_TTL_SEC = 2.0
+_GIT_CACHE_MAX_ENTRIES = 64
+_GIT_CACHE: dict[str, tuple[float, str]] = {}
+_GIT_REFRESHING: set[str] = set()
+_GIT_CACHE_LOCK = threading.Lock()
 
-    Считается заново при каждой сборке статус-линии: build_status_line зовётся
-    несколько раз за ход (постановка в очередь, старт, завершение), а не на
-    каждый кадр рамки, поэтому git-подпроцессы здесь не дороги. Кэш на
-    короткий TTL не нужен — на медленной машине быстрый ход завершается
-    быстрее TTL, и секция показывала устаревшее состояние репозитория.
+
+def _git_cache_key(workdir: str | None) -> str:
+    return os.path.abspath(workdir or os.getcwd())
+
+
+def _refresh_git_cache(key: str, workdir: str | None) -> None:
+    try:
+        value = _query_git(workdir)
+        with _GIT_CACHE_LOCK:
+            _GIT_CACHE[key] = (time.monotonic(), value)
+            while len(_GIT_CACHE) > _GIT_CACHE_MAX_ENTRIES:
+                oldest = min(_GIT_CACHE, key=lambda k: _GIT_CACHE[k][0])
+                if oldest == key and len(_GIT_CACHE) > 1:
+                    oldest = min(
+                        (k for k in _GIT_CACHE if k != key),
+                        key=lambda k: _GIT_CACHE[k][0],
+                    )
+                _GIT_CACHE.pop(oldest, None)
+    finally:
+        with _GIT_CACHE_LOCK:
+            _GIT_REFRESHING.discard(key)
+
+
+def _git_section(workdir: str | None) -> str:
+    """Вернуть cached Git-секцию и при необходимости обновить её в фоне.
+
+    Никогда не запускает git синхронно из build_status_line: статус строится в
+    event loop, поэтому даже один медленный subprocess замораживал SSE, UI и
+    переход к следующему запросу. При протухшем кэше сразу возвращаем последнее
+    значение и запускаем максимум один daemon-refresh на workdir.
     """
-    return _query_git(workdir)
+    key = _git_cache_key(workdir)
+    now = time.monotonic()
+    with _GIT_CACHE_LOCK:
+        cached = _GIT_CACHE.get(key)
+        if cached is not None and (now - cached[0]) < _GIT_CACHE_TTL_SEC:
+            return cached[1]
+        stale = cached[1] if cached is not None else ""
+        if key in _GIT_REFRESHING:
+            return stale
+        _GIT_REFRESHING.add(key)
+
+    threading.Thread(
+        target=_refresh_git_cache,
+        args=(key, key),
+        name="necli-git-status",
+        daemon=True,
+    ).start()
+    return stale
 
 
 def _numstat(workdir: str | None, extra: list[str]) -> list[tuple[int, int]]:
     """Пары (added, deleted) по файлам из `git diff --numstat`."""
     try:
         out = subprocess.run(
-            ["git", "diff", "--numstat"] + extra,
-            cwd=workdir, capture_output=True, text=True, timeout=2,
+            ["git", "diff", "--numstat", *extra],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
     except Exception:
         return []
@@ -71,8 +131,7 @@ def _numstat(workdir: str | None, extra: list[str]) -> list[tuple[int, int]]:
 
 def _count_file_lines(workdir: str, path: str) -> int:
     try:
-        with open(os.path.join(workdir, path), "r",
-                  encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(workdir, path), encoding="utf-8", errors="replace") as f:
             return sum(1 for _ in f)
     except Exception:
         return 0
@@ -82,7 +141,10 @@ def _query_git(workdir: str | None) -> str:
     try:
         out = subprocess.run(
             ["git", "status", "--porcelain", "-b"],
-            cwd=workdir, capture_output=True, text=True, timeout=2,
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
     except Exception:
         return ""
@@ -128,7 +190,12 @@ def build_status_line(state, extra: str = "") -> str:
     """
     s = state.session
     mc = s.message_count
-    in_tok = s.raw_input_tokens
+    # ↑ — фактический суммарный input API-запросов. В отличие от
+    # raw_input_tokens, provider usage включает system prompt и native
+    # tool schemas (в том числе MCP). Полоса контекста ниже показывает
+    # текущую историю + системный промт (session.system_prompt_tokens),
+    # а не накопленный billing input.
+    in_tok = s.input_tokens
     out_tok = s.output_tokens
     total_tok = s.context_tokens
 
@@ -140,18 +207,20 @@ def build_status_line(state, extra: str = "") -> str:
     if _api_id:
         # Читаем при каждой пересборке строки: списание за завершившийся запрос
         # сразу отражается в рамке поля ввода.
-        from apis.config import get_provider_balance
-        provider_balance = f" · {get_provider_balance(_api_id):g}$"
+        from apis.config import get_provider_balance, get_router_balance
+
+        balance = (
+            get_router_balance(config.get_active_api_model())
+            if _api_id == "routers"
+            else get_provider_balance(_api_id)
+        )
+        provider_balance = f" · {balance:g}$"
     else:
         provider_balance = ""
 
     # Секция 1 — провайдер и модель; секция 2 — usage (сообщения, токены,
     # стоимость, контекст). Вспомогательные индикаторы (think, extra) — вне.
-    sec1_inner = (
-        (f"🔌 {_api_id} · " if _api_id else "")
-        + state.cur_model
-        + provider_balance
-    )
+    sec1_inner = (f"🔌 {_api_id} · " if _api_id else "") + state.cur_model + provider_balance
     ctx_str = f"{ctx_bar} {format_tokens(total_tok)}/{format_tokens(ctx_limit)}"
 
     msg_str = f"{mc}msg" if mc > 0 else ""

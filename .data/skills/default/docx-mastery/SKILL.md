@@ -1,585 +1,807 @@
 ---
 name: docx-mastery
-description: Создание и редактирование .docx через create_docx (HTML→pandoc→DOCX): научные работы, аналитические отчёты, формулы, таблицы, графики matplotlib, картинки, inline-стили, round-trip read→edit→write.
+description: "Native DOCX creation and editing through the docx_engine-backed docx tool: compact block reads, token-efficient targeted edits, rich runs, tables, extended LaTeX-to-OMML formulas, images, charts, sections, headers/footers, comments, notes, tracked changes, and lossless preservation of untouched OOXML. Use for any .docx task."
 ---
 
-# docx-mastery
+# DOCX Mastery — native docx_engine
 
-Полное руководство по работе с .docx через инструменты `create_docx` (запись) и `read_files` (чтение). DOCX = HTML под капотом, единый формат на чтение и запись — это позволяет редактировать существующие документы без потерь.
+This skill is the authoritative workflow for `.docx` files in necli.
 
-## 0. ГЛАВНЫЕ ПРАВИЛА (читать первыми — экономят 10 раундов)
+## 0. Non-negotiable rules
 
-Эти правила выстраданы на реальной курсовой, которая заняла 14 раундов вместо 4-5. Соблюдай ВСЕ с первого вызова.
+1. **Use `read` to understand a DOCX, and `docx` to create/edit/inspect it.**
+2. **Never use `create_file` or `patch_file` on a `.docx`.** A DOCX is a ZIP/OOXML package
+3. **Never manipulate raw OOXML** Public creation intentionally rejects raw OOXML blocks. Prefer semantic blocks/runs/options
+4. **Minimize tokens** Start with compact `read`. Inspect only the exact blocks or metadata you need. Batch edits into one `docx(action="edit")` call
+5. **Preserve what the user did not ask to change.** Editing keeps untouched original blocks/parts. Do not reconstruct the whole document just to change a few places
+6. **Block IDs (`bN`) belong to the current document version.** Structural edits can shift IDs. Re-read before a later call that needs fresh IDs
+7. **Prefer explicit failure over silent formatting loss.** If a text block has mixed styles/links/math/notes, do not force `set(text)`. Use `runs` or `replace`
+8. **For a supplied template/reference DOCX, preserve it instead of imitating it from memory.** Copy the file to the requested output path when needed, then edit the copy with `docx`.
+9. **Use black as the default text color everywhere unless another color is explicitly requested.**
 
-1. **Копируй оформление образца БУКВАЛЬНО.** Если пользователь дал пример/шаблон («с точностью до выданного оформления») — повторяй его структуру один-в-один: содержание С НОМЕРАМИ СТРАНИЦ, описание классов тем же форматом (список кода построчно, а не своя проза), «Индивидуальное задание» той же таблицей сверху. Меняй ТОЛЬКО содержание, не структуру/стиль. Своевольный рерайт «в свой стиль» = провал задачи.
-2. **Скриншоть КАЖДУЮ содержательную страницу, не выборочно.** После create_docx — сразу `docx_screenshot {"path": "...", "pages": "all"}` (или диапазон `"3-14"` для длинных разделов кода/таблиц). Код, таблицы, схемы — самые ломкие места; не смотри только титул и «общие» страницы. Все страницы прикрепятся разом.
-3. **Коммить рабочую версию в git ПЕРЕД крупной правкой.** Получилась нормальная версия — `git add -A && git commit -m "docx: рабочая версия"`. Дальше правь ТОЧЕЧНО через patch_file по HTML-исходнику (см. §4), а не переписывай 250 строк целиком 4 раза. Откат — `git checkout`.
-4. **Титульник — компактно с первого раза.** НЕ подбирай `<br/>` вслепую. Однотипные right-блоки (Выполнил / ФИО / Проверил) ставь подряд БЕЗ пустых строк между ними. «К.ф.-м.н., доцент / ФИО» склеивай в одну строку. Между логическими блоками — максимум 2-3 `<p><br/></p>`. Цель — одна страница.
-5. **Длинный вывод программы рендерь в PNG в 2-3 КОЛОНКИ.** Вывод на 40+ строк в одну колонку даёт картинку 360×1400 px — она занимает всю страницу и отрывается от подписи. Разбей на 2-3 колонки через matplotlib/PIL, чтобы картинка была ШИРОКОЙ, а не длинной (целевая ширина ~1650 px, высота < 900).
-6. **Вычитывай текст перед финальной сборкой.** Согласование родов/падежей: «соответствующее поддерево», не «соответствующий поддерево». Копипаст без вычитки = опечатки в готовой работе.
+## 1. Mental model
 
-## 1. Когда использовать
+Think of a DOCX as an ordered semantic block list:
 
-- Документы с форматированием, формулами, таблицами, картинками, графиками → **только `create_docx`**.
-- НЕ создавай markdown-копию рядом и НЕ используй `write_file` для .docx.
-- Простые `.txt`/`.md` → обычный `write_file` (этот скилл им не нужен).
+- paragraph
+- heading
+- list item
+- table
+- display formula
+- image
+- chart
+- page break
+- TOC/caption and other generated objects
 
-## 2. Типы документов и общий workflow
+`read` gives a compact, line-addressable representation. Example:
 
-Три основных типа, каждый со своими правилами:
+```text
+[DOCX blocks: 8; edit with docx(action="edit") using current bN ids; ...]
+b0 h1 | Report
+b1 p {bold,link} | Revenue increased by 12%.
+b2 li:bullet:0 | First point
+b3 table:3x2 | Name | Value ; A | 10 ; B | 20
+b4 math | x^2+1
+b5 image | 640x360px align=center wrap=inline
+b6 chart | Quarterly trend
+b7 p | Conclusion
+meta | header, footer, comments=2
+```
 
-| Тип | Примеры | Структура | Особенности |
-|---|---|---|---|
-| **Научная работа** | курсовая, РГР, реферат, диплом | титульник → содержание → введение → разделы → заключение → литература | строгий ГОСТ-подобный стиль, формулы LaTeX, нумерованные таблицы |
-| **Аналитический отчёт** | сравнение продуктов/моделей, рыночный анализ, бенчмарк-обзор | cover → executive summary → методология → данные по осям → сводный рейтинг → выводы → источники | **обязательны графики**, цифры **только** из проверенных источников |
-| **Бизнес-документ** | договор, КП, ТЗ, отчёт о работе | произвольная, по шаблону заказчика | плейсхолдеры, реквизиты, нумерация пунктов |
+The `bN` ID is the preferred edit target. It is deliberately compact and temporary.
 
-### Универсальный workflow создания
+## 2. Token-efficient workflow
 
-1. **Уточнить требования** (если не очевидны): академический формат или вольный, объём, наличие графиков, требуется ли титульник.
-2. **Для отчётов с фактологией — СНАЧАЛА данные, потом текст**:
-   - `web_search` по каждому ключевому факту/цифре/цене (см. §13).
-   - Собрать сырые данные в структуре (список dict / таблицу).
-   - Через `python3 -c` пересчитать все агрегаты (средние, суммы, ранги, композиты).
-   - Сгенерировать графики PNG через matplotlib (см. §14).
-3. Собрать HTML-буфер целиком в голове / в текстовом черновике.
-4. Один вызов `create_docx` с полным HTML.
-5. **НЕ** делать read_files сразу после записи для «проверки» — round-trip нормирует формат и это не значит, что файл плохой.
+### Reading a document
 
-## 3. Чтение .docx (read_files)
+Start with generic `read`:
 
-`read_files {"path": "report.docx"}` возвращает HTML с маркером `[DOCX as HTML (editable via create_docx)]` в первой строке. Структура:
+```json
+{"path":"report.docx"}
+```
 
-- `h1`-`h6` — заголовки
-- `p` — параграфы (с inline-стилями `style="text-align:...; font-size:...; color:..."`)
-- `table/thead/tbody/tr/th/td` — таблицы
-- `ul/ol/li` — списки
-- `img src="..."` — картинки (пути уже абсолютные, типа `/tmp/necli_docx_media_<hash>/media/rId19.png`)
-- `$...$` / `$$...$$` — формулы LaTeX (round-trip работает)
-- Пустые параграфы возвращаются как `<p><br/></p>`
+For long documents, use the normal `read` pagination arguments (`offset`, `limit`) instead of requesting the entire document.
+Do **not** inspect every block after reading. The compact read is usually enough to locate the target.
 
-Картинки извлекаются во временную папку автоматически — пути можно передавать обратно в `create_docx` как есть.
+### Inspecting exact details
 
-## 4. Типовой паттерн редактирования (НЕ переписывай весь HTML!)
+Use targeted inspect only when exact formatting, runs, table structure, links, comments, math, etc. matter:
 
-🔴 **ГЛАВНОЕ ПРАВИЛО РЕДАКТИРОВАНИЯ: правь HTML ТОЧЕЧНО через patch_file ПРЯМО ПО .docx, не перегенерируй весь документ.**
+```json
+{"action":"inspect","path":"report.docx","target":"b17"}
+```
 
-Движок при `create_docx` сохраняет ТОЧНЫЙ HTML-исходник рядом с документом. При `read_files` на .docx ты получаешь этот самый исходник (а не результат pandoc round-trip) с маркером `[DOCX as HTML. To EDIT: patch_file this HTML in place ...]`. **patch_file работает по этому HTML напрямую** — указывай в нём путь к `.docx`.
+Several blocks may be inspected together:
 
-Правильный цикл редактирования существующего документа:
+```json
+{"action":"inspect","path":"report.docx","target":["b17","b18","b22"]}
+```
 
-1. `read_files {"path": "report.docx"}` — получи HTML-исходник (он точный, без потерь).
-2. **`patch_file {"path": "report.docx", "find": "<короткий якорь>", "replace": "<новый фрагмент>"}`** — поправь ТОЛЬКО нужный кусок. Можно несколько patch_file подряд / списком патчей.
-3. `create_docx {"path": "report.docx", "content": "<HTML>"}` — пересобери .docx из обновлённого HTML.
+Without `target`, inspect returns document metadata only:
 
-То есть: меняешь одну таблицу/абзац/формулу → `patch_file` находит её по якорю и заменяет, а НЕ ты заново печатаешь 300 строк HTML в `content`. Это:
-- экономит раунды и токены (не диктуешь весь документ заново);
-- не вносит случайных регрессий в нетронутые разделы;
-- единственный способ для больших документов (>150 строк) — переписывание целиком там почти всегда что-то ломает.
+```json
+{"action":"inspect","path":"report.docx"}
+```
 
-### Когда какой инструмент
+Use `includeRaw:true` only when debugging preservation/OOXML. It is expensive. Use `includeMedia:true` only when image bytes are genuinely required. It can be extremely expensive.
 
-| Ситуация | Что делать |
+### Editing
+
+Batch independent changes in one call:
+
+```json
+{
+  "action":"edit",
+  "path":"report.docx",
+  "ops":[
+    {"op":"set","target":"b3","text":"Updated introduction"},
+    {"op":"delete","target":"b9"},
+    {"op":"insert","where":"after","target":"b12","blocks":[{"type":"p","text":"New paragraph"}]}
+  ]
+}
+```
+
+One batch is preferable to many tiny tool calls when the targets are all from the same current read version.
+
+After a structural `insert`, `replace`, or `delete`, old `bN` IDs may no longer correspond to the next version. If another edit call is needed, re-read first.
+
+## 3. Creating a document
+
+Minimal creation:
+
+```json
+{
+  "action":"create",
+  "path":"report.docx",
+  "blocks":[
+    {"type":"h1","text":"Report"},
+    {"type":"p","text":"Introduction."}
+  ]
+}
+```
+
+Plain strings are paragraph shorthand:
+
+```json
+{"action":"create","path":"notes.docx","blocks":["First paragraph","Second paragraph"]}
+```
+
+By default creation overwrites an existing path. Set `overwrite:false` when accidental overwrite must be prevented.
+
+## 4. Block DSL
+
+### Paragraph
+
+```json
+{"type":"p","text":"Plain paragraph"}
+```
+
+or rich text:
+
+```json
+{
+  "type":"p",
+  "runs":[
+    {"text":"Normal "},
+    {"text":"bold","bold":true},
+    {"text":" and link","link":"https://example.com"}
+  ],
+  "format":{"align":"justify"}
+}
+```
+
+### Headings
+
+Preferred compact syntax:
+
+```json
+{"type":"h1","text":"Main title"}
+{"type":"h2","text":"Section"}
+```
+
+`h1` through `h9` are supported. Equivalent explicit form:
+
+```json
+{"type":"heading","level":2,"text":"Section"}
+```
+
+Use `styleId` only when matching a specific existing Word style is necessary.
+
+### Lists
+
+Bullet:
+
+```json
+{"type":"li","list":"bullet","text":"First point"}
+```
+
+Ordered:
+
+```json
+{"type":"li","list":"ordered","text":"First step"}
+```
+
+Nested level:
+
+```json
+{"type":"li","list":"bullet","level":1,"text":"Nested point"}
+```
+
+Advanced list form can specify an existing numbering definition:
+
+```json
+{"type":"li","list":{"kind":"ordered","numId":"7","ilvl":2},"text":"Item"}
+```
+
+For normal creation, let the tool allocate numbering automatically.
+
+### Tables
+
+Simple table:
+
+```json
+{
+  "type":"table",
+  "header":true,
+  "rows":[
+    ["Name","Value"],
+    ["A","10"],
+    ["B","20"]
+  ]
+}
+```
+
+`header:true` makes the first row bold and gives it a light fill.
+
+A cell may be an object rather than a string. `text` is shorthand for a one-paragraph cell:
+
+```json
+{
+  "type":"table",
+  "rows":[
+    [{"text":"A","bold":true},{"paras":["line 1","line 2"]}]
+  ]
+}
+```
+
+Optional column sizing:
+
+```json
+{"colWidthsPct":[30,70]}
+```
+
+or:
+
+```json
+{"colWidthsTwips":[3000,6500]}
+```
+
+Do not over-specify widths unless required. Wide tables are inherently fragile in Word. Prefer fewer columns or landscape orientation when appropriate.
+
+### Display mathematics
+
+```json
+{"type":"math","latex":"\\frac{a}{b}=c"}
+```
+
+Optional alignment:
+
+```json
+{"type":"math","latex":"E=mc^2","align":"center"}
+```
+
+Use LaTeX source. The engine converts it to native editable Word OMML.
+
+### Supported LaTeX subset
+
+Use the supported semantic subset rather than assuming full TeX or package compatibility. The engine supports ordinary grouping, fractions, roots, scripts, Greek letters, common relations, delimiters, matrices and the following extensions:
+
+| Category | Supported commands and environments |
 |---|---|
-| Создаёшь документ С НУЛЯ | `create_docx` с полным HTML — иначе нечего патчить |
-| Правишь существующий .docx (1-5 мест) | `read_files` → **`patch_file` по .docx** (точечно) → `create_docx` для пересборки |
-| Меняешь почти весь документ | можно `create_docx` целиком, но подумай — обычно правок меньше, чем кажется |
+| Mathematical alphabets | `\mathbb`, `\mathcal`, `\mathfrak`, `\mathbf`, `\mathit`, `\boldsymbol`, `\mathsf`, `\mathtt`, `\mathnormal`, `\mathrm` |
+| Operators and limits | `\sum`, `\prod`, `\coprod`, common integrals, `\bigcup`, `\bigcap`, `\bigsqcup`, `\bigvee`, `\bigwedge`, `\bigodot`, `\bigotimes`, `\bigoplus`, `\lim`, `\limsup`, `\liminf`, `\argmax`, `\argmin` |
+| Accents and annotations | `\hat`, `\widehat`, `\bar`, `\vec`, `\overrightarrow`, `\overleftarrow`, `\dot`, `\ddot`, `\tilde`, `\widetilde`, `\check`, `\breve`, `\overset`, `\underset`, `\stackrel`, `\not` |
+| Multi-line structures | `matrix`, `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`, `Vmatrix`, `cases`, `array`, `aligned`, `align`, `gather`, `gathered`, `split`, `smallmatrix`, `\substack` |
+| Layout and spacing | `\displaystyle`, `\textstyle`, `\scriptstyle`, `\scriptscriptstyle`, `\,`, `\;`, `\quad`, `\qquad` and related supported spacing commands |
 
-### Якоря для patch_file по docx-HTML
+Use `\mathbb{R}`, `\mathbb{N}`, `\mathbb{Z}` and `\mathbb{Q}` directly; they become native double-struck Unicode symbols in OMML. Restrict mathematical-alphabet arguments to Latin letters and, where appropriate, digits. Keep custom macros, `\newcommand`, package imports, TikZ, `\require`, and arbitrary package-specific commands out of DOCX formulas.
 
-- Бери КОРОТКИЙ уникальный текстовый якорь без HTML-тегов внутри: фрагмент абзаца, число из таблицы, заголовок. Длинные find с вложенными тегами рвутся из-за прокси-эскейпа (см. §15).
-- Заголовок раздела (`РАЗДЕЛ 2: ...`) — отличный якорь, чтобы заменить весь блок под ним.
-- Если правишь значение в ячейке — find по соседнему уникальному тексту строки.
+### Inline mathematics
 
-### Альтернатива: держать HTML отдельным .html-файлом
+Inside a paragraph run:
 
-Для очень больших/часто правимых документов удобно (как делает GenSpark-агент): один раз `write_file report.html` с полным HTML → дальше `patch_file report.html` для всех правок → `create_docx path="report.docx" content="<содержимое report.html>"` для сборки. HTML-файл — единый источник правды, .docx — артефакт сборки. Это устраняет любые сомнения «а сохранился ли исходник».
-
-### Золотое правило объёма
-
-Если пользователь не просил сократить — отдавай документ ТОЙ ЖЕ полноты. patch_file как раз и страхует от случайного «усыхания»: ты меняешь точечно, остальное не трогается.
-
-### Золотое правило редактирования
-
-Если пользователь не попросил сократить/переформулировать — **НЕ ТРОГАЙ** объём и структуру оригинала. Сохраняй ВСЕ абзацы введения/заключения, ВСЕ таблицы (по одной на каждый набор параметров — не объединяй в сводные), ВСЕ подзаголовки. Типичная регрессия: «улучшил» работу, выкинув треть введения и склеив три таблицы в одну.
-
-## 5. Возможности HTML в create_docx
-
-- Заголовки `h1…h6`; параграфы `p`; inline `strong`/`em`/`code`/`br`
-- Списки `ul/li`, `ol/li` (включая вложенные)
-- Таблицы `table/thead/tbody/tr/th/td`. Формулы внутри ячеек работают: `<td>$x^2$</td>` (можно без `<p>`)
-- Картинки `<img src="data:image/png;base64,…">` или локальный путь
-- Математика: `$a^2+b^2=c^2$` (inline) и `$$\int_0^\infty e^{-x^2}\,dx$$` (display) → Pandoc → OMML (редактируемые формулы Word)
-- Код `<pre><code>…</code></pre>`; цитаты `blockquote`; горизонтальный разделитель `<hr/>`
-- **Inline-стили** через `style=` на `span/p/div/td/th/li/h1..h6`:
-  - `color: #c00000`
-  - `font-family: Arial`
-  - `font-size: 18pt`
-  - `background-color: #ffff00`
-  - `text-align: center|right|justify`
-
-## 6. Дефолтные стили (применяются автоматически)
-
-- Times New Roman 14pt, цвет чёрный
-- Межстрочный интервал 1.5
-- Отступ первой строки абзаца 1.25 cm
-- Заголовки H1-H6: TNR жирный ЧЁРНЫЙ, размеры 16/14/13/13/13/13 pt
-- Поля страницы 2 cm со всех сторон
-- **Каждый H1 = новая страница** (page-break перед каждой главой, кроме первой) — не вставляй разрывы вручную. Следствие: НЕ делай H1 для мелких хвостовых блоков (например «продолжение раздела после рисунка») — получишь почти пустую страницу. H1 — только для настоящих глав (Введение, Раздел N, Заключение, Список литературы). Подразделы — H2/H3, они НЕ форсят разрыв.
-- Таблицы получают границы и ширину 100% автоматически
-- **Отступ первой строки (red-line) убирается АВТОМАТИЧЕСКИ** у центрированных/right-параграфов (подписи рисунков, картинки, титульник) и у первого абзаца сразу после картинки. Не нужно вручную городить `style="text-indent:0"` — пост-процесс это делает сам. Обычные justify-абзацы red-line сохраняют.
-- **Код в `<pre><code>` и inline `<code>` безопасен для любых символов.** `<`, `>`, `&` внутри code НЕ нужно экранировать вручную — пиши C++/HTML как есть: `std::vector<Lexeme>`, `#include <iostream>`, `<программа>`. Пост-процесс впечатывает код в docx в обход pandoc, символы не теряются.
-
-### HTML-конструкции, которые ЛОМАЮТ конвертацию в DOCX (НЕ используй)
-
-pandoc HTML reader заточен под семантическую разметку, не под вёрстку. Эти конструкции либо игнорируются, либо ломают результат — НЕ применяй их:
-
-- **`display:flex` / `display:grid`** для раскладки контента — в DOCX не существует flex/grid, контент схлопывается или едет. Колонки делай через таблицу.
-- **`position: absolute|fixed`, `float`, `z-index`** — позиционирование игнорируется, элемент уезжает или пропадает.
-- **CSS-переменные `var(--x)`** — pandoc их не вычисляет, цвет/размер не применится. Пиши конкретные значения (`#003366`, `14pt`).
-- **`@media`-запросы, `::before/::after` с `content`** — бесполезны в статичном DOCX, отбрасываются.
-- **Внешние CSS (`<link rel=stylesheet>`)** и `<script>` — не подгружаются/игнорируются. Все стили — инлайном через `style="..."`.
-- **SVG-иконки** — не конвертируются. Нужен значок → emoji (✓ ✗ →) или PNG через `<img>`.
-- **`width`/`height` в `%`** на блоках — ненадёжно. Картинкам задавай размер пересохранением (matplotlib figsize / PIL), а не CSS.
-
-Правило: документ должен быть **self-contained** (всё оформление инлайном) и **семантическим** (h1-h6, p, ul/ol, table, а не div'ы с CSS-вёрсткой).
-
-### Единицы измерения — ТОЛЬКО pt
-
-DOCX — печатно-ориентированный формат, его «родная» единица — **пункт (pt)**, как в Word. Размеры шрифтов задавай в `pt`, и только в `pt`:
-
-- ✅ `font-size:14pt`, `font-size:18pt`, `font-size:24pt`.
-- ❌ НЕ используй `px`, `em`, `rem`, `vw`, `%` для шрифтов. `px`/`em` хоть и конвертируются движком приближённо (px → pt × 0.75, em → pt × 14), результат непредсказуем и зависит от контекста — в печатном документе это всегда промах. `rem`/`vw`/`%` вообще не имеют смысла без вьюпорта и игнорируются.
-- Привязка к контексту печати: основной текст 14pt (дефолт), заголовки 16/14/13pt (дефолт), подписи/мелкое 10-12pt, крупные акценты на титуле 18-24pt. Шаг — целые pt, дробные (13.5pt) не нужны.
-- Отступы/поля, если задаёшь явно, — в `cm` (`1.25cm`, `2cm`), не в px. Но обычно их трогать не надо — дефолты уже выставлены.
-- Размер картинок — НЕ через CSS (`width` в любых единицах ненадёжен), а пересохранением файла нужного размера (matplotlib `figsize`, PIL resize).
-
-### Код — моноширинным шрифтом
-
-- Программный код ВСЕГДА в `<pre><code>...</code></pre>` — он рендерится моноширинным (Courier New / Consolas), с сохранением отступов и без red-line. Это и есть «вид кода».
-- НЕ оформляй код обычными `<p>` со `style="font-family:Courier New"` — потеряются отступы и переносы, строки склеятся.
-- Внутри `<pre><code>` символы `<` `>` `&` писать как есть, без экранирования (см. выше). Тройные backticks внутри тоже безопасны.
-- Inline-фрагмент кода в тексте (имя функции, флаг) — `<code>...</code>`, тоже моноширинный.
-
-
-## 7. Правила оформления (строго)
-
-- `<strong>`/`<b>` — только для коротких акцентов и важных терминов. **Заголовок уже жирный** — НЕ оборачивай его в `<strong>`. Не выделяй жирным целые предложения.
-- `<em>`/`<i>` — **НЕ ИСПОЛЬЗУЙ курсив, если пользователь явно не попросил.** Курсивный TNR на практике рендерится плохо (рыхлый, неровный, хуже читается на экране и в печати), особенно для кириллицы и длинных фрагментов. Жёсткие ограничения:
-  - НЕ выделяй курсивом эмфазу по тексту, целые предложения, термины, подзаголовки.
-  - НЕ оборачивай в `<em>` описания после номера таблицы/рисунка — пиши их обычным текстом: `<p><strong>Таблица 1</strong> — описание</p>`.
-  - Единственное допустимое автоматическое применение — фамилии авторов в списке литературы (ГОСТ-стандарт), и то только если оформление по ГОСТ. Во всех остальных случаях курсив добавляется ТОЛЬКО по явному запросу пользователя.
-- Выравнивание — атрибутом `style="text-align:center|right|justify"` на `p/h*/div`. Для содержательных абзацев — `text-align:justify`. На H1/H2 ставить выравнивание НЕ нужно (они одной строкой).
-- Таблицы — только когда данные реально табличные (≥2 столбца, ≥2 строки). НЕ делай таблицу для титульника.
-- Каждый смысловой блок — отдельный `<p>`. Не клей мысли через `<br/>`.
-- Список литературы — **один** `<ol>` на весь список, БЕЗ обрыва нумерации (не делай два `<ol>` подряд — pandoc продолжит с 1).
-- **Подписи к таблицам — ПЕРЕД таблицей**: `<p><strong>Таблица N</strong> — описание</p>`. К рисункам — **ПОСЛЕ** `<img>`: `<p style="text-align:center;"><strong>Рисунок N</strong> — описание</p>`. Описание — обычным текстом, без `<em>`.
-- Подписи нумеруются сквозной нумерацией по типу: Таблица 1, Таблица 2, ...; Рисунок 1, Рисунок 2, ... (раздел-внутри-номера, типа «Таблица 2.1», использовать только если работа большая, >50 страниц).
-- НЕ пиши `<colgroup>` с шириной столбцов в процентах — post-process всё равно ставит 100% на таблицу, мусор в HTML не нужен.
-- **Подпись рисунка вплотную к картинке** — БЕЗ пустого `<p>` между `<img>` и подписью. Картинка и «Рисунок N — …» идут двумя соседними параграфами, иначе подпись «отплывает».
-- **Два заголовка подряд без текста между ними — плохо.** Если за «3.2 Результаты» сразу идёт «3.2.1 Пример работы» — вставь между ними вводный абзац (1-2 предложения, что будет в подразделе) ИЛИ объедини подразделы. Голые `<h2>` + `<h2>` подряд выглядят неряшливо.
-- **`<br/>` — НЕ разделитель отступов.** Не ставь `<p><br/></p>` ради вертикального зазора между блоками (кроме титульника). Вертикальный ритм даёт сам межстрочный 1.5 + интервалы абзацев. `<br/>` только для переноса строки ВНУТРИ одного логического абзаца.
-- **Перечисление сущностей/классов — список, а не проза.** После «состоит из следующих сущностей:» используй `<ul>`/`<ol>` или `<dl>` (`<dt>enum class Kind</dt><dd>— описание</dd>`), а не цепочку обычных justify-параграфов `<p><strong>X</strong> — …</p>` с red-line. Если образец показывал построчный список кода — копируй именно его формат.
-- **Содержание — С НОМЕРАМИ СТРАНИЦ**, если так в образце. «Введение …… 4», «Раздел 1 …… 5». Без номеров содержание выглядит «не как пример». Номера проставь вручную по факту вёрстки (после первого скриншота всех страниц видно, где что начинается).
-- **H2-подзаголовки должны визуально отличаться от текста.** Они и так 14pt жирные; чтобы отделить от обычного `<strong>`-абзаца — НЕ оборачивай обычные абзацы в `<strong>` целиком (тогда h2 теряется на их фоне). Заголовок уже жирный сам по себе — оставь основной текст обычным.
-
-## 8. Структура научной работы (курсовая / реферат / РГР / отчёт)
-
-### Что обязательно должно быть
-
-1. **Полноценный титульный лист** с центрированием и нарастающим шрифтом: министерство, ВУЗ, кафедра — center; название работы — center, 18pt, жирный; тема — center; блок «Выполнил/Проверил» — `text-align:right`; город и год — center.
-2. **Содержание** (h1 «СОДЕРЖАНИЕ» + `<ol>` или `<ul>` с пунктами).
-3. **Развёрнутое введение** из НЕСКОЛЬКИХ абзацев: суть метода, история, области применения, цель работы. НЕ сжимай до одного абзаца «вкратце».
-4. Каждый содержательный раздел — h1 «РАЗДЕЛ N. …» + h2-подразделы с нумерацией: «1.1 Постановка задачи», «1.2 Теоретические основы / Метод решения», «1.3 Текст программы», «1.4 Результаты экспериментов», «1.5 Выводы по блоку». Не сваливай весь раздел в один поток.
-5. Для каждого набора входных параметров — **ОТДЕЛЬНАЯ таблица** с подписью «Таблица N — …». НЕ объединяй несколько наборов в одну широкую сводную — это менее читаемо.
-6. **Развёрнутое заключение** из нескольких абзацев с конкретными результатами по каждому блоку, а не «работа выполнена, метод работает».
-7. **Список литературы** — один `<ol>`, авторы в `<em>`, точное библиографическое описание.
-
-### Про пустые параграфы на титульнике
-
-Каждый `<p><br/></p>` при межстрочном 1.5 и шрифте 14pt = ~0.75 см вертикального пространства. На странице A4 за вычетом полей помещается ~26 см. Чтобы титульник уложился НА ОДНУ страницу, используй **максимум 2-3** пустых `<p><br/></p>` между логическими блоками. 5+ пустых параграфов выбрасывают «Выполнил/Проверил» на отдельную страницу.
-
-### Шаблон РГР / курсовой
-
-```html
-<p style="text-align:center;">Министерство науки и высшего образования Российской Федерации</p>
-<p style="text-align:center;">Федеральное государственное бюджетное образовательное учреждение</p>
-<p style="text-align:center;">высшего образования</p>
-<p style="text-align:center;"><strong>«Название университета»</strong></p>
-<p style="text-align:center;">Факультет</p>
-<p style="text-align:center;">Кафедра</p>
-<p><br/></p><p><br/></p><p><br/></p>
-<p style="text-align:center; font-size:18pt;"><strong>РАСЧЁТНО-ГРАФИЧЕСКАЯ РАБОТА</strong></p>
-<p style="text-align:center; font-size:16pt;">по дисциплине «...»</p>
-<p style="text-align:center;"><strong>Тема:</strong></p>
-<p style="text-align:center;">«Название темы»</p>
-<p style="text-align:center;"><strong>Вариант N</strong></p>
-<p><br/></p><p><br/></p>
-<p style="text-align:right;"><strong>Выполнил:</strong> студент N курса</p>
-<p style="text-align:right;">Фамилия Имя Отчество</p>
-<p style="text-align:right;"><strong>Проверил(а):</strong> Фамилия И.О., учёная степень, должность</p>
-<p><br/></p><p><br/></p>
-<p style="text-align:center;"><strong>Город, Год</strong></p>
-
-<h1 style="text-align:center;">СОДЕРЖАНИЕ</h1>
-<ul>
-  <li>Введение</li>
-  <li>Раздел 1. ...</li>
-  <li>Раздел 2. ...</li>
-  <li>Заключение</li>
-  <li>Список использованной литературы</li>
-</ul>
-
-<h1>ВВЕДЕНИЕ</h1>
-<p style="text-align:justify;">Абзац 1: суть метода/темы, базовые принципы...</p>
-<p style="text-align:justify;">Абзац 2: история, ключевые имена, контекст возникновения...</p>
-<p style="text-align:justify;">Абзац 3: области применения с конкретными примерами...</p>
-<p style="text-align:justify;">Абзац 4: цель данной работы и краткое перечисление задач...</p>
-
-<h1>РАЗДЕЛ 1. БЛОК I — НАЗВАНИЕ (задача N)</h1>
-<h2>1.1 Постановка задачи</h2>
-<p style="text-align:justify;">...</p>
-<p>$$F(x) = \int_0^x \dots\, dy$$</p>
-<h2>1.2 Теоретические основы</h2>
-<p style="text-align:justify;">...</p>
-<h2>1.3 Текст программы</h2>
-<pre><code>import numpy as np
-...</code></pre>
-<h2>1.4 Результаты экспериментов</h2>
-<p><strong>Таблица 1</strong> — <em>Результаты для Набора 1 (alpha1=2, alpha2=3, x=1)</em></p>
-<table>
-  <thead><tr><th>n</th><th>F^(x)</th><th>F(x)</th><th>eps</th></tr></thead>
-  <tbody>
-    <tr><td>100</td><td>0,742</td><td>0,6875</td><td>0,0797</td></tr>
-  </tbody>
-</table>
-<h2>1.5 Выводы по блоку</h2>
-<p style="text-align:justify;">Конкретные выводы по этому блоку: что показали данные, как ведёт себя погрешность, что согласуется с теорией...</p>
-
-<h1>РАЗДЕЛ 2. БЛОК II — ...</h1>
-
-<h1>ЗАКЛЮЧЕНИЕ</h1>
-<p style="text-align:justify;">Абзац по Блоку I: что сделано, какой результат...</p>
-<p style="text-align:justify;">Обобщающий вывод о достижении цели...</p>
-
-<h1>СПИСОК ИСПОЛЬЗОВАННОЙ ЛИТЕРАТУРЫ</h1>
-<ol>
-  <li><em>Фамилия И.О.</em> Название книги. — М.: Изд-во, 2020. — 320 с.</li>
-  <li><em>Author A., Author B.</em> Title // Journal. — Year. — Vol. N, N M. — P. 1-10.</li>
-</ol>
-```
-
-## 9. Структура аналитического отчёта (сравнение / обзор / бенчмарк)
-
-Аналитический отчёт = НЕ научная работа. У него нет вуза, нет «выполнил/проверил», есть **обложка** и фокус на **визуализации данных**.
-
-### Обязательная структура
-
-1. **Cover** — небольшой блок: жирный заголовок 22-24pt, подзаголовок 14pt, перечисление сравниваемых объектов одной строкой, дата, источник данных.
-2. **Executive Summary / Краткие выводы** (1-2 абзаца сверху) — TL;DR для тех, кто не будет читать дальше. Главный итог, топ-3 победителя, основной критерий.
-3. **Методология** — какие источники, какие бенчмарки/метрики, дата сбора данных, формулы агрегации.
-4. **Раздел на каждую ось сравнения** — отдельная подтема, таблица с сырыми данными + **хотя бы один график** + текстовый анализ.
-5. **Сводный рейтинг** — таблица с нормированными баллами + radar/spider chart + scatter (если есть ось «цена»).
-6. **Выводы по сценариям** — h2-подразделы: «Максимальное качество», «Бюджетный вариант», «Open-source», «Специфический use-case» и т.д.
-7. **Источники** — нумерованный список URL с датой обращения и краткой пометкой что взято.
-
-### Cover-шаблон (без вуза)
-
-```html
-<p style="text-align:center; font-size:24pt;"><strong>Сравнительный анализ LLM-моделей 2026</strong></p>
-<p style="text-align:center; font-size:14pt;">Бенчмарки, цена, производительность</p>
-<p><br/></p>
-<p style="text-align:center;">Opus 4.7 - GPT-5.5 - Gemini 3.1 Pro - Kimi K2.6 - GLM-5.1 - DeepSeek V4 Pro - Grok 4.3 - Sonnet 4.6</p>
-<p><br/></p>
-<p style="text-align:center;"><em>По данным независимых лидербордов на 26 мая 2026</em></p>
-<hr/>
-
-<h1>Краткие выводы</h1>
-<p style="text-align:justify;">TL;DR в 2-4 предложения: кто лидер по качеству, кто по цене, кто оптимальный компромисс...</p>
-
-<h1>Методология</h1>
-<p style="text-align:justify;">Какие источники, какие метрики, дата сбора...</p>
-<ul>
-<li>SWE-bench Verified — официальный leaderboard swebench.com</li>
-<li>HLE — agi.safe.ai/leaderboard</li>
-<li>Цены — официальные прайсы вендоров (см. источники)</li>
-</ul>
-```
-
-### Композитные баллы и нормирование
-
-Если делаешь сводный рейтинг — пересчитывай через python, не от руки.
-
-```python
-import subprocess
-# Сырые данные (model -> {metric: value})
-data = {
-    "GPT-5.5":    {"swe_v": 88.7, "swe_pro": 67.9, "lcb": 94.8},
-    "Opus 4.7":   {"swe_v": 87.6, "swe_pro": 64.3, "lcb": 92.1},
-    # ...
+```json
+{
+  "type":"p",
+  "runs":[
+    {"text":"For "},
+    {"latex":"x^2+1"},
+    {"text":" we obtain..."}
+  ]
 }
-weights = {"swe_v": 0.4, "swe_pro": 0.4, "lcb": 0.2}
-scored = [(m, sum(v[k]*weights[k] for k in weights)) for m, v in data.items()]
-scored.sort(key=lambda x: -x[1])
-for rank, (m, s) in enumerate(scored, 1):
-    print(f"{rank}. {m}: {s:.2f}")
 ```
 
-Запускай через `shell` → `python3 -c '...'`, копируй результат в таблицу. **НЕ** считай 0.4·88.7 + 0.4·67.9 + 0.2·94.8 в голове — будут ошибки.
+Do not type LaTeX commands into an ordinary `text` run and expect conversion. Use the `latex` run field.
 
-## 10. Математика в деталях
+### Images
 
-- Inline-формулы: `$E = mc^2$` — пишутся прямо внутри `<p>` или `<td>`.
-- Display-формулы: `$$\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}$$` — отдельным `<p>$$...$$</p>`.
-- Многострочные выкладки: `$$\begin{aligned} a &= b + c \\ d &= e \end{aligned}$$`.
-- Греческие буквы, операторы, индексы — стандартный LaTeX: `\alpha`, `\sum_{i=1}^{n}`, `\frac{a}{b}`, `\sqrt[3]{x}`, `\partial`, `\nabla`.
-- В ячейках таблиц формулы работают без обёртки в `<p>`: `<td>$x^2$</td>`.
-- Pandoc конвертирует это в OMML — редактируемые формулы прямо в Word.
+The model should pass a filesystem path, not base64:
 
-### КРИТИЧЕСКОЕ ПРАВИЛО: LaTeX-команды ТОЛЬКО внутри $...$
-
-Backslash-команды LaTeX (`\frac`, `\left(`, `\right)`, `\alpha`, `\sum` и т.д.) работают **ТОЛЬКО** внутри `$...$` или `$$...$$`. В обычном тексте они выведутся как сырые символы.
-
-- ПЛОХО: `<p>Разрыв между $0,030\right) и $0,0013\left( - 23 раза</p>` → в docx будет мусор `\right)`.
-- ХОРОШО: `<p>Разрыв между 0,030 USD и 0,0013 USD - 23 раза</p>` (обычный текст).
-- Если нужно по-настоящему оформить — обернуть всю формулу: `<p>$\frac{0{,}030}{0{,}0013} \approx 23$</p>`.
-
-## 11. Картинки и графики
-
-### 11.1 Вставка картинок
-
-- Локальный путь: `<img src="/abs/path/to/image.png" alt="подпись"/>`.
-- Base64 data URI: `<img src="data:image/png;base64,iVBORw0KGgo..."/>`.
-- Пути из read_files (`/tmp/necli_docx_media_<hash>/...`) валидны и переживают round-trip.
-- Картинку оборачивай в центрированный параграф: `<p style="text-align:center;"><img src="..."/></p>`.
-- Подпись — отдельным `<p style="text-align:center;"><strong>Рисунок N</strong> — <em>описание</em></p>` ПОСЛЕ `<img>`.
-- Управление размером в Word через CSS НЕ работает надёжно — пересохрани картинку нужного размера через matplotlib `figsize` / PIL resize.
-
-### 11.2 Размер и пропорции
-
-- Ширина страницы A4 минус поля 2см = **16.5 см полезной ширины**.
-- Для широкого графика matplotlib используй `figsize=(11, 5.5)` или `(10, 6)` при `dpi=150` → ~1650×900 px → корректно влезет в страницу.
-- Радар/spider chart — квадратный, `figsize=(8, 8)` dpi=150.
-- НЕ вставляй картинку шире 1800 px — будет рендериться с обрезкой или схлопыванием.
-
-## 12. Таблицы
-
-- Используй `<thead>` для шапки и `<tbody>` для данных — pandoc корректно их различает.
-- Внутри `<td>`/`<th>` работают: текст, inline-формулы `$...$`, `<strong>`, `<em>`, `<br/>`.
-- Ширина столбцов — автоматическая равномерная (100% на всю ширину страницы).
-- Для широких таблиц с 6+ столбцами лучше разбить на несколько узких — Word плохо рендерит переполненные.
-- Десятичный разделитель — запятая в русскоязычных работах (0,742 не 0.742). Будь консистентен по ВСЕМУ документу.
-- Числовые столбцы оформляй с одинаковым количеством знаков после запятой (`88,7` и `92,1`, а не `88.7` и `92,10`).
-- Лидеров по столбцу можно выделять `<strong>` — но только лучшее значение, не всю строку.
-
-## 13. Верификация данных через web_search
-
-**КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО** придумывать конкретные числа: бенчмарки, цены, проценты, даты релизов, размеры контекста. Это самая частая регрессия в аналитических отчётах — модель пишет «правдоподобный» датасет, который полностью фейк.
-
-### Алгоритм для отчётов с фактологией
-
-1. **Перед написанием первого слова** — список всех нужных фактов: «нужны SWE-bench Verified для 8 моделей, цены API, даты релизов, размеры контекста».
-2. **Параллельные `web_search`** (до 5 в одном round'е) по каждому факту: `swebench leaderboard 2026`, `claude opus 4.7 pricing site:anthropic.com`, `kimi k2 release date moonshot`.
-3. **Фиксируй источник для каждого числа** в комментарии в HTML-черновике: `<td>87,6</td><!-- swebench.com на 25.05.2026 -->`.
-4. Если данных не нашлось — ставь `н/д` или «оценка автора (×)» с явной пометкой. **НЕ заполняй пропуски правдоподобными цифрами**.
-5. В конце документа — список источников с URL и датой обращения.
-
-### Что нельзя считать «общеизвестным»
-
-- Любые бенчмарки за последние 12 месяцев — обязательно проверять.
-- Цены API — меняются каждые 1-3 месяца у всех вендоров.
-- Размер контекста, длина output — особенно у быстро обновляющихся моделей.
-- Даты релизов конкретных версий (4.6 vs 4.7).
-
-### Что можно писать без поиска
-
-- Общие принципы (что такое SWE-bench, GPQA — определения метрик).
-- Архитектурные особенности, известные годами.
-- Формулы агрегации, методологические объяснения.
-
-## 14. Графики через matplotlib
-
-Для аналитических отчётов **обязательны графики** — минимум один на содержательный раздел.
-
-### 14.1 Базовый рецепт
-
-```python
-import matplotlib.pyplot as plt
-import numpy as np
-import os, tempfile
-
-# Единый стиль
-plt.rcParams.update({
-    "font.family": "DejaVu Sans",
-    "font.size": 11,
-    "axes.grid": True,
-    "grid.alpha": 0.3,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-})
-
-out_dir = tempfile.mkdtemp(prefix="docx_charts_")
-
-def save(fig, name):
-    path = os.path.join(out_dir, f"{name}.png")
-    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-    print(path)
+```json
+{"type":"image","path":"charts/result.png","align":"center"}
 ```
 
-### 14.2 Bar chart — сравнение по одной метрике
+Optional:
 
-```python
-fig, ax = plt.subplots(figsize=(10, 5.5))
-models = ["GPT-5.5", "Opus 4.7", "DeepSeek V4 Pro", "Kimi K2.6"]
-scores = [88.7, 87.6, 80.6, 76.4]
-colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
-bars = ax.barh(models, scores, color=colors)
-ax.set_xlabel("SWE-bench Verified, %")
-ax.set_xlim(0, 100)
-for bar, score in zip(bars, scores):
-    ax.text(score + 1, bar.get_y() + bar.get_height()/2,
-            f"{score}%", va="center")
-ax.invert_yaxis()
-save(fig, "swe_bench")
-```
-
-### 14.3 Grouped bar — несколько метрик
-
-```python
-fig, ax = plt.subplots(figsize=(11, 5.5))
-models = ["GPT-5.5", "Opus 4.7", "DeepSeek V4 Pro", "Kimi K2.6"]
-swe_v   = [88.7, 87.6, 80.6, 76.4]
-swe_pro = [67.9, 64.3, 56.1, 58.6]
-lcb     = [94.8, 92.1, 93.5, 84.7]
-x = np.arange(len(models))
-w = 0.27
-ax.bar(x - w, swe_v,   w, label="SWE-bench Verified", color="#1f77b4")
-ax.bar(x,     swe_pro, w, label="SWE-bench Pro",      color="#ff7f0e")
-ax.bar(x + w, lcb,     w, label="LiveCodeBench",      color="#2ca02c")
-ax.set_xticks(x)
-ax.set_xticklabels(models)
-ax.set_ylabel("%")
-ax.legend(loc="lower right")
-save(fig, "coding_grouped")
-```
-
-### 14.4 Radar / spider — multi-axis сравнение
-
-```python
-import numpy as np
-import matplotlib.pyplot as plt
-
-axes_names = ["Coding", "Reasoning", "Math", "Knowledge", "Price"]
-data = {
-    "GPT-5.5":    [100, 98, 100, 100, 40],
-    "Opus 4.7":   [97, 97, 98, 97, 25],
-    "DeepSeek V4 Pro": [90, 94, 96, 85, 100],
-    "Kimi K2.6":  [87, 93, 98, 93, 78],
+```json
+{
+  "type":"image",
+  "path":"diagram.png",
+  "widthPx":600,
+  "heightPx":350,
+  "align":"center",
+  "wrap":"inline"
 }
-N = len(axes_names)
-angles = [n / N * 2 * np.pi for n in range(N)]
-angles += angles[:1]
-
-fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
-for label, values in data.items():
-    vals = values + values[:1]
-    ax.plot(angles, vals, label=label, linewidth=2)
-    ax.fill(angles, vals, alpha=0.08)
-ax.set_xticks(angles[:-1])
-ax.set_xticklabels(axes_names)
-ax.set_ylim(0, 100)
-ax.set_yticks([20, 40, 60, 80, 100])
-ax.legend(loc="upper right", bbox_to_anchor=(1.25, 1.1))
-save(fig, "radar")
 ```
 
-### 14.5 Scatter — цена vs качество
+The tool reads and encodes the media itself. For common raster formats it derives dimensions automatically and scales overly wide images down to a reasonable width. If dimensions cannot be detected, provide both `widthPx` and `heightPx`.
 
-```python
-fig, ax = plt.subplots(figsize=(10, 6))
-models = ["GPT-5.5","Opus 4.7","DeepSeek V4 Pro","Kimi K2.6","GLM-5.1","Grok 4.3","Sonnet 4.6","Opus 4.6"]
-price  = [0.018, 0.030, 0.0013, 0.0031, 0.0028, 0.0017, 0.018, 0.030]
-quality= [88.7, 87.6, 80.6, 76.4, 77.8, 74.0, 79.6, 80.8]
+Never put image base64 in the model-visible tool.
 
-ax.scatter(price, quality, s=120, c=range(len(models)), cmap="tab10")
-for m, p, q in zip(models, price, quality):
-    ax.annotate(m, (p, q), xytext=(7, 4), textcoords="offset points", fontsize=9)
-ax.set_xscale("log")
-ax.set_xlabel("Цена за средний запрос, USD (log)")
-ax.set_ylabel("SWE-bench Verified, %")
-ax.set_title("Цена vs Качество")
-save(fig, "price_quality")
+### Charts
+
+Use native chart blocks when the data itself belongs in the DOCX:
+
+```json
+{
+  "type":"chart",
+  "kind":"area",
+  "title":"Quarterly trend",
+  "categories":["Q1","Q2","Q3"],
+  "series":[
+    {"name":"Revenue","values":[10,15,22]},
+    {"name":"Cost","values":[7,9,13]}
+  ]
+}
 ```
 
-### 14.6 Вставка в HTML
+The engine creates both the Word chart and its embedded workbook. Do not create fake cell references manually.
 
-После того как python напечатал пути PNG-файлов:
+For custom scientific visualizations that are better expressed by matplotlib, generate a PNG separately and insert it with an `image` block. Use native charts for ordinary editable business charts.
 
-```html
-<p style="text-align:center;"><img src="/tmp/docx_charts_xxx/coding_grouped.png" alt="Coding benchmarks"/></p>
-<p style="text-align:center;"><strong>Рисунок 1</strong> - <em>Сравнение моделей на кодовых бенчмарках</em></p>
+### Page break
+
+```json
+{"type":"pageBreak"}
 ```
 
-### 14.7 Палитра и стиль
+### Table of contents
 
-- Дефолт matplotlib (`tab10`) — нейтральная палитра, подходит для большинства отчётов.
-- Если бренд требует своих цветов — единый список hex'ов в начале скрипта.
-- Не используй пёстрые палитры (`gist_rainbow`, `jet`) — нечитаемо для печати и для дальтоников.
-- Гридлайны — обязательны (`alpha=0.3`).
-- Лишние спайны (top/right) — убирай.
+```json
+{"type":"toc","entries":[...]}
+```
 
-## 15. Подводные камни (выстраданное)
+Use only when you have the required TOC entry structure. For uncommon TOC syntax, query `docx(action="help", topic="blocks")` rather than guessing.
 
-- **НЕ проверяй файл через read_files сразу после create_docx** — round-trip покажет `$...$` вместо OMML и без inline-стилей color/font (это особенность чтения, на диске всё корректно). Доверяй файлу.
-- **Тройные backticks внутри `<pre><code>`** — не проблема. Маркеры `:::call` и `call:::` не встречаются в реальном контенте, поэтому body любого инструмента (включая create_docx с `<pre><code>\`\`\`python ... \`\`\`</code></pre>`) корректно парсится без специальных обёрток.
-- **HTML-сущности из прокси** (`&` `<` `>` `"`) автоматически декодируются в content секции — пиши обычные `<`, `>`, `&`.
-- **HTML reader в pandoc игнорирует CSS** — все color/font-family/font-size/background/text-align применяются через post-processing в python-docx. Inline-стили работают только на тегах из whitelist: `span/p/div/td/th/li/h1..h6`.
-- **Если формула — единственный контент ячейки**, она обернётся автоматически в `<p>` (через `_wrap_table_cells`). Можно писать `<td>$x^2$</td>`.
-- **Не вставляй `<br/>` между логическими блоками** вместо `<p>` — это ломает структуру параграфов.
-- **Pandoc 3.x обязателен** — 2.x не поддерживает многих extensions, формулы не работают.
-- **`reference_doc="none"`** — отключить дефолтный шаблон. Обычно НЕ нужно.
-- **LaTeX-команды (`\frac`, `\left`, ...) В ТЕКСТЕ ВНЕ `$...$`** — превращаются в мусор. См. §10.
-- **Композиты, средние, ранги — ВСЕГДА через python**, не вручную. Ошибка арифметики «на глаз» = самая частая регрессия в отчётах с числами.
-- **Несортированные ранги** — после расчёта композита **обязательно** отсортируй и проставь ранги по упорядоченному списку, не по исходному порядку.
-- **patch_file РАБОТАЕТ по .docx через сохранённый HTML-исходник.** Движок при create_docx кладёт точный HTML рядом, read_files отдаёт именно его, и patch_file находит/заменяет фрагмент в этом HTML (указывай `path` = путь к .docx). Это штатный и предпочтительный способ правки (см. §4 — НЕ переписывай весь документ). Раньше это не работало (patch искал в ZIP) — теперь работает. Если по какой-то причине исходник не сохранился (документ создан не через наш create_docx), read_files вернёт pandoc round-trip — тогда patch-якоря бери из этого вывода или пересобери документ через create_docx целиком, что восстановит исходник.
-- **Скриншоть ВСЕ страницы, особенно код/таблицы/схемы.** `docx_screenshot {"pages": "all"}` (или `"3-14"`). Не доверяй виду только титула — раздел с кодом на 11 страниц проверяй целиком, иначе пользователь найдёт ошибку первым.
-- **Код в `<pre><code>` неуязвим к pandoc.** Раньше pandoc съедал `<iostream>`/`vector<Lexeme>`/`<программа>` (декодировал сущности в `<code>` и выкидывал tag-токены). Теперь тело кода выносится в обход pandoc и впечатывается в docx как есть — пиши код БЕЗ ручного экранирования. Это надёжнее, чем рендерить код в PNG.
-- **red-line после картинок/подписей убирается сам** — не нужно `text-indent:0` вручную (см. §6).
+### Caption
 
-## 16. Чеклист перед сдачей научной работы
+```json
+{"type":"caption","label":"Figure","number":1,"text":"Architecture"}
+```
 
-- [ ] Титульник на одной странице (max 2-3 пустых параграфа между блоками)
-- [ ] Есть содержание
-- [ ] Введение — минимум 3-4 абзаца
-- [ ] Каждый раздел структурирован: постановка → теория → программа → результаты → выводы
-- [ ] Каждый набор параметров → отдельная таблица с подписью "Таблица N — …"
-- [ ] Все рисунки подписаны "Рисунок N — …" ПОСЛЕ `<img>` БЕЗ пустого `<p>` между ними
-- [ ] Если есть образец — структура/оформление скопированы БУКВАЛЬНО (содержание с номерами страниц, классы списком, задание таблицей)
-- [ ] Сделан скриншот КАЖДОЙ содержательной страницы (`pages: "all"`), не только титула
-- [ ] Нет двух `<h2>` подряд без вводного текста между ними
-- [ ] Перечисления (классы/сущности) — `<ul>`/`<ol>`/`<dl>`, не цепочка `<p>`
-- [ ] Длинный вывод программы — картинка в 2-3 колонки (широкая, не длинная)
-- [ ] Текст вычитан на согласование родов/падежей
-- [ ] Формулы — LaTeX `$...$` / `$$...$$`, не картинки
-- [ ] LaTeX-команды только внутри `$...$`, не в обычном тексте
-- [ ] Заключение — выводы по каждому блоку + общий
-- [ ] Список литературы — один `<ol>`, авторы в `<em>`
-- [ ] Десятичный разделитель — запятая, консистентно по всему документу
-- [ ] Никаких `write_file` для .docx, только `create_docx`
+Use a consistent label/number sequence throughout the document.
 
-## 17. Чеклист перед сдачей аналитического отчёта
+## 5. Run fields
 
-- [ ] Есть cover-блок с датой и перечислением сравниваемых объектов
-- [ ] Есть Executive Summary в 1-2 абзаца сверху
-- [ ] Есть раздел «Методология» с источниками
-- [ ] **Каждое конкретное число подтверждено `web_search`** или явно помечено как оценка
-- [ ] Минимум 1 график на содержательный раздел (bar / radar / scatter — по смыслу)
-- [ ] Композитные баллы и ранги пересчитаны через `python3 -c`, не вручную
-- [ ] Ранги отсортированы корректно (равные значения → одинаковый ранг или явная tie-break логика)
-- [ ] Подписи: `<strong>Таблица N</strong> - описание` ПЕРЕД, `<strong>Рисунок N</strong> - описание` ПОСЛЕ (без курсива)
-- [ ] Графики центрированы (`<p style="text-align:center;"><img.../></p>`)
-- [ ] Нет LaTeX-команд (`\frac`, `\left`, ...) вне `$...$`
-- [ ] Десятичный разделитель консистентен (запятая для рус, точка для англ — выбери одно)
-- [ ] Источники в конце с URL и датой обращения
-- [ ] Никаких `write_file` для .docx, только `create_docx`
+Common run fields:
+
+```json
+{
+  "text":"example",
+  "bold":true,
+  "italic":true,
+  "underline":true,
+  "strike":false,
+  "color":"C00000",
+  "font":"Arial",
+  "size":14,
+  "highlight":"yellow",
+  "vertAlign":"superscript",
+  "link":"https://example.com"
+}
+```
+
+`size` is in points and is converted to Word half-points.
+
+Aliases:
+
+```json
+{"text":"2","superscript":true}
+{"text":"n","subscript":true}
+```
+
+`link` may be a URL string. On inspect it may appear as a richer link object.
+
+Inline math uses:
+
+```json
+{"latex":"\\alpha+\\beta"}
+```
+
+Advanced engine fields are supported when preserving or explicitly manipulating an existing document:
+
+- `styleId`
+- `charSpacingTwips`
+- `charScalePct`
+- `em`
+- `noteRef`
+- `commentIds`
+- `ins`
+- `del`
+- `rPrChange`
+- `ruby`
+
+Do not emit advanced fields unless the task actually requires them or they came from `inspect` and must be preserved.
+
+## 6. Paragraph format fields
+
+Use camelCase in the agent protocol:
+
+```json
+{
+  "format":{
+    "align":"justify",
+    "lineSpacing":360,
+    "lineRule":"auto",
+    "indentLeft":0,
+    "indentRight":0,
+    "indentFirstLine":709,
+    "spaceBefore":0,
+    "spaceAfter":120,
+    "pageBreakBefore":false,
+    "keepNext":true,
+    "keepLines":true,
+    "widowControl":true,
+    "contextualSpacing":false,
+    "shadingFill":"FFFF00",
+    "borders":{},
+    "tabStops":[],
+    "dropCap":{},
+    "bidi":false
+  }
+}
+```
+
+Important: explicit zero is meaningful. Use `0` when you mean “remove inherited spacing/indent”, rather than omitting the field.
+
+Do not spray format fields onto every paragraph. Word styles should carry repeated formatting; set direct formatting only where it is semantically needed or where matching a reference requires it.
+
+## 7. Edit operations
+
+### `set` — smallest safe textual/style change
+
+Text only:
+
+```json
+{"op":"set","target":"b12","text":"Replacement text"}
+```
+
+This is ideal for a uniform paragraph because the engine can surgically preserve its original OOXML formatting.
+
+Do **not** use text-only `set` on a paragraph with mixed formatting, hyperlinks, math, or notes. The tool intentionally rejects ambiguous cases.
+
+Use explicit runs instead:
+
+```json
+{
+  "op":"set",
+  "target":"b12",
+  "runs":[
+    {"text":"Result: "},
+    {"text":"42","bold":true}
+  ]
+}
+```
+
+Change paragraph formatting without replacing content:
+
+```json
+{"op":"set","target":"b12","format":{"align":"center","spaceAfter":0}}
+```
+
+A block can be `set` only once in one `docx` call. Combine all desired changes for that target into one `set` op.
+
+### `replace` — replace one block with one or more blocks
+
+```json
+{
+  "op":"replace",
+  "target":"b8",
+  "blocks":[
+    {"type":"h2","text":"New section"},
+    {"type":"p","text":"Replacement body."}
+  ]
+}
+```
+
+Use `replace` for tables, images, charts, formulas, or any structural change to a block.
+
+### `insert`
+
+At end:
+
+```json
+{"op":"insert","where":"end","blocks":[{"type":"p","text":"Appendix"}]}
+```
+
+At start:
+
+```json
+{"op":"insert","where":"start","blocks":[{"type":"h1","text":"Cover"}]}
+```
+
+Relative to a block:
+
+```json
+{"op":"insert","where":"after","target":"b4","blocks":[{"type":"p","text":"Added text"}]}
+```
+
+Valid `where`: `start`, `end`, `before`, `after`.
+
+### `delete`
+
+Single block:
+
+```json
+{"op":"delete","target":"b7"}
+```
+
+Several blocks:
+
+```json
+{"op":"delete","target":["b7","b8","b9"]}
+```
+
+## 8. Edit strategy for existing documents
+
+### Small change
+
+1. `read` the relevant region.
+2. Locate `bN`.
+3. If plain/uniform text: one `set(text)`.
+4. If rich/structural: targeted `inspect`, then `set(runs)` or `replace`.
+5. Do not re-read unless another call needs fresh IDs.
+
+### Many independent changes
+
+1. One paginated read pass to collect all current target IDs.
+2. Inspect only the rich blocks whose exact structure matters.
+3. Send one `edit` with many `ops`.
+4. Re-read once after the batch only if continuing with ID-based edits.
+
+### Large rewrite
+
+Do not resend untouched blocks. Replace the range block-by-block or delete a target range and insert the new section
+
+### Reference/template document
+
+If the user supplied a DOCX whose formatting must be retained:
+
+1. Work on a copy if the user wants a new output file.
+2. Read the copy compactly.
+3. Inspect representative headings/body/table blocks plus metadata only as needed.
+4. Edit the copy in place with semantic operations.
+5. Do not rebuild the template from a blank DOCX unless explicitly asked.
+
+This preserves styles, numbering, relationships, headers/footers, and arbitrary OOXML that the semantic model does not need to understand.
+
+## 9. Document-level options
+
+Options can be passed on `create` or `edit`.
+
+Common examples:
+
+```json
+{
+  "options":{
+    "header":{"text":"Confidential report"},
+    "footer":{"text":"Page ","pageNumber":true},
+    "watermark":"DRAFT",
+    "section":{"orientation":"landscape"}
+  }
+}
+```
+
+The engine supports native document options including:
+
+- `header`: text or paragraph-based header content
+- `footer`: text or paragraph-based footer content; optional page number
+- `watermark`
+- `section`: orientation, page size, margins and other section properties
+- `comments`
+- `footnotes`
+- `endnotes`
+- `sources`
+- `themeFonts`
+- `themeColors`
+- `protection`
+- `numbering`
+- `savedAt`
+
+Inspect document metadata before changing global properties of an existing file:
+
+```json
+{"action":"inspect","path":"report.docx"}
+```
+
+For uncommon option syntax, `docx(action="help", topic="options")` is an on-demand schema reminder. Do not guess field shapes.
+
+### Comments
+
+Typical document option:
+
+```json
+{
+  "comments":[
+    {"id":"1","author":"Reviewer","initials":"RV","text":"Check this statement"}
+  ]
+}
+```
+
+Comment anchors/ranges belong to runs/blocks. Inspect an existing commented block before editing it.
+
+### Footnotes/endnotes
+
+Typical option data:
+
+```json
+{"footnotes":[{"id":"1","text":"Source note"}]}
+```
+
+Runs may reference notes through `noteRef`. For edits around existing notes, inspect the target first and preserve the note reference explicitly.
+
+### Tracked changes
+
+Ins/del revision metadata can be represented on runs. If the task is to preserve existing tracked changes, inspect the rich block and do not flatten it to plain text. If the user explicitly asks to create tracked changes, use the advanced `ins`/`del` run fields and verify by re-inspecting the edited block.
+
+## 10. Metadata inspection
+
+`docx(action="inspect", path=...)` without a target is the cheap way to check document-wide state. Metadata can include:
+
+- header/footer text
+- whether footer contains page numbering
+- watermark
+- title-page flag
+- even/odd headers flag
+- comments
+- footnotes/endnotes
+- bibliography sources
+- protection
+- theme fonts/colors
+- section settings
+- ink count
+
+Use this instead of inspecting every block when the question is “what are the page margins?”, “is this landscape?”, “does it have a watermark?”, etc.
+
+## 11. Quality rules for document authoring
+
+The engine can represent rich DOCX features, but content/layout decisions are still the agent's responsibility.
+
+### Preserve user intent
+
+- If the user supplied a reference or existing document, preserve its structure and style unless asked to redesign it.
+- Do not shorten, merge, or rewrite sections that were not requested.
+- Do not convert tables into prose or vice versa unless asked.
+- Keep numbering and labels consistent.
+
+### Headings and hierarchy
+
+- Use real heading blocks rather than fake bold paragraphs.
+- Keep heading levels hierarchical: h1 → h2 → h3; avoid arbitrary jumps unless the source document already uses them.
+- Do not create two headings in a row without content when it makes the document read awkwardly.
+
+### Tables
+
+- Use tables for genuinely tabular data.
+- Keep column counts reasonable.
+- For very wide data, either split it or use a landscape section.
+- Keep numeric precision consistent within a column.
+
+### Images
+
+- Prefer vector-independent, print-readable raster exports when inserting generated plots.
+- Keep aspect ratio unless distortion is intentional.
+- Generate readable chart labels before insertion; the DOCX engine cannot repair unreadable text baked into an image.
+- Place captions consistently.
+
+### Formulas
+
+- Use native LaTeX→OMML, not screenshots of equations.
+- Use inline `latex` runs for inline formulas and `math` blocks for display formulas.
+- If a LaTeX expression is rejected, first reduce it to the supported subset: remove package macros, expand local shorthand, and use the documented native commands. Preserve mathematical meaning; use an equation image only when the user explicitly requests it or the required construction is genuinely outside the supported subset.
+
+### Code
+
+For code-heavy documents, use paragraphs/runs with a monospace font (for example `Consolas` or `Courier New`) and preserve line structure with separate paragraphs when necessary. If exact terminal/program output layout is visually critical and extremely long, a generated image can be inserted, but do not default to screenshots for ordinary code.
+
+## 12. Scientific/academic documents
+
+When the user asks for a course paper, report, thesis section, RGR, etc.:
+
+- Follow the supplied institutional/template formatting exactly when provided.
+- Build title page, contents, introduction, sections, conclusion and references according to the user's requirements—not a guessed universal standard.
+- Prefer multiple substantive paragraphs over filler.
+- Use native tables and native equations.
+- Keep table/figure captions and numbering consistent.
+- For a supplied university template, edit a copy of that template instead of recreating it from blank.
+
+Do not invent page numbers for a manually written contents list unless they are known. Without a page-layout/rendering tool, guessed page numbers are worse than an updatable Word TOC field.
+
+## 13. Analytical reports and factual data
+
+DOCX generation does not relax factual standards.
+
+- Verify current prices, benchmarks, dates, model specifications, regulations, etc. using the appropriate research tools before putting them into the document.
+- Do not invent plausible-looking numbers.
+- Calculate aggregates/rankings programmatically when nontrivial.
+- Record sources in the document when required.
+- For editable ordinary bar/line/area-style business visualizations, prefer native DOCX charts.
+- For specialized plots (radar, scientific scatter variants, heatmaps, etc.), generate a high-quality image and insert it.
+
+## 14. Verification after edits
+
+Do not blindly re-read the whole file after every successful write. The tool re-parses the exact bytes it wrote before reporting success.
+
+Use verification proportional to the change:
+
+- **Simple uniform text edit:** successful `docx edit` is normally sufficient; optionally read the local region if the exact user-visible text matters.
+- **Rich formatting/link/math edit:** inspect the edited block.
+- **Structural insert/delete/replace:** re-read the relevant page of compact blocks to obtain fresh IDs and confirm ordering.
+- **Document-wide metadata change:** metadata inspect.
+- **Complex table/chart/note/comment change:** targeted inspect plus compact read of the surrounding blocks.
+
+There is no `docx_screenshot` tool. Do not claim visual page-layout verification if you did not actually perform it through some separately available renderer.
+
+## 15. Failure handling
+
+If `docx` returns an error:
+
+1. Read the error literally; the tool validates ambiguous operations on purpose.
+2. Do not fall back to HTML/Pandoc or raw ZIP surgery.
+3. If syntax is uncertain, call one of:
+
+```json
+{"action":"help","topic":"blocks"}
+{"action":"help","topic":"runs"}
+{"action":"help","topic":"edit"}
+{"action":"help","topic":"options"}
+```
+
+4. If an edit target is missing, re-read the document and use current IDs.
+5. If `set(text)` says mixed formatting/math/notes are ambiguous, inspect the block and use `runs` or `replace`.
+6. If an image's dimensions cannot be detected, provide `widthPx` and `heightPx`.
+7. If a formula is unsupported, reduce it to the documented subset or ask the user for an acceptable semantic fallback. Do not corrupt the document with raw OOXML, package macros, or a silently degraded text run.
+
+## 16. High-efficiency patterns
+
+### Replace one sentence in a normal paragraph
+
+```text
+read → identify b23 → docx edit(set text) → done
+```
+
+### Fix bold text and a link in one paragraph
+
+```text
+read → inspect b23 → docx edit(set runs) → inspect b23 if needed
+```
+
+### Add a section with heading, prose, table and chart
+
+One call:
+
+```json
+{
+  "action":"edit",
+  "path":"report.docx",
+  "ops":[{
+    "op":"insert",
+    "where":"end",
+    "blocks":[
+      {"type":"h1","text":"Results"},
+      {"type":"p","text":"Summary of results."},
+      {"type":"table","header":true,"rows":[["Metric","Value"],["Accuracy","94.2%"]]},
+      {"type":"chart","kind":"area","categories":["A","B","C"],"series":[{"name":"Score","values":[70,82,94.2]}]}
+    ]
+  }]
+}
+```
+
+### Edit a 100-page document
+
+Do **not** inspect or resend 100 pages.
+
+1. `read` with pagination/searchable chunks.
+2. Collect only the relevant `bN` IDs.
+3. Inspect only complicated target blocks.
+4. Batch edits.
+5. Re-read only the changed neighborhood if another edit follows.
+
+## 17. Final checklist
+
+Before finishing a DOCX task:
+
+- [ ] Only native `read` + `docx` were used for DOCX semantics.
+- [ ] Existing untouched content was preserved rather than regenerated.
+- [ ] Current `bN` IDs were used.
+- [ ] Large reads were paginated.
+- [ ] `inspect` was targeted instead of dumping the whole document.
+- [ ] Rich paragraphs were edited with `runs`/`replace`, not unsafe plain `set(text)`.
+- [ ] Images were passed by path, not model-generated base64.
+- [ ] Equations use native LaTeX→OMML and only supported commands; mathematical alphabets and multi-line environments follow the documented subset.
+- [ ] Tables/charts use semantic blocks.
+- [ ] Global section/header/footer/watermark changes used `options`.
+- [ ] Facts/numbers were verified when the task required current factual accuracy.
+- [ ] The final tool operation succeeded and any high-risk changed structure was re-read/inspected appropriately.
+
+The core principle: **read compactly, inspect narrowly, edit semantically, batch changes, preserve everything else.**

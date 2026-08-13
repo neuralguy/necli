@@ -47,6 +47,7 @@ DONE_LABEL = "Далее"
 def _visual_line_count(rendered: str, width: int) -> int:
     """Физические строки терминала с учётом переноса длинных логических строк."""
     from rich.cells import cell_len
+
     total = 0
     for line in rendered.split("\n"):
         cells = cell_len(_ANSI_RE.sub("", line))
@@ -64,13 +65,15 @@ def _get_term_width() -> int:
 def _accent_ansi() -> str:
     """ANSI SGR-параметры для accent-цвета темы (hex → 24-bit)."""
     from config.themes import ansi_24bit, t
+
     return ansi_24bit(t("accent"))
 
 
 def _poll_hint(multiple: bool) -> str:
     if multiple:
-        return key_hints(("↑↓", "выбор"), ("space", "отметить"),
-                         ("enter", "далее"), ("esc", "отмена"))
+        return key_hints(
+            ("↑↓", "выбор"), ("space", "отметить"), ("enter", "далее"), ("esc", "отмена")
+        )
     return key_hints(("↑↓", "выбор"), ("enter", "подтвердить"), ("esc", "отмена"))
 
 
@@ -121,17 +124,17 @@ def _render_poll(
     # они не участвуют в прокрутке — прокручивается только список вариантов.
     service = len(options) - n_plain
     if budget and budget < n_plain + service + 3:
-        lines.pop()          # экрана мало — воздух под шапкой убираем первым
-    body_budget = (max(1, budget - len(lines) - service - bool(service))
-                   if budget else len(options))
+        lines.pop()  # экрана мало — воздух под шапкой убираем первым
+    body_budget = max(1, budget - len(lines) - service - bool(service)) if budget else len(options)
     start, end, above, below = scroll_window(n_plain, min(selected, n_plain), body_budget)
 
     if above:
         lines.append(more_note(above, up=True))
     for i in range(start, end):
         mark, mark_role = _checkbox(i, checked, multiple)
-        lines.append(row(options[i], selected=(i == selected), width=width,
-                         mark=mark, mark_role=mark_role))
+        lines.append(
+            row(options[i], selected=(i == selected), width=width, mark=mark, mark_role=mark_role)
+        )
     if below:
         lines.append(more_note(below, up=False))
 
@@ -143,10 +146,17 @@ def _render_poll(
         hint = ""
         if is_done and multiple:
             hint = f"отмечено: {len(checked)}" if checked else "ничего не отмечено"
-        lines.append(row(label, hint, selected=(i == selected), width=width,
-                         mark="✓" if is_done else "+",
-                         mark_role="success" if (is_done and checked) else "",
-                         dim_label=True))
+        lines.append(
+            row(
+                label,
+                hint,
+                selected=(i == selected),
+                width=width,
+                mark="✓" if is_done else "+",
+                mark_role="success" if (is_done and checked) else "",
+                dim_label=True,
+            )
+        )
 
     # В оверлее подсказка живёт под нижней линией рамки (Overlay.hint), поэтому
     # в тело её не дописываем — иначе она продублируется.
@@ -166,8 +176,9 @@ class PollOverlay(Overlay):
     индексы галочек.
     """
 
-    def __init__(self, question: str, options: list[str], step_info: str = "",
-                 multiple: bool = False) -> None:
+    def __init__(
+        self, question: str, options: list[str], step_info: str = "", multiple: bool = False
+    ) -> None:
         super().__init__()
         self.question = question
         # Копия: вызывающий код передаёт
@@ -179,6 +190,7 @@ class PollOverlay(Overlay):
         self.checked: set[int] = set()
         # True, пока поверх нас открыто поле свободного ответа.
         self._asking = False
+        self._custom_task: asyncio.Task | None = None
 
     @property
     def all_options(self) -> list[str]:
@@ -191,16 +203,45 @@ class PollOverlay(Overlay):
         except Exception:
             budget = 0
         return _render_poll(
-            self.question, self.all_options, self.selected, self.step_info,
-            self.multiple, self.checked, len(self.options), with_hint=False,
-            width=width, budget=budget,
+            self.question,
+            self.all_options,
+            self.selected,
+            self.step_info,
+            self.multiple,
+            self.checked,
+            len(self.options),
+            with_hint=False,
+            width=width,
+            budget=budget,
         )
 
     def hint(self) -> str:
         return _poll_hint(self.multiple)
 
+    def version(self):
+        return (
+            self.selected,
+            len(self.options),
+            tuple(sorted(self.checked)),
+            self.question,
+            self.step_info,
+            self.multiple,
+            self._asking,
+        )
+
     def _cancelled(self):
         return [CANCELLED] if self.multiple else CANCELLED
+
+    def finish(self, result) -> None:
+        task = self._custom_task
+        if task is not None and not task.done():
+            try:
+                current = asyncio.current_task()
+            except RuntimeError:
+                current = None
+            if task is not current:
+                task.cancel()
+        super().finish(result)
 
     def handle_key(self, key: str, event) -> bool:
         # Пока свободный ввод ещё не встал поверх нас, клавиши не должны
@@ -247,13 +288,21 @@ class PollOverlay(Overlay):
         """
         self._asking = True
         try:
-            asyncio.get_running_loop().create_task(self._custom_answer())
+            task = asyncio.get_running_loop().create_task(self._custom_answer())
+            self._custom_task = task
+
+            def _clear(done: asyncio.Task) -> None:
+                if self._custom_task is done:
+                    self._custom_task = None
+
+            task.add_done_callback(_clear)
         except RuntimeError:
             logger.debug("poll: нет loop'а для свободного ответа", exc_info=True)
             self._asking = False
 
     async def _custom_answer(self) -> None:
         from ui import overlays
+
         answer: str | None = None
         try:
             raw_answer = await overlays.ask_text(f"? {self.question}")
@@ -326,6 +375,7 @@ def run_poll_sync(steps: list[dict]) -> list[dict]:
     ситуации (нет loop'а / рабочий поток executor'а / сам loop).
     """
     from ui.menu import run_ui_sync
+
     return run_ui_sync(run_poll(steps))
 
 
@@ -334,10 +384,11 @@ def run_poll_sync(steps: list[dict]) -> list[dict]:
 # в терминал напрямую — это допустимо ровно потому, что владельца терминала в
 # такой момент нет.
 
+
 def _clear_lines(n: int):
     for _ in range(n):
-        sys.stdout.write('\033[A\033[2K')
-    sys.stdout.write('\r')
+        sys.stdout.write("\033[A\033[2K")
+    sys.stdout.write("\r")
     sys.stdout.flush()
 
 
@@ -345,6 +396,7 @@ def _input_custom_answer(question: str) -> str:
     from rich.console import Console
 
     from config.themes import t
+
     console = Console()
     console.print(f"  [bold {t('accent')}]? {question}[/]")
     console.print()
@@ -375,9 +427,10 @@ def _run_poll_step_legacy(
     checked: set[int] = set()
 
     def draw() -> int:
-        rendered = _render_poll(question, all_options, selected, step_info, multiple,
-                                checked, len(options))
-        sys.stdout.write(rendered + '\n')
+        rendered = _render_poll(
+            question, all_options, selected, step_info, multiple, checked, len(options)
+        )
+        sys.stdout.write(rendered + "\n")
         sys.stdout.flush()
         return _visual_line_count(rendered, _get_term_width())
 
@@ -386,16 +439,16 @@ def _run_poll_step_legacy(
     while True:
         key = _read_key()
 
-        if key == 'up':
+        if key == "up":
             selected = (selected - 1) % len(all_options)
-        elif key == 'down':
+        elif key == "down":
             selected = (selected + 1) % len(all_options)
-        elif multiple and key in (' ', 'enter') and selected < len(options):
+        elif multiple and key in (" ", "enter") and selected < len(options):
             if selected in checked:
                 checked.remove(selected)
             else:
                 checked.add(selected)
-        elif key == 'enter':
+        elif key == "enter":
             _clear_lines(line_count)
             custom_index = len(options)
             done_index = len(options) + 1
@@ -421,7 +474,7 @@ def _run_poll_step_legacy(
                 answers = [options[i] for i in sorted(checked)]
                 return answers or [SKIPPED]
             return all_options[selected]
-        elif key == 'ctrl-c':
+        elif key == "ctrl-c":
             _clear_lines(line_count)
             return [CANCELLED] if multiple else CANCELLED
 
@@ -430,6 +483,12 @@ def _run_poll_step_legacy(
 
 
 __all__ = [
-    "CANCELLED", "CUSTOM_LABEL", "DONE_LABEL", "SKIPPED",
-    "PollOverlay", "run_poll", "run_poll_step", "run_poll_sync",
+    "CANCELLED",
+    "CUSTOM_LABEL",
+    "DONE_LABEL",
+    "SKIPPED",
+    "PollOverlay",
+    "run_poll",
+    "run_poll_step",
+    "run_poll_sync",
 ]

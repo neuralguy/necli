@@ -31,25 +31,29 @@ from tools.models import ToolCall, ToolResult
 
 MCP_TOOL_PREFIX = "mcp__"
 
+
 def _make_tool_name(server_id: str, tool_name: str) -> str:
     return f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}"
+
 
 def _parse_tool_name(full: str) -> tuple[str, str] | None:
     if not full.startswith(MCP_TOOL_PREFIX):
         return None
-    rest = full[len(MCP_TOOL_PREFIX):]
+    rest = full[len(MCP_TOOL_PREFIX) :]
     if "__" not in rest:
         return None
     sid, tname = rest.split("__", 1)
     return sid, tname
 
+
 @dataclass
 class MCPTool:
     server_id: str
-    name: str                  # оригинальное имя на сервере
-    full_name: str             # mcp__server__name
+    name: str  # оригинальное имя на сервере
+    full_name: str  # mcp__server__name
     description: str = ""
     input_schema: dict = field(default_factory=dict)
+
 
 @dataclass
 class MCPServer:
@@ -65,9 +69,10 @@ class MCPServer:
     # ОДНОЙ задаче). Это обязательное требование anyio cancel scopes: вход и
     # выход контекста в разных задачах приводит к RuntimeError и утечке
     # подпроцесса. Все операции к сессии маршрутизируются через _cmd_queue.
-    _task: Any = None              # asyncio.Task — владелец сессии
-    _cmd_queue: Any = None         # asyncio.Queue — (op, args, future)
-    _close_event: Any = None       # asyncio.Event — сигнал завершения
+    _task: Any = None  # asyncio.Task — владелец сессии
+    _cmd_queue: Any = None  # asyncio.Queue — (op, args, future)
+    _close_event: Any = None  # asyncio.Event — сигнал завершения
+
 
 class MCPManager:
     """Singleton: фоновый asyncio loop + список серверов."""
@@ -113,7 +118,9 @@ class MCPManager:
                         logger.debug("mcp loop.close failed", exc_info=True)
 
             self._thread = threading.Thread(
-                target=_run, name="mcp-loop", daemon=True,
+                target=_run,
+                name="mcp-loop",
+                daemon=True,
             )
             self._thread.start()
             ready.wait(timeout=5)
@@ -167,7 +174,9 @@ class MCPManager:
             self._submit(self._connect_async(server), timeout=30.0)
             server.status = "connected"
             logger.info(
-                "mcp connected: {} ({} tools)", sid, len(server.tools),
+                "mcp connected: {} ({} tools)",
+                sid,
+                len(server.tools),
             )
         except Exception as e:
             server.status = "error"
@@ -186,9 +195,7 @@ class MCPManager:
         cfg = server.config
         transport = cfg.get("transport", "stdio")
         if transport != "stdio":
-            raise NotImplementedError(
-                f"transport '{transport}' not supported yet (only stdio)"
-            )
+            raise NotImplementedError(f"transport '{transport}' not supported yet (only stdio)")
         if not cfg.get("command"):
             raise ValueError("server config missing 'command'")
 
@@ -206,9 +213,7 @@ class MCPManager:
             from mcp.client.stdio import stdio_client
         except ImportError:
             if not ready.done():
-                ready.set_exception(
-                    RuntimeError("mcp package not installed. Run: uv add mcp")
-                )
+                ready.set_exception(RuntimeError("mcp package not installed. Run: uv add mcp"))
             return
 
         from contextlib import AsyncExitStack
@@ -256,10 +261,13 @@ class MCPManager:
                 get_cmd = asyncio.ensure_future(server._cmd_queue.get())
                 wait_close = asyncio.ensure_future(server._close_event.wait())
                 done, pending = await asyncio.wait(
-                    {get_cmd, wait_close}, return_when=asyncio.FIRST_COMPLETED,
+                    {get_cmd, wait_close},
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
                 for p in pending:
                     p.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
                 if get_cmd in done:
                     op, op_args, fut = get_cmd.result()
                     try:
@@ -308,6 +316,7 @@ class MCPManager:
             except asyncio.TimeoutError:
                 logger.warning("mcp server task '{}' did not exit in time", server.id)
                 task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             except Exception as e:
                 logger.debug("mcp server task '{}' exited with: {}", server.id, e)
         server._task = None
@@ -332,17 +341,21 @@ class MCPManager:
         parsed = _parse_tool_name(full_name)
         if not parsed:
             return ToolResult(
-                name=full_name, status="error",
+                name=full_name,
+                status="error",
                 output=f"invalid MCP tool name: {full_name}",
-                exit_code=1, command=full_name,
+                exit_code=1,
+                command=full_name,
             )
         sid, tname = parsed
         server = self.servers.get(sid)
         if not server or server.status != "connected":
             return ToolResult(
-                name=full_name, status="error",
+                name=full_name,
+                status="error",
                 output=f"MCP server '{sid}' not connected (status={server.status if server else 'missing'})",
-                exit_code=1, command=full_name,
+                exit_code=1,
+                command=full_name,
             )
         try:
             text = self._submit(
@@ -350,15 +363,20 @@ class MCPManager:
                 timeout=timeout,
             )
             return ToolResult(
-                name=full_name, status="ok",
-                output=text, exit_code=0, command=f"{sid}.{tname}",
+                name=full_name,
+                status="ok",
+                output=text,
+                exit_code=0,
+                command=f"{sid}.{tname}",
             )
         except Exception as e:
             logger.error("mcp call '{}' failed: {}", full_name, e)
             return ToolResult(
-                name=full_name, status="error",
+                name=full_name,
+                status="error",
                 output=f"MCP call failed: {type(e).__name__}: {e}",
-                exit_code=1, command=full_name,
+                exit_code=1,
+                command=full_name,
             )
 
     async def _call_tool_async(self, server: MCPServer, tname: str, args: dict) -> str:
@@ -375,13 +393,15 @@ class MCPManager:
         result = await session.call_tool(tname, args or {})
         # CallToolResult.content — список TextContent/ImageContent/EmbeddedResource
         parts = []
-        for item in (result.content or []):
+        for item in result.content or []:
             t = getattr(item, "type", None)
             if t == "text":
                 parts.append(getattr(item, "text", ""))
             elif t == "image":
                 mime = getattr(item, "mimeType", "image/png")
-                parts.append(f"[image/{mime} returned, {len(getattr(item, 'data', '') or '')} b64 chars]")
+                parts.append(
+                    f"[image/{mime} returned, {len(getattr(item, 'data', '') or '')} b64 chars]"
+                )
             elif t == "resource":
                 res = getattr(item, "resource", None)
                 uri = getattr(res, "uri", "?") if res else "?"
@@ -415,7 +435,9 @@ class MCPManager:
             for s in self.servers.values()
         ]
 
+
 # ── публичный API ──────────────────────────────────────────────
+
 
 def init_mcp_from_config() -> int:
     """Подключает все enabled серверы из .data/mcp_servers.json.
@@ -423,6 +445,7 @@ def init_mcp_from_config() -> int:
     Возвращает количество успешно подключённых серверов.
     """
     from config.mcp import list_servers
+
     cfgs = list_servers()
     if not cfgs:
         return 0
@@ -433,33 +456,42 @@ def init_mcp_from_config() -> int:
         _register_in_tool_registry()
     return connected
 
+
 def _register_in_tool_registry() -> None:
     """Регистрирует все MCP-инструменты в TOOL_REGISTRY."""
     from tools.registry import TOOL_REGISTRY
+
     mgr = MCPManager.instance()
     for tool in mgr.list_tools():
         TOOL_REGISTRY[tool.full_name] = _make_handler(tool.full_name)
     # Инвалидируем кэш get_tool_schemas — состав MCP tools изменился.
     try:
         from apis.tool_schemas import invalidate_schemas_cache
+
         invalidate_schemas_cache()
     except Exception:
         logger.warning("schemas cache invalidate after register failed", exc_info=True)
 
+
 def _make_handler(full_name: str) -> Callable[[ToolCall], ToolResult]:
     def _handler(call: ToolCall) -> ToolResult:
         return MCPManager.instance().call_tool(full_name, call.args or {})
+
     return _handler
+
 
 def list_mcp_tools() -> list[MCPTool]:
     return MCPManager.instance().list_tools()
 
+
 def list_mcp_servers() -> list[dict]:
     return MCPManager.instance().list_servers_info()
+
 
 def reconnect_mcp() -> int:
     """Полностью переподключает все серверы."""
     from tools.registry import TOOL_REGISTRY
+
     mgr = MCPManager.instance()
     # Снять старые регистрации
     for k in list(TOOL_REGISTRY.keys()):
@@ -468,6 +500,7 @@ def reconnect_mcp() -> int:
     # Инвалидируем schemas cache — после снятия MCP tools состав изменился.
     try:
         from apis.tool_schemas import invalidate_schemas_cache
+
         invalidate_schemas_cache()
     except Exception:
         logger.warning("schemas cache invalidate after reconnect failed", exc_info=True)
@@ -475,9 +508,11 @@ def reconnect_mcp() -> int:
     MCPManager._instance = None
     return init_mcp_from_config()
 
+
 def shutdown_mcp() -> None:
     if MCPManager._instance is not None:
         MCPManager._instance.shutdown()
+
 
 def get_mcp_tool_schemas() -> list[dict]:
     """OpenAI-совместимые JSON-схемы для всех подключённых MCP-инструментов."""
@@ -486,12 +521,14 @@ def get_mcp_tool_schemas() -> list[dict]:
         desc = tool.description or f"MCP tool '{tool.name}' from server '{tool.server_id}'"
         # Префикс описания подсказывает модели источник
         desc = f"[MCP/{tool.server_id}] {desc}"
-        schemas.append({
-            "type": "function",
-            "function": {
-                "name": tool.full_name,
-                "description": desc,
-                "parameters": tool.input_schema or {"type": "object", "properties": {}},
-            },
-        })
+        schemas.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.full_name,
+                    "description": desc,
+                    "parameters": tool.input_schema or {"type": "object", "properties": {}},
+                },
+            }
+        )
     return schemas

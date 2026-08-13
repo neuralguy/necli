@@ -31,6 +31,7 @@ class Message:
         "id",
         "model",
         "parent_id",
+        "reasoning",
         "role",
         "thoughts",
         "timestamp",
@@ -51,6 +52,7 @@ class Message:
         parent_id: str | None = None,
         attachments: list | None = None,
         thoughts: list | None = None,
+        reasoning: str = "",
     ):
         self.role = role
         self.content = content
@@ -62,6 +64,7 @@ class Message:
         self.parent_id = parent_id
         self.attachments = list(attachments) if attachments else []
         self.thoughts = [str(t) for t in thoughts] if thoughts else []
+        self.reasoning = str(reasoning) if reasoning else ""
 
         if tokens is not None:
             self.tokens = tokens
@@ -89,6 +92,8 @@ class Message:
             d["attachments"] = list(self.attachments)
         if self.thoughts:
             d["thoughts"] = list(self.thoughts)
+        if self.reasoning:
+            d["reasoning"] = self.reasoning
         if self.duration is not None:
             d["duration"] = round(self.duration, 2)
         if self.usage:
@@ -97,16 +102,44 @@ class Message:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Message":
+        if not isinstance(d, dict):
+            raise TypeError("message must be an object")
+        role = d.get("role")
+        content = d.get("content")
+        if not isinstance(role, str) or not isinstance(content, str):
+            raise ValueError("message role/content must be strings")
+
+        timestamp = d.get("timestamp", time.time())
+        tokens = d.get("tokens")
+        duration = d.get("duration")
+        try:
+            timestamp = float(timestamp)
+            tokens = int(tokens) if tokens is not None else None
+            duration = float(duration) if duration is not None else None
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"invalid message numeric field: {e}") from e
+
+        usage = d.get("usage")
+        if usage is not None and not isinstance(usage, dict):
+            raise ValueError("message usage must be an object")
+        attachments = d.get("attachments")
+        if attachments is not None and not isinstance(attachments, list):
+            raise ValueError("message attachments must be a list")
+        thoughts = d.get("thoughts")
+        if thoughts is not None and not isinstance(thoughts, list):
+            raise ValueError("message thoughts must be a list")
+
         return cls(
-            role=d["role"],
-            content=d["content"],
-            model=d.get("model", ""),
-            timestamp=d.get("timestamp", time.time()),
-            tokens=d.get("tokens"),
-            duration=d.get("duration"),
-            usage=d.get("usage"),
-            id=d.get("id"),
-            parent_id=d.get("parent_id"),
-            attachments=d.get("attachments"),
-            thoughts=d.get("thoughts"),
+            role=role,
+            content=content,
+            model=str(d.get("model") or ""),
+            timestamp=timestamp,
+            tokens=tokens,
+            duration=duration,
+            usage=usage,
+            id=str(d["id"]) if d.get("id") else None,
+            parent_id=str(d["parent_id"]) if d.get("parent_id") else None,
+            attachments=attachments,
+            thoughts=thoughts,
+            reasoning=str(d.get("reasoning") or ""),
         )

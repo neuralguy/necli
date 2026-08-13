@@ -5,6 +5,27 @@ from loguru import logger
 from tools.models import ToolCall, ToolResult
 
 _MAX_RESULTS = 5
+_MAX_RETRIES = 2
+_RETRY_DELAY = 1.0
+
+
+def _search_with_retry(query: str, max_results: int) -> list:
+    """Сетевой поиск с ретраями: один timeout не должен ронять вызов модели."""
+    import time
+    import warnings
+
+    last_error: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                from ddgs import DDGS
+            return DDGS().text(query, max_results=max_results)
+        except Exception as e:
+            last_error = e
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY * (attempt + 1))
+    raise last_error
 
 
 def execute_web_search(call: ToolCall) -> ToolResult:
@@ -16,7 +37,7 @@ def execute_web_search(call: ToolCall) -> ToolResult:
             name="web_search",
             status="error",
             output=(
-                'No queries provided. '
+                "No queries provided. "
                 'Usage: {"queries": ["what is python?", "rust vs go"], "max_results": 5}'
             ),
             exit_code=1,
@@ -42,15 +63,17 @@ def execute_web_search(call: ToolCall) -> ToolResult:
     except (ValueError, TypeError):
         logger.warning(
             "web_search: invalid max_results={!r}, using default {}",
-            args.get("max_results"), _MAX_RESULTS,
+            args.get("max_results"),
+            _MAX_RESULTS,
         )
         max_results = _MAX_RESULTS
 
     try:
         import warnings
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
-            from ddgs import DDGS
+            import ddgs  # noqa: F401 — проверка доступности пакета
     except ImportError:
         return ToolResult(
             name="web_search",
@@ -63,7 +86,7 @@ def execute_web_search(call: ToolCall) -> ToolResult:
     all_lines: list[str] = []
     for qidx, query in enumerate(queries):
         try:
-            results = DDGS().text(query, max_results=max_results)
+            results = _search_with_retry(query, max_results)
         except Exception as e:
             logger.error("web_search failed | query={!r} error={}", query, e)
             all_lines.append(f"[Query {qidx + 1}: {query}]")
@@ -89,5 +112,5 @@ def execute_web_search(call: ToolCall) -> ToolResult:
         status="ok",
         output="\n".join(all_lines).strip(),
         exit_code=0,
-        command=" web_search ".join(queries),
+        command=f"web_search [{', '.join(queries)}]",
     )

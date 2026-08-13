@@ -5,6 +5,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
 def _resolve_base_dir() -> Path:
     """Каталог пользовательских данных.
 
@@ -21,6 +22,7 @@ def _resolve_base_dir() -> Path:
     # src/config/paths.py → корень репозитория на три уровня вверх.
     return Path(__file__).resolve().parent.parent.parent / ".data"
 
+
 def resource_path(*parts: str) -> Path:
     """Путь к упакованному ресурсу (read-only, идёт внутри бинарника).
 
@@ -28,6 +30,7 @@ def resource_path(*parts: str) -> Path:
     """
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
     return base.joinpath(*parts)
+
 
 BASE_DIR = _resolve_base_dir()
 SESSIONS_DIR = BASE_DIR / "sessions"
@@ -37,6 +40,33 @@ APIS_FILE = BASE_DIR / "apis.json"
 UI_FILE = BASE_DIR / "ui.json"
 HOOKS_FILE = BASE_DIR / "hooks.json"
 MEMORY_DIR = BASE_DIR / "memory"
+
+
+def safe_child_path(base: Path, name: str) -> Path | None:
+    """Return a direct child of *base*, rejecting traversal and escaping symlinks.
+
+    Intended for user-controlled directory names (skills, presets, sessions).
+    Names are deliberately not slugified: callers can report an invalid name
+    instead of silently addressing a different resource.
+    """
+    raw = str(name or "").strip()
+    if (
+        not raw
+        or raw in {".", ".."}
+        or "\x00" in raw
+        or "/" in raw
+        or "\\" in raw
+        or "\n" in raw
+        or "\r" in raw
+    ):
+        return None
+    try:
+        base_resolved = base.expanduser().resolve()
+        candidate = (base / raw).expanduser().resolve()
+        candidate.relative_to(base_resolved)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return candidate
 
 
 def memory_dir_for(working_dir: str | None = None) -> Path:
@@ -54,6 +84,7 @@ def memory_dir_for(working_dir: str | None = None) -> Path:
     digest = hashlib.sha1(str(base).encode("utf-8")).hexdigest()[:10]
     return MEMORY_DIR / f"{slug}-{digest}"
 
+
 def global_memory_dir() -> Path:
     """Каталог кросс-проектной (глобальной) памяти.
 
@@ -63,11 +94,13 @@ def global_memory_dir() -> Path:
     """
     return MEMORY_DIR / "_global"
 
+
 def _seed_bundled(rel: str) -> None:
     """Копирует встроенные ресурсы из бинарника в ~/.necli при первом запуске."""
     if not getattr(sys, "frozen", False):
         return
     import shutil
+
     src = resource_path("_bundle", *rel.split("/"))
     dst = BASE_DIR / rel
     if not src.exists() or dst.exists():

@@ -10,7 +10,7 @@ import time
 
 import tools
 from agent.display import show_command, show_tool_combined
-from agent.executor import execute_and_show
+from agent.executor import execute_and_show_async
 from config.themes import t
 from tools.call_parser import parse_call_block as _parse_call_block
 from tools.registry import build_blocked_result, is_tool_allowed
@@ -46,21 +46,21 @@ def _diagnose_parse_failure(tool_name: str, attrs_header: str, body: str) -> str
     if tool_name not in NAMED_TOOLS:
         return f"unknown tool '{tool_name}'"
 
-    if tool_name in _CONTENT_TOOLS or tool_name in _PATCH_TOOLS:  # noqa: SIM102
-        if 'path=' not in (attrs_header or ''):
+    if tool_name in _CONTENT_TOOLS or tool_name in _PATCH_TOOLS:
+        if "path=" not in (attrs_header or ""):
             return f"'{tool_name}' requires path=\"...\" in the fence header"
 
     stripped = (body or "").strip()
     if not stripped:
         if tool_name not in _CONTENT_TOOLS:
             return "empty block body"
-    elif stripped.startswith(('{', '[')):
+    elif stripped.startswith(("{", "[")):
         return "body looks like JSON but does not parse — check quotes, commas, escaping"
 
     return "unknown reason (see body above)"
 
 
-def handle_complete_tool(stream, complete) -> bool:
+async def handle_complete_tool(stream, complete) -> bool:
     """Обрабатывает один complete-блок: парсит, исполняет или показывает ошибку.
 
     Возвращает True если блок реально исполнен (для инкремента счётчика).
@@ -79,8 +79,10 @@ def handle_complete_tool(stream, complete) -> bool:
     # а каждый последующий tool-блок остаётся в UI, но не исполняется.
     if stream.ctx.interrupted:
         call = _parse_call_block(
-            complete.tool_name, complete.attrs_header,
-            complete.body, complete.raw,
+            complete.tool_name,
+            complete.attrs_header,
+            complete.body,
+            complete.raw,
         )
         if call is None:
             call = tools.ToolCall(
@@ -107,8 +109,10 @@ def handle_complete_tool(stream, complete) -> bool:
         err = _build_parse_error_result(complete.tool_name, "", complete.raw, reason)
         show_tool_combined(
             tools.ToolCall(
-                command=complete.tool_name, tool_name=complete.tool_name,
-                args={}, raw=complete.raw,
+                command=complete.tool_name,
+                tool_name=complete.tool_name,
+                args={},
+                raw=complete.raw,
             ),
             err,
             subtitle=f"[bold {t('error')}]\u25a0 parse error[/bold {t('error')}]",
@@ -118,9 +122,9 @@ def handle_complete_tool(stream, complete) -> bool:
         return False
 
     from agent.stream import _tool_subtitle
+
     write_time = time.monotonic() - stream._last_block_end_time
     subtitle = _tool_subtitle(stream.model, write_time, complete.raw)
-
 
     # Factory: пересчитает subtitle с реальным output после выполнения.
     def _mk_subtitle(result):
@@ -129,20 +133,29 @@ def handle_complete_tool(stream, complete) -> bool:
     if complete.tool_name == "subagent":
         # subagent выполняется в agent/loop.py — здесь только парсим/валидируем
         call = _parse_call_block(
-            complete.tool_name, complete.attrs_header,
-            complete.body, complete.raw,
+            complete.tool_name,
+            complete.attrs_header,
+            complete.body,
+            complete.raw,
         )
         if call is None:
             reason = _diagnose_parse_failure(
-                complete.tool_name, complete.attrs_header, complete.body,
+                complete.tool_name,
+                complete.attrs_header,
+                complete.body,
             )
             err = _build_parse_error_result(
-                complete.tool_name, complete.body, complete.raw, reason,
+                complete.tool_name,
+                complete.body,
+                complete.raw,
+                reason,
             )
             show_tool_combined(
                 tools.ToolCall(
-                    command=complete.tool_name, tool_name=complete.tool_name,
-                    args={}, raw=complete.raw,
+                    command=complete.tool_name,
+                    tool_name=complete.tool_name,
+                    args={},
+                    raw=complete.raw,
                 ),
                 err,
                 subtitle=f"[bold {t('error')}]\u25a0 parse error[/bold {t('error')}]",
@@ -153,24 +166,35 @@ def handle_complete_tool(stream, complete) -> bool:
         return True
 
     call = _parse_call_block(
-        complete.tool_name, complete.attrs_header,
-        complete.body, complete.raw,
+        complete.tool_name,
+        complete.attrs_header,
+        complete.body,
+        complete.raw,
     )
     if call is None:
         reason = _diagnose_parse_failure(
-            complete.tool_name, complete.attrs_header, complete.body,
+            complete.tool_name,
+            complete.attrs_header,
+            complete.body,
         )
         logger.warning(
             "Parse failure for tool=%s reason=%s body_len=%d",
-            complete.tool_name, reason, len(complete.body or ""),
+            complete.tool_name,
+            reason,
+            len(complete.body or ""),
         )
         err = _build_parse_error_result(
-            complete.tool_name, complete.body, complete.raw, reason,
+            complete.tool_name,
+            complete.body,
+            complete.raw,
+            reason,
         )
         show_tool_combined(
             tools.ToolCall(
-                command=complete.tool_name, tool_name=complete.tool_name,
-                args={}, raw=complete.raw,
+                command=complete.tool_name,
+                tool_name=complete.tool_name,
+                args={},
+                raw=complete.raw,
             ),
             err,
             subtitle=f"[bold {t('error')}]\u25a0 parse error[/bold {t('error')}]",
@@ -183,7 +207,10 @@ def handle_complete_tool(stream, complete) -> bool:
     from apis.agent_adapter import current_active_skills
 
     if not is_tool_allowed(
-        call.tool_name, stream.ctx.mode, current_active_skills(),
+        call.tool_name,
+        stream.ctx.mode,
+        current_active_skills(),
+        call.args,
     ):
         blocked = build_blocked_result(call, stream.ctx.mode)
         show_tool_combined(call, blocked, subtitle=_mk_subtitle(blocked))
@@ -191,9 +218,11 @@ def handle_complete_tool(stream, complete) -> bool:
         stream.inline_call_keys.append(_tool_call_identity(call))
         return True
 
-    res = execute_and_show(
-        [call], event_handler=stream.ctx.event_handler,
-        subtitle=subtitle, subtitle_factory=_mk_subtitle,
+    res = await execute_and_show_async(
+        [call],
+        event_handler=stream.ctx.event_handler,
+        subtitle=subtitle,
+        subtitle_factory=_mk_subtitle,
     )
     stream.inline_results.extend(res)
     stream.inline_call_keys.append(_tool_call_identity(call))

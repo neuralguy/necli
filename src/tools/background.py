@@ -16,12 +16,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from config.constants import Limits
+from config.i18n import format_duration
 from logger import logger
 from tools.models import ToolResult
-
-# Фоновые задачи — для долгих процессов, поэтому таймаут заметно больше
-# обычного shell (_EXECUTION_TIMEOUT). Час с запасом.
-_BG_TIMEOUT = 3600
 
 # ── Мост поток-демон → asyncio ──
 # Фоновые задачи исполняются в daemon-потоках (вне asyncio). Чтобы REPL мог
@@ -77,6 +75,7 @@ class _Job:
     cancel_requested: bool = False
     deliver_result: bool = True
     visible: bool = True
+    timeout: float = Limits.BG_SHELL_TIMEOUT
     process_ready: threading.Event = field(default_factory=threading.Event, repr=False)
 
 
@@ -108,6 +107,7 @@ def has_running_work() -> bool:
 def _notify_job_changed(job: _Job) -> None:
     try:
         from agent.background_render import update_background_job
+
         update_background_job(job)
     except Exception:
         logger.debug("background UI update failed", exc_info=True)
@@ -167,12 +167,19 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
             if pipe is None:
                 continue
 
-            def _read(stream=pipe, err=is_stderr):
+            def _read(stream=pipe, err=is_stderr, job_ref=job):
                 try:
                     for line in iter(stream.readline, ""):
-                        _append_job_output(job, line, stderr=err)
+                        _append_job_output(job_ref, line, stderr=err)
+                except (OSError, ValueError):
+                    # Pipe закрыт извне (process killed, timeout) — не даём
+                    # потоку упасть и не оставляем дескриптор открытым.
+                    pass
                 finally:
-                    stream.close()
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass  # уже закрыт
 
             reader = threading.Thread(
                 target=_read,
@@ -184,7 +191,7 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
 
         job.process_ready.set()
 
-        deadline = time.monotonic() + _BG_TIMEOUT
+        deadline = time.monotonic() + job.timeout
         timed_out = False
         cancel_sent_at: float | None = None
         while process.poll() is None:
@@ -215,16 +222,21 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
             cancelled = job.cancel_requested
             job.exit_code = 130 if cancelled else -1 if timed_out else exit_code
             job.status = (
-                "cancelled" if cancelled
-                else "timeout" if timed_out
-                else "done" if exit_code == 0
+                "cancelled"
+                if cancelled
+                else "timeout"
+                if timed_out
+                else "done"
+                if exit_code == 0
                 else "error"
             )
             job.finished_at = time.monotonic()
             job.revision += 1
         logger.info(
             "background job {} done: exit={} out_len={}",
-            job.id, job.exit_code, len(job.output),
+            job.id,
+            job.exit_code,
+            len(job.output),
         )
     except Exception as e:
         job.process_ready.set()
@@ -251,6 +263,7 @@ def start_background(
     *,
     visible: bool = True,
     deliver_result: bool = True,
+    timeout: float = Limits.BG_SHELL_TIMEOUT,
 ) -> str:
     """Запускает команду в фоновом потоке, возвращает job-id."""
     global _counter
@@ -263,23 +276,25 @@ def start_background(
             delivered=not deliver_result,
             deliver_result=deliver_result,
             visible=visible,
+            timeout=timeout,
         )
         _jobs[job_id] = job
     thread = threading.Thread(
-        target=_run_job, args=(job, cwd, dict(env)), daemon=True,
+        target=_run_job,
+        args=(job, cwd, dict(env)),
+        daemon=True,
         name=f"necli-bg-{job_id}",
     )
     # Процесс стартует ДО ленивого импорта UI: первая фоновая команда не
     # должна ждать загрузки Rich/оверлеев, прежде чем реально запуститься.
     thread.start()
-    if not deliver_result:
-        # Managed shell субагента сразу получает Ctrl+X. Не возвращаем job-id,
-        # пока process group ещё не существует, иначе сверхранняя отмена могла
-        # попасть в щель между созданием _Job и Popen.
-        job.process_ready.wait(timeout=1)
+    # Ждём создания процесса в обоих случаях: cancel_background должен
+    # находить job.process сразу после возврата job-id.
+    job.process_ready.wait(timeout=1)
     if visible:
         try:
             from agent.background_render import attach_background_job
+
             attach_background_job(job)
         except Exception:
             logger.debug("background UI attach failed", exc_info=True)
@@ -325,7 +340,9 @@ def wait_background_result(job_id: str) -> ToolResult:
             job = _jobs.get(job_id)
             if job is None:
                 return ToolResult(
-                    name="shell", status="error", output="Background job disappeared.",
+                    name="shell",
+                    status="error",
+                    output="Background job disappeared.",
                     exit_code=-1,
                 )
             if job.status != "running":
@@ -356,18 +373,25 @@ def drain_finished_results() -> list[ToolResult]:
             elapsed = max(0.0, job.finished_at - job.started_at)
             header = (
                 f"[background {job.id} finished — exit {job.exit_code}, "
-                f"{elapsed:.0f}s]\n$ {job.command}\n"
+                f"{format_duration(elapsed)}]\n$ {job.command}\n"
             )
-            out.append(ToolResult(
-                name="shell",
-                status="ok" if job.status == "done" else "error",
-                output=header + job.output,
-                exit_code=job.exit_code,
-                command=job.command,
-            ))
+            out.append(
+                ToolResult(
+                    name="shell",
+                    status="ok" if job.status == "done" else "error",
+                    output=header + job.output,
+                    exit_code=job.exit_code,
+                    command=job.command,
+                )
+            )
+        # Delivered jobs have no remaining lifecycle role. Keeping them forever
+        # made long-running CLI processes retain every command/output in memory.
+        for job_id in delivered_ids:
+            _jobs.pop(job_id, None)
     if delivered_ids:
         try:
             from agent.background_render import detach_background_job
+
             for job_id in delivered_ids:
                 detach_background_job(job_id)
         except Exception:

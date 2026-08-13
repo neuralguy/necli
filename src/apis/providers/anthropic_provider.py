@@ -91,7 +91,8 @@ class AnthropicProvider(BaseProvider):
     # ── Conversion ──
 
     def _convert_messages_anthropic(
-        self, messages: list[BaseMessage],
+        self,
+        messages: list[BaseMessage],
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """Возвращает (system_prompt, messages_list) в формате Anthropic."""
         system_parts: list[str] = []
@@ -119,27 +120,35 @@ class AnthropicProvider(BaseProvider):
                         elif isinstance(part, dict) and part.get("type") == "text":
                             blocks.append({"type": "text", "text": part.get("text", "")})
                 for tc in msg.tool_calls or []:
-                    blocks.append({  # noqa: PERF401
-                        "type": "tool_use",
-                        "id": tc.get("id") or "",
-                        "name": tc.get("name") or "",
-                        "input": tc.get("args") or {},
-                    })
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.get("id") or "",
+                            "name": tc.get("name") or "",
+                            "input": tc.get("args") or {},
+                        }
+                    )
                 if not blocks:
                     blocks.append({"type": "text", "text": ""})
                 out.append({"role": "assistant", "content": blocks})
                 continue
 
             if isinstance(msg, ToolMessage):
-                content_str = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
-                out.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": msg.tool_call_id,
-                        "content": content_str,
-                    }],
-                })
+                content_str = (
+                    msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
+                )
+                out.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": msg.tool_call_id,
+                                "content": content_str,
+                            }
+                        ],
+                    }
+                )
                 continue
 
             # fallback — как user text
@@ -167,21 +176,25 @@ class AnthropicProvider(BaseProvider):
                             try:
                                 header, b64 = url.split(",", 1)
                                 media = header.split(";")[0].replace("data:", "") or "image/png"
-                                blocks.append({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media,
-                                        "data": b64,
-                                    },
-                                })
+                                blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media,
+                                            "data": b64,
+                                        },
+                                    }
+                                )
                             except ValueError:
                                 continue
                         else:
-                            blocks.append({
-                                "type": "image",
-                                "source": {"type": "url", "url": url},
-                            })
+                            blocks.append(
+                                {
+                                    "type": "image",
+                                    "source": {"type": "url", "url": url},
+                                }
+                            )
             return blocks or [{"type": "text", "text": ""}]
         return [{"type": "text", "text": str(content)}]
 
@@ -194,11 +207,13 @@ class AnthropicProvider(BaseProvider):
             name = fn.get("name") or ""
             if not name:
                 continue
-            out.append({
-                "name": name,
-                "description": fn.get("description", "") or "",
-                "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
-            })
+            out.append(
+                {
+                    "name": name,
+                    "description": fn.get("description", "") or "",
+                    "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
+                }
+            )
         return out
 
     @staticmethod
@@ -249,7 +264,9 @@ class AnthropicProvider(BaseProvider):
             params["system"] = [billing_block, *system]
 
     def _apply_system_as_message(
-        self, system_prompt: str | None, msgs: list[dict[str, Any]],
+        self,
+        system_prompt: str | None,
+        msgs: list[dict[str, Any]],
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """Оставляет system только в top-level поле.
 
@@ -351,9 +368,10 @@ class AnthropicProvider(BaseProvider):
         outp = int(usage.get("output_tokens") or 0)
         if cache_read or cache_creation:
             logger.debug(
-                "anthropic prompt-cache | read={} created={} fresh_input={} "
-                "(hit_ratio={:.0%})",
-                cache_read, cache_creation, usage.get("input_tokens") or 0,
+                "anthropic prompt-cache | read={} created={} fresh_input={} (hit_ratio={:.0%})",
+                cache_read,
+                cache_creation,
+                usage.get("input_tokens") or 0,
                 cache_read / inp if inp else 0.0,
             )
         return {
@@ -396,9 +414,13 @@ class AnthropicProvider(BaseProvider):
         for i, msg in enumerate(params.get("messages", [])):
             content = msg.get("content", msg)
             if isinstance(content, list):
-                logger.debug(f"[CACHE DEBUG]   msg[{i}] role={msg.get('role')} blocks={len(content)}")
+                logger.debug(
+                    f"[CACHE DEBUG]   msg[{i}] role={msg.get('role')} blocks={len(content)}"
+                )
             else:
-                logger.debug(f"[CACHE DEBUG]   msg[{i}] role={msg.get('role')} text_len={len(str(content))}")
+                logger.debug(
+                    f"[CACHE DEBUG]   msg[{i}] role={msg.get('role')} text_len={len(str(content))}"
+                )
 
         data = await self._http_post_raw(params)
         return self._parse_anthropic_response(data)
@@ -431,9 +453,13 @@ class AnthropicProvider(BaseProvider):
         for i, msg in enumerate(params.get("messages", [])):
             content = msg.get("content", msg)
             if isinstance(content, list):
-                logger.debug(f"[CACHE DEBUG STREAM]   msg[{i}] role={msg.get('role')} blocks={len(content)}")
+                logger.debug(
+                    f"[CACHE DEBUG STREAM]   msg[{i}] role={msg.get('role')} blocks={len(content)}"
+                )
             else:
-                logger.debug(f"[CACHE DEBUG STREAM]   msg[{i}] role={msg.get('role')} text_len={len(str(content))}")
+                logger.debug(
+                    f"[CACHE DEBUG STREAM]   msg[{i}] role={msg.get('role')} text_len={len(str(content))}"
+                )
 
         last_error: Exception | None = None
         attempt = 0
@@ -448,11 +474,12 @@ class AnthropicProvider(BaseProvider):
             except _RetryableStreamError as e:
                 last_error = e
                 if e.status_code == 429 and not yielded_any:
-                    if rate_limit_rotations < self._credential_count() - 1:
-                        rate_limit_rotations += 1
-                        self._rotate_api_credential(f"HTTP {e.status_code}")
-                        continue
-                    raise self._all_credentials_failed_error(e.status_code, last_error) from e
+                    rate_limit_rotations = await self._handle_rate_limit(
+                        e.status_code,
+                        last_error,
+                        rate_limit_rotations,
+                    )
+                    continue
                 if attempt < self.max_retries - 1:
                     delay = self._calc_backoff(attempt)
                     logger.warning(
@@ -511,10 +538,20 @@ class AnthropicProvider(BaseProvider):
                 yield chunk
             return
 
-        client_kwargs.setdefault("limits", httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0))
-        async with httpx.AsyncClient(**client_kwargs) as client, client.stream(
-            "POST", self._get_url(), json=params, headers=self._get_headers(),
-        ) as resp:
+        await self._throttle_rpm()
+        client_kwargs.setdefault(
+            "limits",
+            httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0),
+        )
+        async with (
+            httpx.AsyncClient(**client_kwargs) as client,
+            client.stream(
+                "POST",
+                self._get_url(),
+                json=params,
+                headers=self._get_headers(),
+            ) as resp,
+        ):
             if resp.status_code in self._RETRYABLE_STATUS_CODES:
                 error_text = (await resp.aread()).decode("utf-8", errors="ignore")
                 raise _RetryableStreamError(
@@ -535,7 +572,7 @@ class AnthropicProvider(BaseProvider):
                     line = line.strip()
                     if not line or not line.startswith("data:"):
                         continue
-                    data_str = line[len("data:"):].strip()
+                    data_str = line[len("data:") :].strip()
                     if not data_str:
                         continue
                     try:
@@ -572,12 +609,14 @@ class AnthropicProvider(BaseProvider):
                             }
                             yield AIMessageChunk(
                                 content="",
-                                tool_call_chunks=[{
-                                    "index": idx,
-                                    "id": current_blocks[idx]["id"],
-                                    "name": current_blocks[idx]["name"],
-                                    "args": "",
-                                }],
+                                tool_call_chunks=[
+                                    {
+                                        "index": idx,
+                                        "id": current_blocks[idx]["id"],
+                                        "name": current_blocks[idx]["name"],
+                                        "args": "",
+                                    }
+                                ],
                             )
                         elif btype not in ("text",):
                             # thinking/redacted_thinking и прочие будущие типы
@@ -605,12 +644,14 @@ class AnthropicProvider(BaseProvider):
                             if args_piece:
                                 yield AIMessageChunk(
                                     content="",
-                                    tool_call_chunks=[{
-                                        "index": idx,
-                                        "id": current_blocks.get(idx, {}).get("id"),
-                                        "name": current_blocks.get(idx, {}).get("name"),
-                                        "args": args_piece,
-                                    }],
+                                    tool_call_chunks=[
+                                        {
+                                            "index": idx,
+                                            "id": current_blocks.get(idx, {}).get("id"),
+                                            "name": current_blocks.get(idx, {}).get("name"),
+                                            "args": args_piece,
+                                        }
+                                    ],
                                 )
                         elif dtype == "thinking_delta":
                             # Some Anthropic extended thinking — кладём в reasoning_content
@@ -627,7 +668,7 @@ class AnthropicProvider(BaseProvider):
                         if usage:
                             # output_tokens обновляется в message_delta
                             for k, v in usage.items():
-                                usage_acc[k] = v  # noqa: PERF403
+                                usage_acc[k] = v
                         continue
 
                     if etype == "message_stop":
@@ -639,16 +680,19 @@ class AnthropicProvider(BaseProvider):
                         return
 
     async def _aiohttp_sse_parse(
-        self, params: dict[str, Any],
-        current_blocks: dict, usage_acc: dict,
+        self,
+        params: dict[str, Any],
+        current_blocks: dict,
+        usage_acc: dict,
     ) -> AsyncIterator[AIMessageChunk]:
         """SSE стрим через aiohttp — парсит события идентично _astream_anthropic."""
         import aiohttp
+
         url = self._get_url()
         headers = self._get_headers()
         timeout = aiohttp.ClientTimeout(total=self._calc_timeout(params), connect=30)
         proxy = self._get_proxy() or None
-        async with aiohttp.ClientSession(timeout=timeout) as session:  # noqa: SIM117
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=params, headers=headers, proxy=proxy) as resp:
                 if resp.status != 200:
                     text = await resp.text()
@@ -666,7 +710,7 @@ class AnthropicProvider(BaseProvider):
                         line = line.strip()
                         if not line or not line.startswith("data:"):
                             continue
-                        data_str = line[len("data:"):].strip()
+                        data_str = line[len("data:") :].strip()
                         if not data_str:
                             continue
                         try:
@@ -688,7 +732,14 @@ class AnthropicProvider(BaseProvider):
                                     current_blocks[idx]["args"] += args_chunk
                                     yield AIMessageChunk(
                                         content="",
-                                        tool_call_chunks=[{"index": idx, "id": None, "name": None, "args": args_chunk}],
+                                        tool_call_chunks=[
+                                            {
+                                                "index": idx,
+                                                "id": None,
+                                                "name": None,
+                                                "args": args_chunk,
+                                            }
+                                        ],
                                     )
                         elif etype == "message_start":
                             usage = (event.get("message") or {}).get("usage") or {}
@@ -698,15 +749,32 @@ class AnthropicProvider(BaseProvider):
                             idx = event.get("index", 0)
                             block = event.get("content_block") or {}
                             if block.get("type") == "tool_use":
-                                current_blocks[idx] = {"name": block.get("name") or "", "id": block.get("id") or "", "args": ""}
-                                yield AIMessageChunk(content="", tool_call_chunks=[{"index": idx, "id": current_blocks[idx]["id"], "name": current_blocks[idx]["name"], "args": ""}])
+                                current_blocks[idx] = {
+                                    "name": block.get("name") or "",
+                                    "id": block.get("id") or "",
+                                    "args": "",
+                                }
+                                yield AIMessageChunk(
+                                    content="",
+                                    tool_call_chunks=[
+                                        {
+                                            "index": idx,
+                                            "id": current_blocks[idx]["id"],
+                                            "name": current_blocks[idx]["name"],
+                                            "args": "",
+                                        }
+                                    ],
+                                )
                         elif etype == "message_delta":
                             usage = event.get("usage") or {}
                             for k, v in usage.items():
-                                usage_acc[k] = v  # noqa: PERF403
+                                usage_acc[k] = v
                         elif etype == "message_stop":
                             if usage_acc:
-                                yield AIMessageChunk(content="", usage_metadata=self._convert_usage_anthropic(usage_acc))
+                                yield AIMessageChunk(
+                                    content="",
+                                    usage_metadata=self._convert_usage_anthropic(usage_acc),
+                                )
                             return
 
     async def _http_post_raw(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -720,9 +788,12 @@ class AnthropicProvider(BaseProvider):
         rate_limit_rotations = 0
 
         while attempt < self.max_retries:
+            await self._throttle_rpm()
             headers = self._get_headers()
             proxy = self._get_proxy() or None
-            client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(dynamic_timeout, connect=30.0)}
+            client_kwargs: dict[str, Any] = {
+                "timeout": httpx.Timeout(dynamic_timeout, connect=30.0)
+            }
             if proxy:
                 client_kwargs["proxy"] = proxy
 
@@ -736,9 +807,7 @@ class AnthropicProvider(BaseProvider):
                         # Битое/неполное тело при HTTP 200 — это НЕ наш
                         # «бизнес» ValueError ниже (который мы намеренно
                         # пробрасываем без ретрая). Лечим как транзиентный сбой.
-                        last_error = ValueError(
-                            f"{name} API Error: malformed JSON body: {je}"
-                        )
+                        last_error = ValueError(f"{name} API Error: malformed JSON body: {je}")
                         delay = self._calc_backoff(attempt)
                         logger.warning(
                             f"{name} malformed JSON body | "
@@ -748,18 +817,15 @@ class AnthropicProvider(BaseProvider):
                         attempt += 1
                         continue
                 if resp.status_code == 429:
-                    last_error = ValueError(
-                        f"{name} API Error {resp.status_code}: {resp.text}"
+                    last_error = ValueError(f"{name} API Error {resp.status_code}: {resp.text}")
+                    rate_limit_rotations = await self._handle_rate_limit(
+                        resp.status_code,
+                        last_error,
+                        rate_limit_rotations,
                     )
-                    if rate_limit_rotations < self._credential_count() - 1:
-                        rate_limit_rotations += 1
-                        self._rotate_api_credential(f"HTTP {resp.status_code}")
-                        continue
-                    raise self._all_credentials_failed_error(resp.status_code, last_error)
+                    continue
                 if resp.status_code in self._RETRYABLE_STATUS_CODES:
-                    last_error = ValueError(
-                        f"{name} API Error {resp.status_code}: {resp.text}"
-                    )
+                    last_error = ValueError(f"{name} API Error {resp.status_code}: {resp.text}")
                     delay = self._calc_backoff(attempt)
                     logger.warning(
                         f"{name} HTTP {resp.status_code} | "
@@ -790,42 +856,49 @@ class AnthropicProvider(BaseProvider):
                 if attempt < self.max_retries:
                     await asyncio.sleep(delay)
 
-        raise ValueError(
-            f"{name} API Error after {self.max_retries} attempts: {last_error}"
-        )
+        raise ValueError(f"{name} API Error after {self.max_retries} attempts: {last_error}")
 
     async def _aiohttp_post_raw(self, params: dict[str, Any]) -> dict[str, Any]:
         """Альтернативный POST через aiohttp (обход httpx TLS fingerprint блокировки)."""
         import aiohttp
+
         url = self._get_url()
         timeout = aiohttp.ClientTimeout(total=self._calc_timeout(params), connect=30)
         last_error: Exception | None = None
         rate_limit_rotations = 0
         for attempt in range(self.max_retries):
+            await self._throttle_rpm()
             headers = self._get_headers()
             proxy = self._get_proxy() or None
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:  # noqa: SIM117
+                async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(url, json=params, headers=headers, proxy=proxy) as resp:
                         text = await resp.text()
                         if resp.status == 200:
                             return json.loads(text)
                         if resp.status == 429:
-                            last_error = ValueError(f"{self._provider_name} HTTP {resp.status}: {text[:200]}")
-                            if rate_limit_rotations < self._credential_count() - 1:
-                                rate_limit_rotations += 1
-                                self._rotate_api_credential(f"HTTP {resp.status}")
-                                continue
-                            raise self._all_credentials_failed_error(resp.status, last_error)
+                            last_error = ValueError(
+                                f"{self._provider_name} HTTP {resp.status}: {text[:200]}"
+                            )
+                            rate_limit_rotations = await self._handle_rate_limit(
+                                resp.status,
+                                last_error,
+                                rate_limit_rotations,
+                            )
+                            continue
                         if resp.status in self._RETRYABLE_STATUS_CODES:
-                            last_error = ValueError(f"{self._provider_name} HTTP {resp.status}: {text[:200]}")
+                            last_error = ValueError(
+                                f"{self._provider_name} HTTP {resp.status}: {text[:200]}"
+                            )
                             await asyncio.sleep(self._calc_backoff(attempt))
                             continue
                         raise ValueError(f"{self._provider_name} HTTP {resp.status}: {text[:400]}")
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_error = e
                 await asyncio.sleep(self._calc_backoff(attempt))
-        raise ValueError(f"{self._provider_name} API Error after {self.max_retries} attempts: {last_error}")
+        raise ValueError(
+            f"{self._provider_name} API Error after {self.max_retries} attempts: {last_error}"
+        )
 
     def _parse_anthropic_response(self, data: dict[str, Any]) -> AIMessage:
         content_blocks = data.get("content") or []
@@ -845,12 +918,14 @@ class AnthropicProvider(BaseProvider):
             if btype == "text":
                 text_parts.append(block.get("text") or "")
             elif btype == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id") or "",
-                    "name": block.get("name") or "",
-                    "args": block.get("input") or {},
-                    "type": "tool_call",
-                })
+                tool_calls.append(
+                    {
+                        "id": block.get("id") or "",
+                        "name": block.get("name") or "",
+                        "args": block.get("input") or {},
+                        "type": "tool_call",
+                    }
+                )
 
         usage_metadata = self._convert_usage_anthropic(data.get("usage") or {})
         return AIMessage(
@@ -878,8 +953,7 @@ def create_anthropic_provider(
         api_key = auth_token
     if not api_key and definition.requires_auth:
         raise ValueError(
-            f"API key not set for provider '{definition.id}'. "
-            "Use /api → provider → Set key."
+            f"API key not set for provider '{definition.id}'. Use /api → provider → Set key."
         )
 
     model_info = definition.get_model_info(model_id)
@@ -897,9 +971,13 @@ def create_anthropic_provider(
     provider._proxy = definition.proxy
     provider._api_credentials = get_api_credentials(definition.id)
     if definition.id == "anthropic" and auth_token:
-        provider._api_credentials = [{"key": auth_token, "proxy": "", "main": True, "name": "ANTHROPIC_AUTH_TOKEN"}]
+        provider._api_credentials = [
+            {"key": auth_token, "proxy": "", "main": True, "name": "ANTHROPIC_AUTH_TOKEN"}
+        ]
         provider._use_bearer_auth = True
-    base_url = env_base_url if definition.id == "anthropic" and env_base_url else definition.base_url
+    base_url = (
+        env_base_url if definition.id == "anthropic" and env_base_url else definition.base_url
+    )
     provider._base_url = (base_url or "https://api.anthropic.com").rstrip("/")
     provider._extra_headers = dict(definition.default_headers or {})
     extra = definition.extra or {}

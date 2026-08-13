@@ -1,25 +1,17 @@
 """Инструменты работы с персистентной памятью (memdir).
 
-Модель сама решает, когда сохранить долговременный факт (предпочтение
-пользователя, обратную связь, контекст проекта, внешний референс), вызвав
-memory_write. memory_list/​memory_read — для просмотра уже сохранённого.
+Один публичный инструмент memory выполняет write/list/read/delete по action.
 """
 
 from __future__ import annotations
 
-import datetime as _dt
-
 from logger import logger
+from memory._time import current_timestamp
 from tools._paths import get_working_dir
 from tools.models import ToolCall, ToolResult
 
 
-def _now() -> str:
-    # Абсолютные дата+время для frontmatter; timezone сохраняет смысл между сессиями.
-    return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
-
-
-def memory_write(call: ToolCall) -> ToolResult:
+def _write(call: ToolCall) -> ToolResult:
     """args: {name, body, type?, scope?}  — создать/обновить memory-файл."""
     from memory import write_memory
     from memory.memdir import MEMORY_TYPES
@@ -32,36 +24,49 @@ def memory_write(call: ToolCall) -> ToolResult:
 
     if not name or not body:
         return ToolResult(
-            name="memory_write", status="error",
-            output="memory_write requires non-empty 'name' and 'body'.",
-            exit_code=1, command=call.command,
+            name="memory",
+            status="error",
+            output="memory action=write requires non-empty 'name' and 'body'.",
+            exit_code=1,
+            command=call.command,
         )
     if mtype not in MEMORY_TYPES:
         return ToolResult(
-            name="memory_write", status="error",
+            name="memory",
+            status="error",
             output=f"type must be one of {', '.join(MEMORY_TYPES)} (got {mtype!r}).",
-            exit_code=1, command=call.command,
+            exit_code=1,
+            command=call.command,
         )
     if scope not in ("project", "global"):
         return ToolResult(
-            name="memory_write", status="error",
+            name="memory",
+            status="error",
             output=f"scope must be 'project' or 'global' (got {scope!r}).",
-            exit_code=1, command=call.command,
+            exit_code=1,
+            command=call.command,
         )
     try:
         mf = write_memory(
-            name, body, mtype=mtype, timestamp=_now(),
-            working_dir=get_working_dir(), scope=scope,
+            name,
+            body,
+            mtype=mtype,
+            timestamp=current_timestamp(),
+            working_dir=get_working_dir(),
+            scope=scope,
         )
     except Exception as e:
-        logger.opt(exception=True).error("memory_write failed: {}", e)
+        logger.opt(exception=True).error("memory write failed: {}", e)
         return ToolResult(
-            name="memory_write", status="error",
+            name="memory",
+            status="error",
             output=f"memory write failed: {type(e).__name__}: {e}",
-            exit_code=1, command=call.command,
+            exit_code=1,
+            command=call.command,
         )
     return ToolResult(
-        name="memory_write", status="ok",
+        name="memory",
+        status="ok",
         output=(
             f"=== path: {mf.path} ===\n"
             f"[scope={scope}, type={mf.type}, "
@@ -71,7 +76,7 @@ def memory_write(call: ToolCall) -> ToolResult:
     )
 
 
-def memory_list(call: ToolCall) -> ToolResult:
+def _list(call: ToolCall) -> ToolResult:
     """Список memory-файлов (global + проект) с кратким содержанием."""
     from memory import scan_memories
 
@@ -79,7 +84,8 @@ def memory_list(call: ToolCall) -> ToolResult:
     project_files = scan_memories(get_working_dir(), scope="project")
     if not global_files and not project_files:
         return ToolResult(
-            name="memory_list", status="ok",
+            name="memory",
+            status="ok",
             output="No memories saved yet (project or global).",
             command=call.command,
         )
@@ -92,45 +98,57 @@ def memory_list(call: ToolCall) -> ToolResult:
                 f"created={f.created}, updated={f.updated}]: {first}"
             )
     return ToolResult(
-        name="memory_list", status="ok",
-        output="\n".join(lines), command=call.command,
+        name="memory",
+        status="ok",
+        output="\n".join(lines),
+        command=call.command,
     )
 
 
-def memory_read(call: ToolCall) -> ToolResult:
+def _read(call: ToolCall) -> ToolResult:
     """args: {name, scope?} — прочитать содержимое memory-файла целиком.
 
     scope по умолчанию ищет сперва в проекте, затем в global.
     """
-    from config.paths import global_memory_dir, memory_dir_for
-    from memory import read_memory
+    from memory import memory_path, read_memory
 
     args = call.args or {}
     name = str(args.get("name", "")).strip()
     scope = str(args.get("scope", "")).strip()
     if not name:
         return ToolResult(
-            name="memory_read", status="error",
-            output="memory_read requires 'name'.", exit_code=1, command=call.command,
+            name="memory",
+            status="error",
+            output="memory action=read requires 'name'.",
+            exit_code=1,
+            command=call.command,
         )
-    if not name.endswith(".md"):
-        name += ".md"
+    if scope not in ("", "project", "global"):
+        return ToolResult(
+            name="memory",
+            status="error",
+            output=f"scope must be 'project' or 'global' (got {scope!r}).",
+            exit_code=1,
+            command=call.command,
+        )
 
+    working_dir = get_working_dir()
     if scope == "global":
-        candidates = [(global_memory_dir() / name, "global")]
+        candidates = [(memory_path(name, scope="global"), "global")]
     elif scope == "project":
-        candidates = [(memory_dir_for(get_working_dir()) / name, "project")]
+        candidates = [(memory_path(name, working_dir=working_dir), "project")]
     else:
         candidates = [
-            (memory_dir_for(get_working_dir()) / name, "project"),
-            (global_memory_dir() / name, "global"),
+            (memory_path(name, working_dir=working_dir), "project"),
+            (memory_path(name, scope="global"), "global"),
         ]
 
     for path, found_scope in candidates:
         mf = read_memory(path) if path.exists() else None
         if mf is not None:
             return ToolResult(
-                name="memory_read", status="ok",
+                name="memory",
+                status="ok",
                 output=(
                     f"=== path: {path} ===\n"
                     f"[scope={found_scope}, type={mf.type}, "
@@ -139,6 +157,98 @@ def memory_read(call: ToolCall) -> ToolResult:
                 command=call.command,
             )
     return ToolResult(
-        name="memory_read", status="error",
-        output=f"Memory '{name}' not found.", exit_code=1, command=call.command,
+        name="memory",
+        status="error",
+        output=f"Memory '{name}' not found.",
+        exit_code=1,
+        command=call.command,
     )
+
+
+def _delete(call: ToolCall) -> ToolResult:
+    """args: {name, scope?} — удалить memory-файл.
+
+    Без scope ищет сначала память проекта, затем глобальную, как action=read.
+    """
+    from memory import delete_memory
+
+    args = call.args or {}
+    name = str(args.get("name", "")).strip()
+    scope = str(args.get("scope", "")).strip()
+    if not name:
+        return ToolResult(
+            name="memory",
+            status="error",
+            output="memory action=delete requires 'name'.",
+            exit_code=1,
+            command=call.command,
+        )
+    if scope not in ("", "project", "global"):
+        return ToolResult(
+            name="memory",
+            status="error",
+            output=f"scope must be 'project' or 'global' (got {scope!r}).",
+            exit_code=1,
+            command=call.command,
+        )
+
+    scopes = (scope,) if scope else ("project", "global")
+    for candidate_scope in scopes:
+        try:
+            mf = delete_memory(
+                name,
+                working_dir=get_working_dir(),
+                scope=candidate_scope,
+            )
+        except Exception as e:
+            logger.opt(exception=True).error("memory delete failed: {}", e)
+            return ToolResult(
+                name="memory",
+                status="error",
+                output=f"memory delete failed: {type(e).__name__}: {e}",
+                exit_code=1,
+                command=call.command,
+            )
+        if mf is not None:
+            return ToolResult(
+                name="memory",
+                status="ok",
+                output=(
+                    f"=== path: {mf.path} ===\n"
+                    f"[scope={candidate_scope}, type={mf.type}]\n"
+                    f"Deleted memory '{mf.name}'."
+                ),
+                command=call.command,
+            )
+
+    filename = name if name.endswith(".md") else f"{name}.md"
+    return ToolResult(
+        name="memory",
+        status="error",
+        output=f"Memory '{filename}' not found.",
+        exit_code=1,
+        command=call.command,
+    )
+
+
+_ACTIONS = {
+    "write": _write,
+    "list": _list,
+    "read": _read,
+    "delete": _delete,
+}
+
+
+def memory(call: ToolCall) -> ToolResult:
+    """Управляет памятью через args.action: write/list/read/delete."""
+    action = str((call.args or {}).get("action", "")).strip().lower()
+    handler = _ACTIONS.get(action)
+    if handler is None:
+        return ToolResult(
+            name="memory",
+            status="error",
+            output="memory requires action: write, list, read, or delete.",
+            exit_code=1,
+            command=call.command,
+        )
+    return handler(call)

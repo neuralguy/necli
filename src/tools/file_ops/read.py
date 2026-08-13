@@ -3,8 +3,12 @@
 Поддерживает текстовые форматы, CSV/TSV, Excel, DOCX, PDF, изображения.
 """
 
+import contextlib
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
+from config.constants import Limits
 from logger import logger
 from tools._paths import clean_path, resolve_path
 from tools.file_readers import (
@@ -13,22 +17,26 @@ from tools.file_readers import (
     _EXCEL_EXTENSIONS,
     _IMAGE_EXTENSIONS,
     _PDF_EXTENSIONS,
+    _PPTX_EXTENSIONS,
     _read_csv,
     _read_docx,
     _read_excel,
     _read_pdf,
+    _read_pptx,
     _safe_read,
 )
 from tools.models import ToolCall, ToolResult
 
 _resolve = resolve_path
 
-_READ_CACHE: dict[str, dict[str, dict]] = {}
+_READ_CACHE: OrderedDict[str, dict[str, dict]] = OrderedDict()
+_READ_CACHE_LOCK = threading.RLock()
 
 
 def _current_session_id() -> str:
     try:
         from agent.loop import get_current_ctx
+
         ctx = get_current_ctx()
         if ctx and ctx.session_id:
             return ctx.session_id
@@ -39,11 +47,16 @@ def _current_session_id() -> str:
 
 def _session_cache() -> dict[str, dict]:
     sid = _current_session_id()
-    bucket = _READ_CACHE.get(sid)
-    if bucket is None:
-        bucket = {}
+    with _READ_CACHE_LOCK:
+        if sid in _READ_CACHE:
+            _READ_CACHE.move_to_end(sid)
+            return _READ_CACHE[sid]
+        bucket: dict[str, dict] = {}
         _READ_CACHE[sid] = bucket
-    return bucket
+        _READ_CACHE.move_to_end(sid)
+        while len(_READ_CACHE) > Limits.READ_CACHE_MAX_SESSIONS:
+            _READ_CACHE.popitem(last=False)
+        return bucket
 
 
 def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -61,45 +74,28 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
-def _cache_get_valid(path: Path, key: str) -> dict | None:
-    """Возвращает запись кэша текущей сессии, если файл не менялся."""
-    bucket = _session_cache()
-    entry = bucket.get(key)
-    if entry is None:
-        return None
-    try:
-        stat = path.stat()
-    except OSError:
-        bucket.pop(key, None)
-        return None
-    if entry["mtime_ns"] != stat.st_mtime_ns or entry["size"] != stat.st_size:
-        logger.debug("read cache: invalidated {} (mtime/size changed)", key)
-        bucket.pop(key, None)
-        return None
-    return entry
-
-
 def _cache_record(path: Path, key: str, start: int, end: int, *, binary: bool = False) -> dict:
     """Фиксирует факт чтения диапазона [start,end] в кэше текущей сессии."""
     try:
         stat = path.stat()
     except OSError:
         return {}
-    bucket = _session_cache()
-    entry = bucket.get(key)
-    if entry is None or entry["mtime_ns"] != stat.st_mtime_ns or entry["size"] != stat.st_size:
-        entry = {
-            "mtime_ns": stat.st_mtime_ns,
-            "size": stat.st_size,
-            "ranges": [],
-            "binary": binary,
-            "read_count": 0,
-        }
-    entry["binary"] = binary
-    entry["ranges"] = _merge_ranges(entry["ranges"] + [(start, end)])
-    entry["read_count"] += 1
-    bucket[key] = entry
-    return entry
+    with _READ_CACHE_LOCK:
+        bucket = _session_cache()
+        entry = bucket.get(key)
+        if entry is None or entry["mtime_ns"] != stat.st_mtime_ns or entry["size"] != stat.st_size:
+            entry = {
+                "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size,
+                "ranges": [],
+                "binary": binary,
+                "read_count": 0,
+            }
+        entry["binary"] = binary
+        entry["ranges"] = _merge_ranges(entry["ranges"] + [(start, end)])
+        entry["read_count"] += 1
+        bucket[key] = entry
+        return dict(entry)
 
 
 def invalidate_read_cache(path: Path | str) -> None:
@@ -111,18 +107,15 @@ def invalidate_read_cache(path: Path | str) -> None:
     ключи расходятся и инвалидация молча промахивается.
     """
     keys: set[str] = set()
-    try:
+    with contextlib.suppress(Exception):
         keys.add(str(resolve_path(str(path)).resolve()))
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         keys.add(str(Path(path).resolve()))
-    except Exception:
-        pass
     keys.add(str(path))
-    for bucket in _READ_CACHE.values():
-        for key in keys:
-            bucket.pop(key, None)
+    with _READ_CACHE_LOCK:
+        for bucket in _READ_CACHE.values():
+            for key in keys:
+                bucket.pop(key, None)
 
 
 def clear_read_cache(session_id: str | None = None) -> int:
@@ -133,14 +126,15 @@ def clear_read_cache(session_id: str | None = None) -> int:
     - session_id=<id> → очищает указанную сессию.
 
     Возвращает число удалённых записей."""
-    if session_id == "*":
-        n = sum(len(b) for b in _READ_CACHE.values())
-        _READ_CACHE.clear()
-        logger.info("read cache: cleared ALL sessions, {} entries", n)
-        return n
-    sid = session_id if session_id else _current_session_id()
-    bucket = _READ_CACHE.pop(sid, None)
-    n = len(bucket) if bucket else 0
+    with _READ_CACHE_LOCK:
+        if session_id == "*":
+            n = sum(len(b) for b in _READ_CACHE.values())
+            _READ_CACHE.clear()
+            logger.info("read cache: cleared ALL sessions, {} entries", n)
+            return n
+        sid = session_id if session_id else _current_session_id()
+        bucket = _READ_CACHE.pop(sid, None)
+        n = len(bucket) if bucket else 0
     logger.info("read cache: cleared session={} entries={}", sid[:16] if sid else "?", n)
     return n
 
@@ -206,17 +200,25 @@ def _read_binary_cached(
         _cache_record(path, cache_key, 1, 1, binary=True)
         filtered = _apply_lines_filter(content, lines_range, path_str)
         if filtered != content:
-            return ToolResult(name="read", status="ok", output=filtered, exit_code=0, command=command)
-        return ToolResult(name="read", status="ok", output=f"{info}\n{content}", exit_code=0, command=command)
+            return ToolResult(
+                name="read", status="ok", output=filtered, exit_code=0, command=command
+            )
+        return ToolResult(
+            name="read", status="ok", output=f"{info}\n{content}", exit_code=0, command=command
+        )
     except Exception as e:
         return ToolResult(
-            name="read", status="error",
+            name="read",
+            status="error",
             output=f"Error reading {fmt}: {e}",
-            exit_code=1, command=command,
+            exit_code=1,
+            command=command,
         )
 
 
-def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str = "", command: str = "") -> ToolResult:
+def _read_single_file(
+    path_str: str, encoding: str = "utf-8", lines_range: str = "", command: str = ""
+) -> ToolResult:
     """Читает один файл. Вызывается из read для каждого пути."""
     path = _resolve(path_str)
 
@@ -235,16 +237,19 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
             entries = sorted(path.iterdir(), key=lambda entry: entry.name.casefold())
         except OSError as e:
             return ToolResult(
-                name="read", status="error", output=f"Read error: {e}",
-                exit_code=1, command=command,
+                name="read",
+                status="error",
+                output=f"Read error: {e}",
+                exit_code=1,
+                command=command,
             )
-        listing = "\n".join(
-            f"{entry.name}/" if entry.is_dir() else entry.name for entry in entries
-        )
+        listing = "\n".join(f"{entry.name}/" if entry.is_dir() else entry.name for entry in entries)
         return ToolResult(
-            name="read", status="ok",
+            name="read",
+            status="ok",
             output=f"[{path_str} · directory]\n{listing}",
-            exit_code=0, command=command,
+            exit_code=0,
+            command=command,
         )
 
     if not path.is_file():
@@ -263,9 +268,7 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
         return ToolResult(
             name="read",
             status="ok",
-            output=(
-                f"[image: {path_str} · {path.suffix.lower()} — will be sent as image]"
-            ),
+            output=(f"[image: {path_str} · {path.suffix.lower()} — will be sent as image]"),
             exit_code=0,
             command=command,
             image_path=path,
@@ -275,75 +278,125 @@ def _read_single_file(path_str: str, encoding: str = "utf-8", lines_range: str =
     if suffix in _CSV_EXTENSIONS:
         fmt = "tsv" if suffix == ".tsv" else "csv"
         return _read_binary_cached(
-            path, cache_key, path_str, fmt,
+            path,
+            cache_key,
+            path_str,
+            fmt,
             reader_fn=lambda p: _read_csv(p, encoding),
             empty_msg="(empty file)",
-            lines_range=lines_range, command=command,
+            lines_range=lines_range,
+            command=command,
         )
     if suffix in _EXCEL_EXTENSIONS:
         return _read_binary_cached(
-            path, cache_key, path_str, "excel",
+            path,
+            cache_key,
+            path_str,
+            "excel",
             reader_fn=_read_excel,
             empty_msg="(empty workbook)",
-            lines_range=lines_range, command=command,
+            lines_range=lines_range,
+            command=command,
         )
     if suffix in _PDF_EXTENSIONS:
         return _read_binary_cached(
-            path, cache_key, path_str, "pdf",
+            path,
+            cache_key,
+            path_str,
+            "pdf",
             reader_fn=_read_pdf,
             empty_msg="(empty pdf)",
-            lines_range=lines_range, command=command,
+            lines_range=lines_range,
+            command=command,
         )
     if suffix in _DOCX_EXTENSIONS:
         return _read_binary_cached(
-            path, cache_key, path_str, "docx",
+            path,
+            cache_key,
+            path_str,
+            "docx",
             reader_fn=_read_docx,
             empty_msg="(empty document)",
-            lines_range=lines_range, command=command,
+            lines_range=lines_range,
+            command=command,
+        )
+    if suffix in _PPTX_EXTENSIONS:
+        return _read_binary_cached(
+            path,
+            cache_key,
+            path_str,
+            "pptx",
+            reader_fn=_read_pptx,
+            empty_msg="(empty presentation)",
+            lines_range=lines_range,
+            command=command,
         )
 
     try:
         content = _safe_read(path, encoding)
     except Exception as e:
-        return ToolResult(name="read", status="error", output=f"Read error: {e}", exit_code=1, command=command)
+        return ToolResult(
+            name="read", status="error", output=f"Read error: {e}", exit_code=1, command=command
+        )
 
-    MAX_LINES = 1000  # noqa: N806
+    MAX_LINES = 1000
     all_file_lines = content.splitlines()
     total_lines = len(all_file_lines)
 
     requested = _parse_lines_range(lines_range, total_lines) if lines_range else None
     if isinstance(requested, str):
         return ToolResult(
-            name="read", status="error",
+            name="read",
+            status="error",
             output=f"[{path_str} · {total_lines} lines]\n{requested}",
-            exit_code=1, command=command,
+            exit_code=1,
+            command=command,
         )
     if not lines_range and total_lines > MAX_LINES:
         content_out = "\n".join(all_file_lines[:MAX_LINES])
         info = f"[{path_str} · {total_lines} lines (showing first {MAX_LINES})]"
         note = (
             f"\n\n⚠️ File truncated: showing {MAX_LINES} of {total_lines} lines. "
-            f"Use {{\"path\": \"{path_str}\", \"lines\": \"{MAX_LINES + 1}-{total_lines}\"}} to read the rest."
+            f'Use {{"path": "{path_str}", "lines": "{MAX_LINES + 1}-{total_lines}"}} to read the rest.'
         )
         _cache_record(path, cache_key, 1, MAX_LINES)
-        return ToolResult(name="read", status="ok", output=f"{info}\n{content_out}{note}", exit_code=0, command=command, full_content=False)
+        return ToolResult(
+            name="read",
+            status="ok",
+            output=f"{info}\n{content_out}{note}",
+            exit_code=0,
+            command=command,
+            full_content=False,
+        )
 
     # ── Явный диапазон ── (через единый парсер, тот же splitlines-массив)
     if lines_range and requested is not None:
         start, end = requested
         selected = all_file_lines[start - 1 : end]
         header = f"[{path_str} lines {start}-{end} of {total_lines}]"
-        body = "\n".join(
-            f"{i}: {line}" for i, line in enumerate(selected, start=start)
-        )
+        body = "\n".join(f"{i}: {line}" for i, line in enumerate(selected, start=start))
         _cache_record(path, cache_key, start, end)
-        return ToolResult(name="read", status="ok", output=f"{header}\n{body}", exit_code=0, command=command, full_content=False)
+        return ToolResult(
+            name="read",
+            status="ok",
+            output=f"{header}\n{body}",
+            exit_code=0,
+            command=command,
+            full_content=False,
+        )
 
     # ── Полное чтение без truncate ──
     info = f"[{path_str} · {total_lines} lines]"
     if total_lines > 0:
         _cache_record(path, cache_key, 1, total_lines)
-    return ToolResult(name="read", status="ok", output=f"{info}\n{content}", exit_code=0, command=command, full_content=not lines_range)
+    return ToolResult(
+        name="read",
+        status="ok",
+        output=f"{info}\n{content}",
+        exit_code=0,
+        command=command,
+        full_content=not lines_range,
+    )
 
 
 def _apply_lines_filter(content: str, lines_range: str, path_str: str) -> str:
@@ -382,7 +435,7 @@ def read(call: ToolCall) -> ToolResult:
         return ToolResult(
             name="read",
             status="error",
-            output="No path specified. Usage: {\"path\": \"/path/to/file\"}",
+            output='No path specified. Usage: {"path": "/path/to/file"}',
             exit_code=1,
             command=call.command,
         )
@@ -407,11 +460,13 @@ def read(call: ToolCall) -> ToolResult:
 
     lines_range = f"{offset}-{offset + limit - 1}"
 
-    result = _read_single_file(path, encoding="utf-8", lines_range=lines_range, command=call.command)
+    result = _read_single_file(
+        path, encoding="utf-8", lines_range=lines_range, command=call.command
+    )
     result.name = "read"
 
     # If the result has image_path, also set name on the image result
-    if result.image_path and hasattr(result, 'image_path'):
+    if result.image_path and hasattr(result, "image_path"):
         pass  # name already set
 
     return result

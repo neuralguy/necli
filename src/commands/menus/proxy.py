@@ -31,10 +31,18 @@ async def proxy_interactive() -> None:
         shown = current or _("proxy.none")
 
         items = [
-            {"label": _("proxy.set"), "hint": _("proxy.set_hint"), "icon": "✎",
-             "icon_style": "accent"},
-            {"label": _("proxy.clear"), "hint": _("proxy.clear_hint"), "icon": "✗",
-             "icon_style": "error"},
+            {
+                "label": _("proxy.set"),
+                "hint": _("proxy.set_hint"),
+                "icon": "✎",
+                "icon_style": "accent",
+            },
+            {
+                "label": _("proxy.clear"),
+                "hint": _("proxy.clear_hint"),
+                "icon": "✗",
+                "icon_style": "error",
+            },
             {"label": _("common.back"), "icon": " "},
         ]
         choice = await card_menu(

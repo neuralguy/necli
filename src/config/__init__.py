@@ -38,41 +38,54 @@ def set_active_api_model(model_id: str) -> None:
 def get_telegram_bot_token() -> str:
     return get("telegram_bot_token", "")
 
+
 def set_telegram_bot_token(token: str) -> None:
     set_value("telegram_bot_token", token)
+
 
 def get_telegram_chat_id() -> str:
     return get("telegram_chat_id", "")
 
+
 def set_telegram_chat_id(chat_id: str) -> None:
     set_value("telegram_chat_id", chat_id)
+
 
 def get_telegram_enabled() -> bool:
     return bool(get("telegram_enabled", False))
 
+
 def set_telegram_enabled(enabled: bool) -> None:
     set_value("telegram_enabled", bool(enabled))
+
 
 def get_telegram_show_thinking() -> bool:
     return bool(get("telegram_show_thinking", False))
 
+
 def set_telegram_show_thinking(enabled: bool) -> None:
     set_value("telegram_show_thinking", bool(enabled))
+
 
 def get_telegram_tool_io() -> bool:
     return bool(get("telegram_tool_io", True))
 
+
 def set_telegram_tool_io(enabled: bool) -> None:
     set_value("telegram_tool_io", bool(enabled))
+
 
 def get_telegram_assistant_header() -> bool:
     return bool(get("telegram_assistant_header", False))
 
+
 def set_telegram_assistant_header(enabled: bool) -> None:
     set_value("telegram_assistant_header", bool(enabled))
 
+
 def get_telegram_approve() -> bool:
     return bool(get("telegram_approve", False))
+
 
 def set_telegram_approve(enabled: bool) -> None:
     set_value("telegram_approve", bool(enabled))

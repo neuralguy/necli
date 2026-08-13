@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import logging
 import re
@@ -149,7 +150,7 @@ class TelegramBridge:
 
     def __init__(self):
         self._bot = None  # aiogram.Bot
-        self._dp = None   # aiogram.Dispatcher
+        self._dp = None  # aiogram.Dispatcher
         self._polling_task: asyncio.Task | None = None
         self._sender_task: asyncio.Task | None = None
         self._send_queue: asyncio.Queue | None = None
@@ -235,12 +236,14 @@ class TelegramBridge:
                             logger.error("tg cmd %s failed: %s", cmd, e, exc_info=True)
                             self.send(f"❌ <i>cmd {_escape_html(cmd)}: {_escape_html(str(e))}</i>")
                         return
-                await self.incoming_queue.put(IncomingMessage(
-                    text=text,
-                    chat_id=message.chat.id,
-                    user_id=message.from_user.id if message.from_user else 0,
-                    username=(message.from_user.username if message.from_user else "") or "",
-                ))
+                await self.incoming_queue.put(
+                    IncomingMessage(
+                        text=text,
+                        chat_id=message.chat.id,
+                        user_id=message.from_user.id if message.from_user else 0,
+                        username=(message.from_user.username if message.from_user else "") or "",
+                    )
+                )
                 logger.info("telegram in: %s", text[:80])
 
             @self._dp.callback_query(F.message.chat.id == target_chat)
@@ -256,23 +259,21 @@ class TelegramBridge:
                         await handler(data, cb)
                     except Exception as e:
                         logger.error("tg cb %s failed: %s", data, e, exc_info=True)
-                        try:
+                        with contextlib.suppress(Exception):
                             await cb.answer(f"Ошибка: {e}", show_alert=True)
-                        except Exception:
-                            pass
                 else:
-                    try:
+                    with contextlib.suppress(Exception):
                         await cb.answer()
-                    except Exception:
-                        pass
 
             self._running = True
             self._loop = asyncio.get_running_loop()
             self._polling_task = asyncio.create_task(
-                self._run_polling(), name="tg-polling",
+                self._run_polling(),
+                name="tg-polling",
             )
             self._sender_task = asyncio.create_task(
-                self._run_sender(), name="tg-sender",
+                self._run_sender(),
+                name="tg-sender",
             )
             return True, f"@{me.username}"
 
@@ -394,7 +395,9 @@ class TelegramBridge:
 
     def register_button_aliases(self, aliases: dict) -> None:
         """Регистрирует маппинг текста reply-кнопок → slash-команды."""
-        self._button_aliases.update({k: (v if v.startswith("/") else "/" + v) for k, v in aliases.items()})
+        self._button_aliases.update(
+            {k: (v if v.startswith("/") else "/" + v) for k, v in aliases.items()}
+        )
 
     def register_callback_handler(self, handler) -> None:
         """Регистрирует обработчик callback_query. handler: async (data: str, callback_query) -> None."""
@@ -406,9 +409,10 @@ class TelegramBridge:
             return
         try:
             from aiogram.types import BotCommand
-            await self._bot.set_my_commands([
-                BotCommand(command=c.lstrip("/"), description=d) for c, d in commands
-            ])
+
+            await self._bot.set_my_commands(
+                [BotCommand(command=c.lstrip("/"), description=d) for c, d in commands]
+            )
         except Exception as e:
             logger.debug("set_bot_commands failed: %s", e)
 
@@ -417,12 +421,15 @@ class TelegramBridge:
             return
         try:
             asyncio.run_coroutine_threadsafe(
-                self.set_bot_commands(commands), self._loop,
+                self.set_bot_commands(commands),
+                self._loop,
             )
         except Exception as e:
             logger.debug("set_bot_commands_sync failed: %s", e)
 
-    async def answer_callback(self, callback_query, text: str = "", show_alert: bool = False) -> None:
+    async def answer_callback(
+        self, callback_query, text: str = "", show_alert: bool = False
+    ) -> None:
         try:
             await callback_query.answer(text or None, show_alert=show_alert)
         except Exception as e:
@@ -452,10 +459,14 @@ class TelegramBridge:
             try:
                 mark = "✅ <b>Allowed</b>" if allowed else "✗ <b>Denied</b>"
                 await self._bot.edit_message_reply_markup(
-                    chat_id=self._chat_id, message_id=message_id, reply_markup=None,
+                    chat_id=self._chat_id,
+                    message_id=message_id,
+                    reply_markup=None,
                 )
                 await self._bot.edit_message_text(
-                    chat_id=self._chat_id, message_id=message_id, text=mark,
+                    chat_id=self._chat_id,
+                    message_id=message_id,
+                    text=mark,
                     disable_web_page_preview=True,
                 )
             except Exception:
@@ -464,22 +475,33 @@ class TelegramBridge:
     async def _send_approval_message(self, text: str, approval_id: str):
         """Отправляет сообщение с inline-кнопками allow/deny. Возвращает message_id."""
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-        markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Allow", callback_data=f"approve:{approval_id}"),
-            InlineKeyboardButton(text="✗ Deny", callback_data=f"deny:{approval_id}"),
-        ]])
+
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Allow", callback_data=f"approve:{approval_id}"),
+                    InlineKeyboardButton(text="✗ Deny", callback_data=f"deny:{approval_id}"),
+                ]
+            ]
+        )
         chunk = _split_long(text)[0]
         try:
             m = await self._bot.send_message(
-                self._chat_id, chunk, disable_web_page_preview=True, reply_markup=markup,
+                self._chat_id,
+                chunk,
+                disable_web_page_preview=True,
+                reply_markup=markup,
             )
             return m.message_id
         except Exception as e:
             if _is_html_parse_error(e):
                 try:
                     m = await self._bot.send_message(
-                        self._chat_id, _strip_html(chunk), disable_web_page_preview=True,
-                        reply_markup=markup, parse_mode=None,
+                        self._chat_id,
+                        _strip_html(chunk),
+                        disable_web_page_preview=True,
+                        reply_markup=markup,
+                        parse_mode=None,
                     )
                     return m.message_id
                 except Exception as e2:
@@ -497,6 +519,7 @@ class TelegramBridge:
         if not self._running or self._loop is None or self._bot is None:
             return None
         import concurrent.futures
+
         self._approval_seq += 1
         approval_id = str(self._approval_seq)
         fut: concurrent.futures.Future = concurrent.futures.Future()
@@ -524,7 +547,9 @@ class TelegramBridge:
         try:
             chunk = _split_long(text)[0]
             await callback_query.message.edit_text(
-                chunk, disable_web_page_preview=True, reply_markup=reply_markup,
+                chunk,
+                disable_web_page_preview=True,
+                reply_markup=reply_markup,
             )
         except Exception as e:
             if _is_html_parse_error(e):
@@ -532,7 +557,8 @@ class TelegramBridge:
                     await callback_query.message.edit_text(
                         _strip_html(_split_long(text)[0]),
                         disable_web_page_preview=True,
-                        reply_markup=reply_markup, parse_mode=None,
+                        reply_markup=reply_markup,
+                        parse_mode=None,
                     )
                     return
                 except Exception as e2:
@@ -560,7 +586,8 @@ class TelegramBridge:
             return
         try:
             asyncio.run_coroutine_threadsafe(
-                self._spawn_typing(), self._loop,
+                self._spawn_typing(),
+                self._loop,
             )
         except Exception as e:
             logger.debug("start_typing schedule failed: %s", e)

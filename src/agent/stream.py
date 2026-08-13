@@ -1,5 +1,6 @@
 """Streaming responses with inline tool-block execution."""
 
+import asyncio
 import logging
 import time
 from itertools import cycle
@@ -11,6 +12,12 @@ import tools
 from agent.block_stream import BlockStreamer
 from agent.context import AgentContext
 from agent.display import print_static
+from agent.native_tool_stream import (
+    CallState,
+    NativeCall,
+    NativeToolStreamParser,
+    merge_argument_fragment,
+)
 from agent.sanitizer import sanitize_response
 from agent.stream_parser import (
     _clean_display_text,
@@ -35,7 +42,7 @@ from planner import (
 )
 from session.tokens import count_tokens
 from ui.formatting import format_cost, format_tokens
-from ui.shell import ensure_static_blank, get_shell
+from ui.shell import get_shell
 
 logger = logging.getLogger(__name__)
 
@@ -48,37 +55,22 @@ console = Console()
 #: прерывания. Раньше этот кадр держал rich Live с transient=True.
 _STREAM_ZONE = "stream"
 
-
-def print_worked_footer(ctx, fallback_elapsed: float = 0.0) -> None:
-    """Печатает строку '⏱ работал Nс' с суммарным временем за все циклы хода.
-
-    Время считается от ctx.turn_start_time (начало хода пользователя), поэтому
-    отражает суммарное время по всем итерациям цикла, а не последнего сообщения.
-    """
-    from config.i18n import t as _i18n
-
-    turn_start = getattr(ctx, "turn_start_time", None)
-    secs = (time.monotonic() - turn_start) if turn_start is not None else fallback_elapsed
-    if secs < 60:
-        label = _i18n("stream.worked_sec", n=max(1, round(secs)))
-    else:
-        label = _i18n("stream.worked_min", n=round(secs / 60))
-    ensure_static_blank()
-    print_static(f"[grey50]⏱ {label}[/grey50]")
-    ensure_static_blank()
-    try:
-        if getattr(ctx, "render_store", None) is not None:
-            ctx.render_store.add("worked", {"label": label})
-    except Exception:
-        logger.debug("store worked footer failed", exc_info=True)
+#: Эти инструменты нельзя исполнять прямо из native SSE-стрима. poll требует
+#: интерактивного ответа пользователя, subagent имеет отдельный lifecycle в loop.py.
+#: think/plan — control tools и фильтруются отдельно, поэтому намеренно не входят
+#: в этот список. Все остальные native tools можно выполнять сразу после seal.
+_NON_SPECULATIVE_TOOLS = frozenset({"poll", "subagent"})
+_CONTROL_TOOLS = frozenset({"think", "plan"})
 
 
-class StreamEarlyAbort(Exception):  # noqa: N818
+class StreamEarlyAbort(Exception):
     """Сигнал из tool-precheck для немедленной остановки стрима модели.
 
     Используется когда инструмент заведомо невыполним (например create_file
     для существующего файла) — нет смысла ждать остальной ответ модели.
     """
+
+
 def _tool_subtitle(model: str, write_time: float, raw_input: str, output_text: str = "") -> str:
     """Subtitle для tool-блока: суммарные tokens (вход + выход) и cost (input+output).
 
@@ -113,6 +105,7 @@ class LiveStream:
         # и печатается дословно как обычный текст.
         try:
             from system_prompt import _resolve_native_tools
+
             self._native_tools = bool(_resolve_native_tools())
         except Exception:
             logger.debug("native-tools detection failed", exc_info=True)
@@ -124,10 +117,12 @@ class LiveStream:
         self._reasoning_started_at: float | None = None
         self.start_time = time.monotonic()
         self._first_chunk_time: float | None = None
+        self._ttfb: float | None = None  # Add this line
         self._plan_processed_count = 0
         self._plan_shown_count = 0
         self.think_log = ThinkLog()
         self._think_processed_count = 0
+        self._think_started_at: float | None = None
         self.inline_results: list[tools.ToolResult] = []
         self.inline_call_keys: list[tuple[str, str]] = []
         #: Занята ли динамическая зона _STREAM_ZONE нашим кадром. Раньше здесь
@@ -147,11 +142,19 @@ class LiveStream:
         # Активен только когда is_compact()==True. Держит последний блок в
         # своей динамической зоне, остальные блоки уходят в scrollback.
         self._block_streamer = BlockStreamer(
-            console, refresh_per_second=int(ui.get("live_stream.refresh_per_second", 8)),
+            console,
+            refresh_per_second=int(ui.get("live_stream.refresh_per_second", 8)),
         )
         # Конец уже сохранённого в RenderStore compact-текста (для Ctrl+O).
         self._stored_text_end: int = 0
         self._native_tool_chunks: dict[int, dict] = {}
+        # ── инкрементальный парсер ──
+        self._native_parser = NativeToolStreamParser()
+        self._pending_exec_tasks: list = []
+        self._native_scheduled_indexes: set[int] = set()
+        self._native_executed_indexes: set[int] = set()
+        self._native_exec_lock: asyncio.Lock | None = None
+        self._native_tools_started: bool = False
 
     def _lead_blank(self) -> None:
         """Одна пустая строка-разделитель перед элементом.
@@ -208,7 +211,7 @@ class LiveStream:
                 if not thought:
                     continue
                 if stripped == thought or stripped.startswith(thought):
-                    rest = stripped[len(thought):].lstrip()
+                    rest = stripped[len(thought) :].lstrip()
                     cleaned = rest
                     break
         return cleaned
@@ -224,25 +227,35 @@ class LiveStream:
         return False, "", "shell", ""
 
     def _render_live(self):
-        ct_full = self._get_current_text()
         # Текст ответа уже выведен поблочно в scrollback через BlockStreamer —
         # кадр стрима его НЕ должен дублировать.
         ct = ""
         hp, _pb, pt, _pa = self._get_partial_tool_info()
         live_reasoning = "" if self._reasoning_printed else self.reasoning_buffer
-        reasoning_done = bool(ct_full and ct_full.strip())
         live_think = None if getattr(self, "_think_static_printed", False) else self.think_log
         partial_thought = parse_partial_thought(self.buffer) if live_think is not None else None
-        partial_elapsed = (
-            time.monotonic() - self._last_block_end_time if hp else 0.0
-        )
+        partial_elapsed = time.monotonic() - self._last_block_end_time if hp else 0.0
         group = render_live_group(
-            ct, hp, pt, self._ts(), self._ws(), self.model,
+            ct,
+            hp,
+            pt,
+            self._ts(),
+            self._ws(),
+            self.model,
             message_num=self.message_num,
             reasoning_text=live_reasoning,
-            reasoning_done=reasoning_done or self._finalizing,
+            reasoning_elapsed=(
+                time.monotonic() - self._reasoning_started_at
+                if self._reasoning_started_at is not None
+                else None
+            ),
             think_log=live_think,
             partial_thought=partial_thought,
+            think_elapsed=(
+                time.monotonic() - self._think_started_at
+                if self._think_started_at is not None
+                else None
+            ),
             response_streaming=not self._finalizing,
             partial_elapsed=partial_elapsed,
         )
@@ -258,10 +271,7 @@ class LiveStream:
         sh = get_shell()
         if sh is None or self._block_streamer.has_active:
             return
-        has_reasoning = (
-            not self._reasoning_printed
-            and bool((self.reasoning_buffer or "").strip())
-        )
+        has_reasoning = not self._reasoning_printed and bool((self.reasoning_buffer or "").strip())
         has_thought = (
             not self._native_tools
             and not getattr(self, "_think_static_printed", False)
@@ -302,8 +312,8 @@ class LiveStream:
     def _flush_reasoning_static(self):
         if self._reasoning_printed:
             return
-        rb = (self.reasoning_buffer or "").strip()
-        if not rb:
+        rb = self.reasoning_buffer or ""
+        if not rb.strip():
             self._reasoning_printed = True
             return
         # Normal streaming stores every cumulative delta, but the final flush
@@ -313,15 +323,19 @@ class LiveStream:
             self._reasoning_printed = True
             return
         from agent.stream_render import render_reasoning_panel
+
         try:
             elapsed = (
                 (time.monotonic() - self._reasoning_started_at)
-                if self._reasoning_started_at is not None else None
+                if self._reasoning_started_at is not None
+                else None
             )
-            print_static(Group(
-                Text(""),
-                render_reasoning_panel(rb, streaming=False, elapsed=elapsed),
-            ))
+            print_static(
+                Group(
+                    Text(""),
+                    render_reasoning_panel(rb, elapsed=elapsed),
+                )
+            )
         except Exception:
             logger.debug("render_reasoning_panel failed", exc_info=True)
         self._reasoning_printed = True
@@ -371,6 +385,7 @@ class LiveStream:
         """Сохраняет исходные тексты всех мыслей для Ctrl+O replay."""
         try:
             from agent.loop import get_current_ctx
+
             ctx = get_current_ctx()
             store = getattr(ctx, "render_store", None) if ctx else None
             if store is None:
@@ -394,8 +409,19 @@ class LiveStream:
             self._think_static_printed = True
             return
         from agent.think import render_think_static
+
         self._flush_reasoning_static()
-        print_static(Group(Text(""), render_think_static(self.think_log)))
+        elapsed = (
+            time.monotonic() - self._think_started_at
+            if self._think_started_at is not None
+            else None
+        )
+        print_static(
+            Group(
+                Text(""),
+                render_think_static(self.think_log, elapsed=elapsed),
+            )
+        )
         self._think_static_printed = True
         self._store_think_raw_steps()
 
@@ -412,7 +438,7 @@ class LiveStream:
         scan_from = max(self._current_text_start, self._printed_text_end)
         spans = []
         for m in _PLAN_BLOCK_RE.finditer(self.buffer, scan_from):
-            spans.append((m.start(), m.end()))  # noqa: PERF401
+            spans.append((m.start(), m.end()))
         if not spans:
             return
         spans.sort()
@@ -453,6 +479,7 @@ class LiveStream:
         self.think_log = ThinkLog()
         self._think_static_printed = False
         self._think_store_item = None
+        self._think_started_at = None
         self._current_text_start = 0
         self._printed_text_end = 0
         self._tcycle = cycle(THINKING_FRAMES)
@@ -463,7 +490,14 @@ class LiveStream:
         self._block_streamer.reset()
         self._stored_text_end = 0
         self._native_tool_chunks = {}
+        self._native_parser = NativeToolStreamParser()
+        self._pending_exec_tasks = []
+        self._native_scheduled_indexes = set()
+        self._native_executed_indexes = set()
+        self._native_exec_lock = None
+        self._native_tools_started = False
         from agent.working import continue_working_round
+
         continue_working_round(self.ctx, self.model, self.message_num)
         self._start_tg_thinking()
         self._start_live()
@@ -490,48 +524,278 @@ class LiveStream:
         else:
             self._update_live()
 
+    def _freeze_reasoning_before_native_tools(self) -> None:
+        """Перевести raw reasoning из live-зоны в static ДО первого real tool.
+
+        Иначе tool output печатается в scrollback, а reasoning продолжает жить
+        ниже него в _STREAM_ZONE и окончательно фиксируется только в stop().
+        """
+        if self._native_tools_started:
+            return
+        self._native_tools_started = True
+
+        # Сначала физически убираем dynamic-кадр. Только после этого печатаем
+        # static: так reasoning гарантированно окажется ВЫШЕ tool_start/result.
+        self._stop_live()
+        if not self._reasoning_printed and (self.reasoning_buffer or "").strip():
+            self._flush_reasoning_static()
+
+        sh = get_shell()
+        if sh is not None:
+            sh.invalidate()
+
+    def _active_native_tool_chunk(self) -> dict | None:
+        """Текущий ещё не завершённый real native tool для Working-состояния."""
+        for index in sorted(self._native_tool_chunks):
+            if index in self._native_executed_indexes:
+                continue
+            chunk = self._native_tool_chunks[index]
+            if str(chunk.get("name") or "") in _CONTROL_TOOLS:
+                continue
+            return chunk
+        return None
+
+    def _refresh_after_native_tool(self, index: int) -> None:
+        """Сразу после отдельного tool result обновить dynamic UI в event loop."""
+        self._native_executed_indexes.add(index)
+        self._native_tool_chunks.pop(index, None)
+
+        current = getattr(self.ctx, "working_round", None)
+        if current is not None:
+            active = self._active_native_tool_chunk()
+            if active is not None:
+                current.update_stream(
+                    active.get("args", ""),
+                    current_call=str(active.get("name") or "tool"),
+                )
+            else:
+                # finish_call() уже перевёл Working в processing; здесь важно
+                # только попросить новый кадр из главного event loop.
+                current.invalidate()
+
+        sh = get_shell()
+        if sh is not None:
+            sh.invalidate()
+
+    def _schedule_native_call(self, call: NativeCall, *, final: bool = False) -> None:
+        """Поставить sealed native call на последовательное раннее исполнение."""
+        import asyncio as _aio
+
+        if call.name in _CONTROL_TOOLS or call.name in _NON_SPECULATIVE_TOOLS:
+            return
+        if call.index in self._native_scheduled_indexes:
+            return
+        if call.parsed_args() is None:
+            return
+
+        self._native_scheduled_indexes.add(call.index)
+        try:
+            prefix = "spec-final" if final else "spec"
+            task = _aio.create_task(
+                self._exec_sealed_call(call),
+                name=f"{prefix}-{call.index}-{call.name}",
+            )
+            self._pending_exec_tasks.append(task)
+        except RuntimeError:
+            self._native_scheduled_indexes.discard(call.index)
+            logger.debug("native stream exec: no running loop")
+
     def on_native_tool_update(self, chunks: list[dict]) -> None:
-        """Accumulate native tool-call deltas for progressive terminal rendering."""
+        """Accumulate native tool-call deltas + execute sealed calls immediately."""
+
+        saw_real_tool = False
+
+        # 1) UI accumulator. Уже завершённые индексы больше не возвращаем в live.
         for chunk in chunks or []:
             if not isinstance(chunk, dict):
                 continue
             index = chunk.get("index", 0)
             if not isinstance(index, int):
                 index = 0
-            current = self._native_tool_chunks.setdefault(index, {
-                "name": "",
-                "args": "",
-            })
+            if index in self._native_executed_indexes:
+                continue
+
+            current = self._native_tool_chunks.setdefault(
+                index,
+                {
+                    "name": "",
+                    "args": "",
+                },
+            )
             name = chunk.get("name")
             if name and not current["name"]:
                 current["name"] = str(name)
             args = chunk.get("args")
             if isinstance(args, str) and args:
-                current["args"] += args
+                current["args"] = merge_argument_fragment(current["args"], args)
             elif isinstance(args, dict):
                 import json
-                current["args"] += json.dumps(args, ensure_ascii=False)
+
+                current["args"] = merge_argument_fragment(
+                    current["args"],
+                    json.dumps(args, ensure_ascii=False),
+                )
+
+            current_name = str(current.get("name") or "")
+            if current_name and current_name not in _CONTROL_TOOLS:
+                saw_real_tool = True
+
+        # Самый важный переход UI: reasoning больше не имеет права оставаться
+        # dynamic, как только начался первый реальный инструмент.
+        if saw_real_tool:
+            self._freeze_reasoning_before_native_tools()
+
         if self._native_tool_chunks:
             current = getattr(self.ctx, "working_round", None)
-            if current is not None:
-                active = self._native_tool_chunks[min(self._native_tool_chunks)]
+            active = self._active_native_tool_chunk()
+            if current is not None and active is not None:
                 current.update_stream(
                     active.get("args", ""),
                     current_call=str(active.get("name") or "tool"),
                 )
             self._block_streamer.finalize()
-            if not self._dyn:
-                self._start_live()
-            else:
-                self._update_live()
+            sh = get_shell()
+            if sh is not None:
+                sh.invalidate()
 
-    def on_text_update(self, text: str):
+        # 2) Инкрементальный parser. NativeToolStreamParser теперь seal'ит вызов
+        # сразу при первом полноценном JSON object, без ожидания следующего index.
+        ready = self._native_parser.feed(chunks)
+        for call in ready:
+            self._schedule_native_call(call)
+
+    async def _exec_sealed_call(self, call: NativeCall) -> None:
+        """Исполнить sealed native call строго по одному, пока модель стримится."""
+        from agent._common import native_tool_calls_to_calls
+        from agent.executor import execute_and_show_async
+        from agent.loop import _tool_call_identity
+
+        args = call.parsed_args()
+        if args is None:
+            return
+
+        tool_calls = native_tool_calls_to_calls(
+            [
+                {"name": call.name, "args": args, "id": call.id},
+            ]
+        )
+        if not tool_calls:
+            return
+
+        tool_call = tool_calls[0]
+        if self._native_exec_lock is None:
+            self._native_exec_lock = asyncio.Lock()
+
+        try:
+            # Mutating tools нельзя запускать параллельно друг с другом. Lock
+            # сохраняет порядок sealed-вызовов, но модель продолжает SSE-стрим.
+            async with self._native_exec_lock:
+                self._freeze_reasoning_before_native_tools()
+                # Дать Shell один тик, чтобы clear_dynamic + static reasoning
+                # реально применились раньше tool_start/tool_result.
+                await asyncio.sleep(0)
+                results = await execute_and_show_async(
+                    [tool_call],
+                    event_handler=self.ctx.event_handler,
+                )
+                self.inline_results.extend(results)
+                self.inline_call_keys.append(_tool_call_identity(tool_call))
+                call.state = CallState.EXECUTED
+                if any(r.fatal for r in results):
+                    self.ctx.interrupted = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(
+                "native stream exec failed: index=%d name=%s: %s",
+                call.index,
+                call.name,
+                e,
+                exc_info=True,
+            )
+        finally:
+            # Выполняется уже в основном event loop после await executor'а: это
+            # гарантированный момент для мгновенного redraw после КАЖДОГО tool.
+            self._refresh_after_native_tool(call.index)
+
+    async def drain_pending_executions(self) -> None:
+        """Запечатать остаток и дождаться уже запущенных streaming executions."""
+        import asyncio as _aio
+
+        remaining = self._native_parser.finish()
+        for call in remaining:
+            self._schedule_native_call(call, final=True)
+
+        if self._pending_exec_tasks:
+            _drain_started = time.monotonic()
+            _pending_count = len(self._pending_exec_tasks)
+            await _aio.gather(*self._pending_exec_tasks, return_exceptions=True)
+            _drain_elapsed = time.monotonic() - _drain_started
+            if _drain_elapsed >= 0.10:
+                logger.info(
+                    "native tool drain: %.3fs waiting for %d execution task(s)",
+                    _drain_elapsed,
+                    _pending_count,
+                )
+            self._pending_exec_tasks.clear()
+
+    def cancel_pending_executions(self) -> None:
+        """Отмена при прерывании."""
+        for task in self._pending_exec_tasks:
+            if not task.done():
+                task.cancel()
+        self._pending_exec_tasks.clear()
+
+    async def on_text_update(self, text: str):
         """Called on each streaming text update (full accumulated buffer)."""
         if self._early_abort:
             raise StreamEarlyAbort()
+
+        self._init_first_chunk()
+        self.buffer = text
+        self._update_working_round(text)
+        self._emit_stream_chunk(text)
+
+        self._process_think_blocks()
+        self._process_plan_commands()
+        self._compact_feed_blocks()
+        self._process_partial_tool()
+        await self._process_complete_tools()
+        self._process_partial_thought()
+
+    async def on_text_complete(self, text: str) -> None:
+        """Reconcile the UI buffer with the provider's final response.
+
+        Some OpenAI-compatible providers attach the last text fragment only to
+        the completed response object and never emit it through the streaming
+        callback.  The response saved to history is then complete, while the
+        block streamer finalizes the shorter callback buffer.  Feed the final
+        cumulative value through the normal update path before ``stop()`` so
+        the last token is rendered and any complete trailing tool block is
+        processed as well.
+        """
+        if text != self.buffer:
+            await self.on_text_update(text)
+
+    def _init_first_chunk(self) -> None:
+        """Фиксирует время первого чанка (для метрик TTFB)."""
         if self._first_chunk_time is None:
             self._first_chunk_time = time.monotonic() - self.start_time
-        self.buffer = text
+            self._ttfb = self._first_chunk_time
+
+            # Emit TTFB event
+            from logger import SLOW_API_TTFB_THRESHOLD, info
+
+            info("api.stream.first", ttfb=self._ttfb)
+
+            # Slow TTFB warning
+            if self._ttfb > SLOW_API_TTFB_THRESHOLD:
+                from logger import warning
+
+                warning("api.stream.first.slow", ttfb=self._ttfb)
+
+    def _update_working_round(self, text: str) -> None:
+        """Обновляет live-панель Working (текущий вызов/частичный инструмент)."""
         current = getattr(self.ctx, "working_round", None)
         if current is not None:
             has_partial, _body, partial_name, _attrs = self._get_partial_tool_info()
@@ -539,6 +803,9 @@ class LiveStream:
                 text,
                 current_call=partial_name if has_partial else "",
             )
+
+    def _emit_stream_chunk(self, text: str) -> None:
+        """Шлёт сырой текст стрима в event handler (web/telegram)."""
         eh = getattr(self.ctx, "event_handler", None)
         if eh is not None and hasattr(eh, "emit_stream_chunk"):
             try:
@@ -546,8 +813,14 @@ class LiveStream:
             except Exception as _e:
                 logger.warning("emit_stream_chunk(text) failed: %s", _e)
 
+    def _process_think_blocks(self) -> None:
+        """Обрабатывает закрытые THINK-блоки: финализирует текст до них,
+        сохраняет мысли и печатает static-панель."""
+        eh = getattr(self.ctx, "event_handler", None)
         tb = parse_think_blocks(self.buffer)
         if len(tb) > self._think_processed_count:
+            if self._think_started_at is None:
+                self._think_started_at = time.monotonic()
             # Текст ДО think-блока шёл через BlockStreamer (его активный
             # блок держится в динамической зоне). Если не финализировать его
             # сейчас, think-static уйдёт в scrollback НАД живым кадром →
@@ -558,7 +831,7 @@ class LiveStream:
                 self._block_streamer.finalize()
                 self._store_compact_segment()
                 self._block_streamer.reset()
-            new_thoughts = tb[self._think_processed_count:]
+            new_thoughts = tb[self._think_processed_count :]
             for thought in new_thoughts:
                 self.think_log.add(thought)
             self._store_think_raw_steps()
@@ -569,20 +842,14 @@ class LiveStream:
             # static think всплывает в конце снизу — выглядит как мигание и
             # неправильный порядок. Живой кадр (partial-мысль) уже снят
             # _advance_past_think_blocks; здесь фиксируем мысль в scrollback.
-            is_cli_eh_now = (
-                eh is None
-                or type(eh).__name__ == "RichEventHandler"
-            )
+            is_cli_eh_now = eh is None or type(eh).__name__ == "RichEventHandler"
             if is_cli_eh_now:
                 self._stop_live()
                 self._print_think_static_once()
             # RichEventHandler (CLI) сам рисует think через render_think_static
             # — отдельные tool_start/tool_result события для think приведут к
             # дублированию рамки. Пропускаем только web/telegram handlers.
-            is_cli_eh = (
-                eh is not None
-                and type(eh).__name__ == "RichEventHandler"
-            )
+            is_cli_eh = eh is not None and type(eh).__name__ == "RichEventHandler"
             if eh is not None and not is_cli_eh:
                 for thought in new_thoughts:
                     try:
@@ -593,27 +860,34 @@ class LiveStream:
                             raw="",
                         )
                         eh.on_tool_start(call, subtitle="")
-                        eh.on_tool_result(tools.ToolResult(
-                            name="think",
-                            status="ok",
-                            output=thought,
-                            exit_code=0,
-                            command="think",
-                        ))
-                    except Exception as _e:  # noqa: PERF203
+                        eh.on_tool_result(
+                            tools.ToolResult(
+                                name="think",
+                                status="ok",
+                                output=thought,
+                                exit_code=0,
+                                command="think",
+                            )
+                        )
+                    except Exception as _e:
                         logger.warning("think event emit failed: %s", _e)
 
+    def _process_plan_commands(self) -> None:
+        """Обрабатывает новые :::call plan команды: применяет, сохраняет файл,
+        показывает обновление плана."""
         pc = parse_plan_commands(self.buffer)
-        npc = pc[self._plan_processed_count:]
+        npc = pc[self._plan_processed_count :]
         if npc:
             plan_events = []
             plan_before = self.ctx.plan
             for cmd in npc:
-                plan_events.append((
-                    cmd.action,
-                    resolve_plan_command_focus(plan_before, cmd),
-                    str(cmd.data.get("status") or ""),
-                ))
+                plan_events.append(
+                    (
+                        cmd.action,
+                        resolve_plan_command_focus(plan_before, cmd),
+                        str(cmd.data.get("status") or ""),
+                    )
+                )
                 plan_before = apply_plan_commands(plan_before, [cmd])
             self.ctx.plan = plan_before
             self._plan_processed_count = len(pc)
@@ -628,15 +902,19 @@ class LiveStream:
                 if self.ctx.plan and not getattr(self.ctx, "silent_console", False):
                     self._stop_live()
                     from agent.display import show_plan_update
+
                     for action, focus_index, status in plan_events:
-                        if action == "update" and status == "in_progress" and not self.ctx.plan.is_complete:
+                        if (
+                            action == "update"
+                            and status == "in_progress"
+                            and not self.ctx.plan.is_complete
+                        ):
                             continue
                         show_plan_update(self.ctx.plan, action=action, focus_index=focus_index)
                     self._start_live()
 
-        # Поблочный стрим текста до ближайшего tool-блока.
-        self._compact_feed_blocks()
-
+    def _process_partial_tool(self) -> None:
+        """Обнаруживает частичный tool-блок и поднимает live-кадр под него."""
         scan_start = max(self._current_text_start, self._printed_text_end)
         partial = self._scan_partial_tool(self.buffer, scan_start)
         # Партиал нас интересует ТОЛЬКО если перед ним нет ещё не выполненного
@@ -662,19 +940,21 @@ class LiveStream:
             self._current_text_start = max(self._current_text_start, partial.start)
             self._start_live()
 
+    async def _process_complete_tools(self) -> None:
+        """Исполняет все готовые tool-блоки, начиная с _current_text_start."""
         from agent.stream_tool_exec import handle_complete_tool
+
         while True:
             complete = self._scan_complete_tool(
-                self.buffer, self._current_text_start,
+                self.buffer,
+                self._current_text_start,
             )
             if not complete:
                 break
             self._stop_live()
             self._print_think_static_once()
             if complete.start > self._printed_text_end:
-                text_before = self.buffer[
-                    self._printed_text_end:complete.start
-                ]
+                text_before = self.buffer[self._printed_text_end : complete.start]
                 # Если _printed_text_end уже стоит на начале fence (partial
                 # был обнаружен ранее), text_before — это просто открывающая
                 # строка `:::call <tool> ...` без полезного контента.
@@ -693,7 +973,7 @@ class LiveStream:
                         eh.emit_stream_chunk(text_before, "tool_prefix")
                 except Exception:
                     logger.warning("emit tool_prefix failed", exc_info=True)
-            handle_complete_tool(self, complete)
+            await handle_complete_tool(self, complete)
             self._current_text_start = complete.end
             self._printed_text_end = complete.end
             # Новая «страница» текста после tool-блока — сбрасываем.
@@ -702,14 +982,17 @@ class LiveStream:
             self._dyn = False
             self._start_live()
 
-        # Живой стрим частичной мысли (незакрытый :::call think). think
-        # исключён из _scan_partial_tool, поэтому кадр для него надо поднять
-        # отдельно: пока мысль пишется, рисуем её через _render_live
-        # (render_live_group рисует partial_thought). Без этого think
-        # появляется только целиком в конце через static-панель.
+    def _process_partial_thought(self) -> None:
+        """Живой стрим частичной мысли (незакрытый :::call think). think
+        исключён из _scan_partial_tool, поэтому кадр для него надо поднять
+        отдельно: пока мысль пишется, рисуем её через _render_live
+        (render_live_group рисует partial_thought). Без этого think
+        появляется только целиком в конце через static-панель."""
         if not self._native_tools and not getattr(self, "_think_static_printed", False):
             partial_thought = parse_partial_thought(self.buffer)
             if partial_thought:
+                if self._think_started_at is None:
+                    self._think_started_at = time.monotonic()
                 # Мысль начала писаться ПОСЛЕ текста ответа: BlockStreamer
                 # держит кадр активного блока и блокирует кадр стрима → think
                 # не стримился. Финализируем текст до think в scrollback,
@@ -718,17 +1001,20 @@ class LiveStream:
                 # BlockStreamer = дубль), затем поднимаем кадр стрима.
                 if self._block_streamer.has_active:
                     think_start = self._scan_tool_start(
-                        self.buffer, self._current_text_start,
+                        self.buffer,
+                        self._current_text_start,
                     )
                     self._block_streamer.finalize()
                     self._store_compact_segment()
                     self._block_streamer.reset()
                     if think_start is not None:
                         self._current_text_start = max(
-                            self._current_text_start, think_start,
+                            self._current_text_start,
+                            think_start,
                         )
                         self._printed_text_end = max(
-                            self._printed_text_end, think_start,
+                            self._printed_text_end,
+                            think_start,
                         )
                 if not self._dyn:
                     self._start_live()
@@ -746,7 +1032,9 @@ class LiveStream:
         сохранённого текста (_stored_text_end)."""
         start = max(self._stored_text_end, self._current_text_start)
         end = len(self.buffer)
-        tool_at = self._scan_tool_start(self.buffer, max(self._stored_text_end, self._current_text_start))
+        tool_at = self._scan_tool_start(
+            self.buffer, max(self._stored_text_end, self._current_text_start)
+        )
         if tool_at is not None and tool_at > start:
             end = tool_at
         if end <= start:
@@ -757,6 +1045,7 @@ class LiveStream:
         self._stored_text_end = end
         try:
             from agent.display import _store_assistant
+
             _store_assistant(cleaned, subtitle="", message_num=self.message_num)
         except Exception:
             logger.debug("store compact segment failed", exc_info=True)
@@ -819,9 +1108,11 @@ class LiveStream:
         """
         try:
             import config as _cfg
+
             if not _cfg.get_telegram_enabled():
                 return
             from apis.telegram import get_bridge
+
             bridge = get_bridge()
             if not bridge.is_running:
                 return
@@ -838,9 +1129,11 @@ class LiveStream:
         """
         try:
             import config as _cfg
+
             bridge = None
             if _cfg.get_telegram_enabled():
                 from apis.telegram import get_bridge
+
                 bridge = get_bridge()
                 if not bridge.is_running:
                     bridge = None

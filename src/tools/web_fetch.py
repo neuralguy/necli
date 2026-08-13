@@ -15,6 +15,21 @@ _FETCH_TIMEOUT = 10
 _CACHE_TTL = 3600  # 1 час
 _CACHE_MAX_ENTRIES = 100
 _FETCH_MAX_WORKERS = 8
+_MAX_RETRIES = 2
+_RETRY_DELAY = 1.0
+
+
+def _with_retry(fn):
+    """Выполняет fn() с ретраями на сетевые ошибки (timeout/transport)."""
+    last_error: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_error = e
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY * (attempt + 1))
+    raise last_error
 
 
 def _fetch_pages(urls: list[str], raw: bool = False) -> dict[str, str | None]:
@@ -26,6 +41,7 @@ def _fetch_pages(urls: list[str], raw: bool = False) -> dict[str, str | None]:
         return {urls[0]: fetcher(urls[0])}
     with ThreadPoolExecutor(max_workers=min(_FETCH_MAX_WORKERS, len(urls))) as ex:
         return dict(zip(urls, ex.map(fetcher, urls), strict=False))
+
 
 # url -> (timestamp, text). OrderedDict для O(1) eviction старейших.
 # Кэш мутируется из воркеров ThreadPoolExecutor, поэтому защищён локом.
@@ -66,10 +82,15 @@ def _fetch_page(url: str) -> str | None:
         return "[trafilatura not installed, skipping page fetch]"
 
     try:
-        try:
-            downloaded = trafilatura.fetch_url(url, timeout=_FETCH_TIMEOUT)
-        except TypeError:
-            downloaded = trafilatura.fetch_url(url)
+
+        def _fetch_once():
+            try:
+                downloaded = trafilatura.fetch_url(url, timeout=_FETCH_TIMEOUT)
+            except TypeError:
+                downloaded = trafilatura.fetch_url(url)
+            return downloaded
+
+        downloaded = _with_retry(_fetch_once)
         if not downloaded:
             return None
         text = trafilatura.extract(downloaded, include_links=False, include_tables=True)
@@ -90,25 +111,36 @@ def _fetch_raw_html(url: str) -> str | None:
 
     try:
         import trafilatura
-        downloaded = None
-        try:
-            downloaded = trafilatura.fetch_url(url, timeout=_FETCH_TIMEOUT)
-        except TypeError:
-            downloaded = trafilatura.fetch_url(url)
+
+        def _fetch_once():
+            try:
+                downloaded = trafilatura.fetch_url(url, timeout=_FETCH_TIMEOUT)
+            except TypeError:
+                downloaded = trafilatura.fetch_url(url)
+            return downloaded
+
+        downloaded = _with_retry(_fetch_once)
     except ImportError:
         downloaded = None
+    except Exception as e:
+        logger.warning("web_fetch raw fetch failed | url={!r} error={}", url, e)
+        return f"[raw fetch error: {e}]"
 
     if not downloaded:
         try:
             import httpx
-            resp = httpx.get(
-                url,
-                timeout=_FETCH_TIMEOUT,
-                follow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; necli-agent)"},
-            )
-            resp.raise_for_status()
-            downloaded = resp.text
+
+            def _http_once():
+                resp = httpx.get(
+                    url,
+                    timeout=_FETCH_TIMEOUT,
+                    follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; necli-agent)"},
+                )
+                resp.raise_for_status()
+                return resp.text
+
+            downloaded = _with_retry(_http_once)
         except Exception as e:
             logger.warning("web_fetch raw fetch failed | url={!r} error={}", url, e)
             return f"[raw fetch error: {e}]"

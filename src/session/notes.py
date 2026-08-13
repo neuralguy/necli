@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from config._atomic import atomic_write_text
+
 _MAX_NOTE_CHARS = 12000
 _MAX_MESSAGE_CHARS = 1200
 
@@ -42,7 +44,7 @@ def ensure_session_notes(session_dir: str | Path) -> Path:
     path = notes_path(session_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        path.write_text(_TEMPLATE, encoding="utf-8")
+        atomic_write_text(path, _TEMPLATE)
     return path
 
 
@@ -63,8 +65,7 @@ def format_session_notes_block(session_dir: str | Path | None) -> str:
     return (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "SESSION NOTES (continuity for long tasks)\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        + text
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n" + text
     )
 
 
@@ -75,7 +76,9 @@ def save_session_notes(session: Any) -> None:
     assistant_messages = [m for m in messages if getattr(m, "role", "") == "assistant"]
     tool_messages = [m for m in messages if getattr(m, "role", "") == "tool_result"]
 
-    title = getattr(session, "title", "") or (user_messages[0].content[:80] if user_messages else "Untitled session")
+    title = getattr(session, "title", "") or (
+        user_messages[0].content[:80] if user_messages else "Untitled session"
+    )
     current = _trim(assistant_messages[-1].content if assistant_messages else "")
     task_spec = _trim(user_messages[-1].content if user_messages else "")
     worklog = []
@@ -91,10 +94,17 @@ def save_session_notes(session: Any) -> None:
     for msg in tool_messages[-6:]:
         content = getattr(msg, "content", "") or ""
         upper = content.upper()
-        if "VERDICT:" in upper or "PYTEST" in upper or "LSP_DIAGNOSTICS" in upper or "ERROR" in upper:
+        if (
+            "VERDICT:" in upper
+            or "PYTEST" in upper
+            or "LSP_DIAGNOSTICS" in upper
+            or "ERROR" in upper
+        ):
             verification.append(f"- {_trim(content, 700)}")
 
-    files = _extract_file_mentions("\n".join(getattr(m, "content", "") or "" for m in messages[-20:]))
+    files = _extract_file_mentions(
+        "\n".join(getattr(m, "content", "") or "" for m in messages[-20:])
+    )
     text = f"""# Session Title
 _A short and distinctive 5-10 word descriptive title for the session._
 {_trim(title, 180)}
@@ -127,7 +137,7 @@ _Checks run, verifier verdicts, remaining gaps._
 _Step-by-step terse worklog._
 {chr(10).join(worklog) or "(empty)"}
 """
-    path.write_text(text[-_MAX_NOTE_CHARS:], encoding="utf-8")
+    atomic_write_text(path, text[-_MAX_NOTE_CHARS:])
 
 
 def _trim(text: str, limit: int = _MAX_MESSAGE_CHARS) -> str:

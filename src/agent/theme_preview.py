@@ -24,12 +24,10 @@ def _darken(color: str, factor: float) -> str:
     if len(raw) != 6:
         return color
     try:
-        channels = [int(raw[index:index + 2], 16) for index in (0, 2, 4)]
+        channels = [int(raw[index : index + 2], 16) for index in (0, 2, 4)]
     except ValueError:
         return color
-    return "#" + "".join(
-        f"{round(channel * factor):02x}" for channel in channels
-    )
+    return "#" + "".join(f"{round(channel * factor):02x}" for channel in channels)
 
 
 def _tool_disp(tool: str) -> tuple[str, str]:
@@ -41,9 +39,14 @@ def _tool_disp(tool: str) -> tuple[str, str]:
     return f"{emoji} {label}".strip(), role
 
 
-def _hdr(tool: str, arg: str, colors: dict, *,
-         status: tuple[str, str] | None = None,
-         status_color: str | None = None) -> Text:
+def _hdr(
+    tool: str,
+    arg: str,
+    colors: dict,
+    *,
+    status: tuple[str, str] | None = None,
+    status_color: str | None = None,
+) -> Text:
     """Заголовок блока: `⏺ Shell(ls -la src/)  ✓ 0.1s`."""
     name, role = _tool_disp(tool)
     color = colors.get(role, colors.get("warning"))
@@ -98,10 +101,12 @@ def render_theme_preview(colors: dict, width: int = 76) -> str:
     shell_line = Text("      1 ", style=colors["fg_primary"])
     shell_line.append("total 24", style="default")
     parts.append(shell_line)
-    parts.append(Text(
-        "        " + _i18n("compact.more_lines", n=7),
-        style=f"italic {dim_text}",
-    ))
+    parts.append(
+        Text(
+            "        " + _i18n("compact.more_lines", n=7),
+            style=f"italic {dim_text}",
+        )
+    )
     parts.append(Text(""))
 
     # Patch — заголовок + сводка + inline-diff с фоном (как в display.py)
@@ -132,8 +137,9 @@ def render_theme_preview(colors: dict, width: int = 76) -> str:
     parts.append(Text(""))
 
     # Create — заголовок без контента (мгновенная тихая операция)
-    parts.append(_hdr("create_file", "new_handler.py", colors,
-                      status=("✓", ""), status_color=success))
+    parts.append(
+        _hdr("create_file", "new_handler.py", colors, status=("✓", ""), status_color=success)
+    )
     parts.append(Text(""))
 
     # Grep — заголовок + сводка из первой строки вывода
@@ -166,8 +172,11 @@ def render_theme_preview(colors: dict, width: int = 76) -> str:
 
     buf = StringIO()
     render_console = Console(
-        file=buf, highlight=False, force_terminal=True,
-        width=width, color_system="truecolor",
+        file=buf,
+        highlight=False,
+        force_terminal=True,
+        width=width,
+        color_system="truecolor",
     )
     render_console.print(body)
     return buf.getvalue()

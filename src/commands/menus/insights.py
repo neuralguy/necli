@@ -1,51 +1,65 @@
-"""Menu /insights — анализ всего общения → HTML-отчёт + факты в память."""
+"""Фоновый запуск отчёта /insights."""
+
+from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
+from rich.markup import escape
+
+from config.i18n import t as tr
+from config.themes import t
 from logger import logger
 from tools._paths import get_working_dir
+from ui.shell import ensure_static_blank, print_static
+
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
-def _run_async(coro):
-    """Запускает корутину из синхронного slash-обработчика.
+def _print_result(message: str, *, error: bool = False) -> None:
+    role = "error" if error else "success"
+    ensure_static_blank()
+    print_static(f"[{t(role)}]{escape(message)}[/{t(role)}]")
+    ensure_static_blank()
 
-    /insights вызывается из уже работающего event loop интерактивного цикла,
-    поэтому asyncio.run() здесь падает. Выполняем корутину в отдельном потоке
-    с собственным циклом — работает и при наличии активного loop, и без него.
-    """
-    result: dict = {}
 
-    def _worker():
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            result["value"] = loop.run_until_complete(coro)
-        except BaseException as e:
-            result["error"] = e
-        finally:
-            loop.close()
-            asyncio.set_event_loop(None)
-
-    import threading
-    th = threading.Thread(target=_worker, daemon=True)
-    th.start()
-    th.join()
-    if "error" in result:
-        raise result["error"]
-    return result["value"]
-
-def insights_interactive() -> None:
+async def _generate(working_dir: str) -> None:
     from memory.insights import generate_insights
 
     try:
-        _run_async(
-            generate_insights(get_working_dir(), persist_memory=False)
-        )
-    except RuntimeError as e:
-        if "no sessions" in str(e):
+        result = await generate_insights(working_dir, persist_memory=False)
+    except asyncio.CancelledError:
+        raise
+    except RuntimeError as exc:
+        if "no sessions" in str(exc):
+            _print_result(tr("insights.no_sessions"), error=True)
             return
-        logger.error("insights failed: {}", e)
+        logger.error("insights failed: {}", exc)
+        _print_result(tr("insights.failed", err=str(exc)), error=True)
         return
-    except Exception as e:
-        logger.opt(exception=True).error("insights failed: {}", e)
+    except Exception as exc:
+        logger.opt(exception=True).error("insights failed: {}", exc)
+        _print_result(tr("insights.failed", err=str(exc)), error=True)
         return
+
+    report_path = Path(result["report_path"])
+    _print_result(tr("insights.done", path=str(report_path)))
+
+
+async def insights_interactive() -> None:
+    """Запустить анализ на текущем loop и сразу вернуть управление терминалу."""
+    working_dir = get_working_dir()
+    task = asyncio.create_task(_generate(working_dir), name="insights")
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    print_static(f"[dim]{escape(tr('insights.working'))}[/dim]")
+
+
+async def stop_background_insights_tasks() -> None:
+    """Отменить незавершённые отчёты при закрытии интерактивной сессии."""
+    tasks = set(_BACKGROUND_TASKS)
+    _BACKGROUND_TASKS.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)

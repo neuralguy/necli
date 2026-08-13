@@ -26,7 +26,7 @@ async def skills_interactive():
         all_skills = list_skills()
         if not all_skills:
             choice = await card_menu(
-                [{"label": _("skills.create")}],
+                [{"label": _("skills.create"), "action": True}],
                 title=_("skills.title"),
                 facts=[_("skills.no_skills", dir=get_skills_dir())],
             )
@@ -47,7 +47,7 @@ async def skills_interactive():
             }
             for s in all_skills
         ]
-        items.append({"label": _("skills.create"), "hint": str(get_skills_dir())})
+        items.append({"label": _("skills.create"), "hint": str(get_skills_dir()), "action": True})
 
         choice = await card_menu(
             items,
@@ -76,14 +76,27 @@ async def _skill_detail_menu(skill):
         body_lines = [ln for ln in skill.body[:400].splitlines() if ln.strip()][:6]
         toggle = _("skills.toggle_disable") if active else _("skills.toggle_enable")
         actions = [
-            {"label": toggle,
-             "hint": _("skills.toggle_hint_off") if active else _("skills.toggle_hint_on"),
-             "icon": "○" if active else "●",
-             "icon_style": "warning" if active else "success"},
-            {"label": _("skills.edit"), "hint": editor_command(), "icon": "✎",
-             "icon_style": "dim"},
-            {"label": _("api.delete"), "hint": _("api.delete_permanent"), "icon": "✗",
-             "icon_style": "error"},
+            {
+                "label": toggle,
+                "hint": _("skills.toggle_hint_off") if active else _("skills.toggle_hint_on"),
+                "icon": "○" if active else "●",
+                "icon_style": "warning" if active else "success",
+                "action": True,
+            },
+            {
+                "label": _("skills.edit"),
+                "hint": editor_command(),
+                "icon": "✎",
+                "icon_style": "dim",
+                "action": True,
+            },
+            {
+                "label": _("api.delete"),
+                "hint": _("api.delete_permanent"),
+                "icon": "✗",
+                "icon_style": "error",
+                "action": True,
+            },
             {"label": _("common.back"), "icon": " "},
         ]
         choice = await card_menu(

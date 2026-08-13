@@ -27,11 +27,11 @@ from logger import logger
 DAY = 86400
 
 # ── Пороги (безопасная политика) ─────────────────────────────────────────────
-SESSION_MAX_AGE_DAYS = 30      # сессии старше — кандидаты на удаление…
-KEEP_RECENT_SESSIONS = 100     # …но последние N по времени всегда храним
-RUNS_MAX_AGE_DAYS = 14         # subagents/
-TEMP_MAX_AGE_DAYS = 7          # clipboard_images/ docx_shots/ docx_sources/ uploads/
-MIN_INTERVAL_SECONDS = DAY     # не чаще раза в сутки
+SESSION_MAX_AGE_DAYS = 30  # сессии старше — кандидаты на удаление…
+KEEP_RECENT_SESSIONS = 100  # …но последние N по времени всегда храним
+RUNS_MAX_AGE_DAYS = 14  # subagents/
+TEMP_MAX_AGE_DAYS = 7  # clipboard_images/ uploads/
+MIN_INTERVAL_SECONDS = DAY  # не чаще раза в сутки
 
 _MARKER = BASE_DIR / ".last_cleanup"
 
@@ -46,9 +46,9 @@ def maybe_cleanup() -> None:
         freed = run_cleanup()
         _touch_marker()
         if freed:
-            logger.info("data_cleanup: freed ~%s", _human(freed))
+            logger.info("data_cleanup: freed ~{}", _human(freed))
     except Exception as e:
-        logger.debug("data_cleanup.maybe_cleanup failed: %s", e, exc_info=True)
+        logger.debug("data_cleanup.maybe_cleanup failed: {}", e, exc_info=True)
 
 
 def run_cleanup() -> int:
@@ -58,12 +58,13 @@ def run_cleanup() -> int:
     freed += _clean_empty_sessions()
     freed += _clean_sessions()
     freed += _clean_runs("subagents", RUNS_MAX_AGE_DAYS)
-    for name in ("clipboard_images", "docx_shots", "docx_sources", "uploads"):
+    for name in ("clipboard_images", "uploads"):
         freed += _clean_temp_files(name, TEMP_MAX_AGE_DAYS)
     return freed
 
 
 # ── root junk ────────────────────────────────────────────────────────────────
+
 
 def _clean_root_junk() -> int:
     freed = 0
@@ -78,7 +79,9 @@ def _clean_root_junk() -> int:
             freed += _unlink(path)
     return freed
 
+
 # ── sessions ─────────────────────────────────────────────────────────────────
+
 
 def _clean_empty_sessions() -> int:
     """Удаляет директории пустых сессий (нет history.json или 0 сообщений)."""
@@ -107,8 +110,11 @@ def _is_empty_session_dir(path: Path) -> bool:
             return False
         # Если нет ни одного user-сообщения — пустая
         return all(msg.get("role") != "user" for msg in data.get("messages", []))
-    except (json.JSONDecodeError, OSError):
-        return True
+    except (json.JSONDecodeError, OSError) as exc:
+        # A corrupt/unreadable history is data to preserve for recovery, not
+        # evidence that the session is empty. Deleting it here loses user data.
+        logger.warning("data_cleanup: preserving unreadable session {}: {}", path.name, exc)
+        return False
 
 
 def _clean_sessions() -> int:
@@ -151,11 +157,12 @@ def _pinned_session_ids() -> set[str]:
     except FileNotFoundError:
         return set()
     except Exception as e:
-        logger.debug("data_cleanup: read pinned failed: %s", e, exc_info=True)
+        logger.debug("data_cleanup: read pinned failed: {}", e, exc_info=True)
     return set()
 
 
 # ── subagents ────────────────────────────────────────────────────────────────
+
 
 def _clean_runs(name: str, max_age_days: int) -> int:
     base = BASE_DIR / name
@@ -175,6 +182,7 @@ def _clean_runs(name: str, max_age_days: int) -> int:
 
 # ── временные файлы (плоские каталоги) ───────────────────────────────────────
 
+
 def _clean_temp_files(name: str, max_age_days: int) -> int:
     base = BASE_DIR / name
     if not base.is_dir():
@@ -193,6 +201,7 @@ def _clean_temp_files(name: str, max_age_days: int) -> int:
 
 # ── маркер «не чаще раза в сутки» ────────────────────────────────────────────
 
+
 def _ran_recently() -> bool:
     try:
         return (time.time() - _MARKER.stat().st_mtime) < MIN_INTERVAL_SECONDS
@@ -204,10 +213,11 @@ def _touch_marker() -> None:
     try:
         _MARKER.write_text(str(int(time.time())), encoding="utf-8")
     except OSError as e:
-        logger.debug("data_cleanup: touch marker failed: %s", e, exc_info=True)
+        logger.debug("data_cleanup: touch marker failed: {}", e, exc_info=True)
 
 
 # ── низкоуровневые удаления (с подсчётом освобождённого) ──────────────────────
+
 
 def _dir_size(path: Path) -> int:
     total = 0
@@ -215,7 +225,7 @@ def _dir_size(path: Path) -> int:
         for f in files:
             try:
                 total += os.lstat(os.path.join(root, f)).st_size
-            except OSError:  # noqa: PERF203
+            except OSError:
                 continue
     return total
 
@@ -238,7 +248,7 @@ def _unlink(path: Path) -> int:
         path.unlink(missing_ok=True)
         return size
     except OSError as e:
-        logger.debug("data_cleanup: unlink %s failed: %s", path, e, exc_info=True)
+        logger.debug("data_cleanup: unlink {} failed: {}", path, e, exc_info=True)
         return 0
 
 

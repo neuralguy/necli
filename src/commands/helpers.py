@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -8,6 +9,7 @@ import time
 # Если импорт не удался (Windows) — функции-заглушки отработают без ошибки.
 try:
     import termios as _termios
+
     _HAVE_TERMIOS = True
 except ImportError:
     _HAVE_TERMIOS = False
@@ -69,6 +71,7 @@ def _restore_termios() -> None:
     # Fallback: stty sane
     try:
         import subprocess as _sp
+
         _sp.run(["stty", "sane"], stderr=_sp.DEVNULL, timeout=2)
     except Exception:
         pass
@@ -78,6 +81,7 @@ def _read_version() -> str:
     try:
         from importlib.metadata import PackageNotFoundError
         from importlib.metadata import version as _pkg_version
+
         try:
             return _pkg_version("necli-api")
         except PackageNotFoundError:
@@ -87,6 +91,7 @@ def _read_version() -> str:
 
     try:
         from pathlib import Path
+
         # helpers.py → commands → src → <корень репо>/pyproject.toml.
         # Проверяем оба варианта раскладки (src-layout и flat) на случай
         # перемещения файла.
@@ -126,6 +131,7 @@ def _notice(markup: str) -> None:
     запись рвала бы рамку — печатаем через единственную легальную дверь.
     """
     from ui.shell import print_static
+
     print_static(markup)
 
 
@@ -149,18 +155,26 @@ class InterruptController:
     def __init__(self) -> None:
         self.level: int = 0
         self.task: asyncio.Task | None = None
+        self.ctx: object | None = None
         self.hard_at: float | None = None
         self._saved_stderr = None
 
     # ── жизненный цикл хода ──
     def begin(self, task: asyncio.Task) -> None:
+        from agent import get_current_ctx
+
         self.task = task
+        # Ctrl+C is received by the Shell task, while the agent context belongs
+        # to the queue worker task.  ContextVar values do not cross that task
+        # boundary, so escalation must retain the context of the active turn.
+        self.ctx = get_current_ctx()
         self.level = 0
         self.hard_at = None
 
     def end(self, task: asyncio.Task) -> None:
         if self.task is task:
             self.task = None
+            self.ctx = None
         self.restore_stderr()
 
     @property
@@ -175,7 +189,7 @@ class InterruptController:
             return
         try:
             self._saved_stderr = sys.stderr
-            sys.stderr = open(os.devnull, "w")  # noqa: SIM115
+            sys.stderr = open(os.devnull, "w")
         except Exception:
             self._saved_stderr = None
             logger.debug("stderr redirect to devnull failed", exc_info=True)
@@ -197,6 +211,7 @@ class InterruptController:
         """Перерисовать Working сразу, не дожидаясь следующего SSE-чанка."""
         try:
             from ui.shell import get_shell
+
             shell = get_shell()
             if shell is not None:
                 shell.invalidate()
@@ -212,8 +227,11 @@ class InterruptController:
         """
         if not self.active:
             return 0
-        from agent import get_current_ctx
-        ctx = get_current_ctx()
+        ctx = self.ctx
+        if ctx is None:
+            from agent import get_current_ctx
+
+            ctx = get_current_ctx()
         self.level += 1
 
         if self.level == 1:
@@ -230,7 +248,9 @@ class InterruptController:
             _restore_termios()
             # print_static здесь недоступен: он печатает через run_in_terminal,
             # то есть на следующем шаге loop'а, которого уже не будет.
-            _write_now(f"\r\033[K  \033[{ansi_24bit(t('error'))}m■■■\033[0m \033[2mForce exit.\033[0m\n")
+            _write_now(
+                f"\r\033[K  \033[{ansi_24bit(t('error'))}m■■■\033[0m \033[2mForce exit.\033[0m\n"
+            )
             os._exit(130)
 
         # level == 2: жёсткая отмена задачи прямо сейчас.
@@ -246,6 +266,9 @@ class InterruptController:
         if ctx:
             ctx.hard_interrupted = True
             ctx.interrupt_level = 2
+            cancel_scope = getattr(ctx, "tool_cancel_scope", None)
+            if cancel_scope is not None:
+                cancel_scope.cancel()
         self._invalidate_ui()
         self.hard_at = time.monotonic()
         self.silence_stderr()
@@ -311,6 +334,8 @@ async def _run_with_interrupt(coro, session):
                 raise
         finally:
             watchdog.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await watchdog
             ctl.end(task)
 
         cancelled = ctl.level > 0
@@ -373,8 +398,15 @@ def _format_relative_time(ts: float) -> str:
     return f"{int(delta // (86400 * 30))}mo ago"
 
 
-def _build_left_content(model: str, session: Session, display_wd: str, n_lsp: int = 0,
-                        n_mcp: int = 0, mcp_tools: int = 0, tg_info: str = ""):
+def _build_left_content(
+    model: str,
+    session: Session,
+    display_wd: str,
+    n_lsp: int = 0,
+    n_mcp: int = 0,
+    mcp_tools: int = 0,
+    tg_info: str = "",
+):
     logo = Text()
     for i, line in enumerate(_LOGO_LINES):
         if i:
@@ -384,6 +416,7 @@ def _build_left_content(model: str, session: Session, display_wd: str, n_lsp: in
     api_id = ""
     try:
         import config as _config
+
         api_id = _config.get_active_api() or ""
     except Exception:
         logger.debug("welcome get_active_api failed", exc_info=True)
@@ -448,7 +481,9 @@ def _build_right_content():
     recent = Text()
     recent.append("\n\n" + _("welcome.recent") + "\n", style=f"bold {t('accent')}")
     try:
-        sessions = storage.list_sessions(limit=4) or []
+        # fast=True: панели нужны только title и updated_at, а пересчёт цен и
+        # чтение history.json на каждую сессию тормозили старт.
+        sessions = storage.list_sessions(limit=4, fast=True) or []
     except Exception:
         logger.debug("welcome list_sessions failed", exc_info=True)
         sessions = []
@@ -468,19 +503,32 @@ def _build_right_content():
     return Group(tips, recent)
 
 
-def _print_welcome(model: str, session: Session, workdir: str = ".", n_lsp: int = 0,
-                   n_mcp: int = 0, mcp_tools: int = 0, tg_info: str = ""):
+def _print_welcome(
+    model: str,
+    session: Session,
+    workdir: str = ".",
+    n_lsp: int = 0,
+    n_mcp: int = 0,
+    mcp_tools: int = 0,
+    tg_info: str = "",
+):
     try:
         from ui.terminal_title import set_session_terminal_title
+
         set_session_terminal_title(session)
     except Exception:
         logger.debug("welcome terminal title update failed", exc_info=True)
     # Сохраним параметры для replay (Ctrl+O в compact) — в модульный кэш
     # потому что ctx ещё может быть не создан в момент первого вызова.
     import agent.render_replay as _rr
+
     _rr._LAST_WELCOME_ARGS = {
-        "model": model, "workdir": workdir, "n_lsp": n_lsp,
-        "n_mcp": n_mcp, "mcp_tools": mcp_tools, "tg_info": tg_info,
+        "model": model,
+        "workdir": workdir,
+        "n_lsp": n_lsp,
+        "n_mcp": n_mcp,
+        "mcp_tools": mcp_tools,
+        "tg_info": tg_info,
         "session_id": getattr(session, "id", ""),
     }
     home = os.path.expanduser("~")
@@ -490,7 +538,7 @@ def _print_welcome(model: str, session: Session, workdir: str = ".", n_lsp: int 
         if abs_wd == home:
             display_wd = "~"
         elif abs_wd.startswith(home + os.sep):
-            display_wd = "~" + abs_wd[len(home):]
+            display_wd = "~" + abs_wd[len(home) :]
         else:
             display_wd = abs_wd
     except Exception:
@@ -513,33 +561,51 @@ def _print_welcome(model: str, session: Session, workdir: str = ".", n_lsp: int 
         table.add_column(width=1, no_wrap=True)
         table.add_column(width=right_w, no_wrap=False)
         table.add_row(
-            _build_left_content(model, session, display_wd, n_lsp=n_lsp,
-                                n_mcp=n_mcp, mcp_tools=mcp_tools, tg_info=tg_info),
+            _build_left_content(
+                model,
+                session,
+                display_wd,
+                n_lsp=n_lsp,
+                n_mcp=n_mcp,
+                mcp_tools=mcp_tools,
+                tg_info=tg_info,
+            ),
             divider,
             _build_right_content(),
         )
-        console.print(Panel(
-            table,
-            title=f"[bold {t('accent')}]necli[/bold {t('accent')}]  [dim]v{_APP_VERSION}[/dim]",
-            title_align="left",
-            border_style=t("accent"),
-            padding=(1, 2),
-            width=118,
-            expand=False,
-        ))
+        console.print(
+            Panel(
+                table,
+                title=f"[bold {t('accent')}]necli[/bold {t('accent')}]  [dim]v{_APP_VERSION}[/dim]",
+                title_align="left",
+                border_style=t("accent"),
+                padding=(1, 2),
+                width=118,
+                expand=False,
+            )
+        )
     else:
-        console.print(Panel(
-            Group(
-                _build_left_content(model, session, display_wd, n_lsp=n_lsp,
-                                    n_mcp=n_mcp, mcp_tools=mcp_tools, tg_info=tg_info),
-                Text(""),
-                _build_right_content(),
-            ),
-            title=f"[bold {t('accent')}]necli[/bold {t('accent')}]  [dim]v{_APP_VERSION}[/dim]",
-            title_align="left",
-            border_style=t("accent"),
-            padding=(1, 2),
-        ))
+        console.print(
+            Panel(
+                Group(
+                    _build_left_content(
+                        model,
+                        session,
+                        display_wd,
+                        n_lsp=n_lsp,
+                        n_mcp=n_mcp,
+                        mcp_tools=mcp_tools,
+                        tg_info=tg_info,
+                    ),
+                    Text(""),
+                    _build_right_content(),
+                ),
+                title=f"[bold {t('accent')}]necli[/bold {t('accent')}]  [dim]v{_APP_VERSION}[/dim]",
+                title_align="left",
+                border_style=t("accent"),
+                padding=(1, 2),
+            )
+        )
     console.print()
 
 
@@ -551,4 +617,5 @@ def _print_response_separator():
     закончил вывод такой отбивкой, вторую не добавляем.
     """
     from ui.shell import ensure_static_blank
+
     ensure_static_blank()

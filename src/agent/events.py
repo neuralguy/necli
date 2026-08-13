@@ -40,7 +40,11 @@ class AgentEventHandler(Protocol):
         ...
 
     def on_subagent_start(
-        self, index: int, total: int, mode: str, prompt: str,
+        self,
+        index: int,
+        total: int,
+        mode: str,
+        prompt: str,
         model_label: str = "",
     ) -> None:
         """Вызывается при запуске субагента."""
@@ -53,6 +57,7 @@ class AgentEventHandler(Protocol):
     def on_subagent_done(self, index: int, result: object = None) -> None:
         """Вызывается при завершении субагента."""
         ...
+
 
 class RichEventHandler:
     """Реализация для Rich-терминала — делегирует в agent/display.py."""
@@ -73,9 +78,11 @@ class RichEventHandler:
 
         if call is not None:
             from agent.display import show_tool_combined
+
             show_tool_combined(call, result, subtitle=subtitle)
         else:
             from agent.display import show_output
+
             show_output(result)
 
     def on_plan_update(
@@ -85,6 +92,7 @@ class RichEventHandler:
         focus_index: int | None = None,
     ) -> None:
         from agent.display import show_plan_update
+
         show_plan_update(plan, action=action, focus_index=focus_index)
 
     def on_status(self, message: str, level: str = "info") -> None:
@@ -99,19 +107,27 @@ class RichEventHandler:
         # же поток вывода, что шапки инструментов, иначе порядок строк в
         # scrollback зависит от того, кто раньше сбросит свой буфер.
         from agent.display import print_static
+
         print_static(f"  [{style}]{message}[/{style}]")
 
     def on_subagent_start(
-        self, index: int, total: int, mode: str, prompt: str,
+        self,
+        index: int,
+        total: int,
+        mode: str,
+        prompt: str,
         model_label: str = "",
     ) -> None:
         from agent.display import show_subagent_start
+
         show_subagent_start(index, total, mode, prompt, model_label=model_label)
 
     def on_subagent_status(self, index: int, message: str) -> None:
         from agent.display import show_subagent_status
+
         show_subagent_status(index, message)
 
     def on_subagent_done(self, index: int, result=None) -> None:
         from agent.display import show_subagent_done
+
         show_subagent_done(index, result)

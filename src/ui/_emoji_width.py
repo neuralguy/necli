@@ -24,6 +24,7 @@ lru_cache'и `get_character_cell_size` и `cached_cell_len`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 
@@ -33,28 +34,28 @@ logger = logging.getLogger(__name__)
 # Список не исчерпывающий, но покрывает все типичные emoji + symbols, видимые
 # в выводе CLI (✓ ✗ ✨ 🎯 🚀 📖 📝 🔧 ⏺ и т.п.).
 _EMOJI_RANGES: list[tuple[int, int]] = [
-    (0x203C, 0x203C),   # ‼
-    (0x2049, 0x2049),   # ⁉
-    (0x2122, 0x2122),   # ™
-    (0x2139, 0x2139),   # ℹ
-    (0x2194, 0x2199),   # ↔ ↕ ↖ ↗ ↘ ↙
-    (0x21A9, 0x21AA),   # ↩ ↪
-    (0x231A, 0x231B),   # ⌚ ⌛
-    (0x2328, 0x2328),   # ⌨
-    (0x23CF, 0x23CF),   # ⏏
-    (0x23E9, 0x23F3),   # ⏩ … ⏳
-    (0x23F8, 0x23FA),   # ⏸ ⏹ ⏺
-    (0x24C2, 0x24C2),   # Ⓜ
-    (0x25AA, 0x25AB),   # ▪ ▫
-    (0x25B6, 0x25B6),   # ▶
-    (0x25C0, 0x25C0),   # ◀
-    (0x25FB, 0x25FE),   # ◻ ◼ ◽ ◾
-    (0x2600, 0x27BF),   # Misc symbols, dingbats (✓ ✗ ✨ ❌ ❓ ➕ ➖ …)
-    (0x2934, 0x2935),   # ⤴ ⤵
-    (0x2B05, 0x2B07),   # ⬅ ⬆ ⬇
-    (0x2B1B, 0x2B1C),   # ⬛ ⬜
-    (0x2B50, 0x2B50),   # ⭐
-    (0x2B55, 0x2B55),   # ⭕
+    (0x203C, 0x203C),  # ‼
+    (0x2049, 0x2049),  # ⁉
+    (0x2122, 0x2122),  # ™
+    (0x2139, 0x2139),  # ℹ
+    (0x2194, 0x2199),  # ↔ ↕ ↖ ↗ ↘ ↙
+    (0x21A9, 0x21AA),  # ↩ ↪
+    (0x231A, 0x231B),  # ⌚ ⌛
+    (0x2328, 0x2328),  # ⌨
+    (0x23CF, 0x23CF),  # ⏏
+    (0x23E9, 0x23F3),  # ⏩ … ⏳
+    (0x23F8, 0x23FA),  # ⏸ ⏹ ⏺
+    (0x24C2, 0x24C2),  # Ⓜ
+    (0x25AA, 0x25AB),  # ▪ ▫
+    (0x25B6, 0x25B6),  # ▶
+    (0x25C0, 0x25C0),  # ◀
+    (0x25FB, 0x25FE),  # ◻ ◼ ◽ ◾
+    (0x2600, 0x27BF),  # Misc symbols, dingbats (✓ ✗ ✨ ❌ ❓ ➕ ➖ …)
+    (0x2934, 0x2935),  # ⤴ ⤵
+    (0x2B05, 0x2B07),  # ⬅ ⬆ ⬇
+    (0x2B1B, 0x2B1C),  # ⬛ ⬜
+    (0x2B50, 0x2B50),  # ⭐
+    (0x2B55, 0x2B55),  # ⭕
     (0x3030, 0x3030),
     (0x303D, 0x303D),
     (0x3297, 0x3297),
@@ -92,6 +93,7 @@ def _emoji_width_enabled() -> bool:
         return env == "1"
     try:
         from config.settings import get as cfg_get
+
         val = cfg_get("emoji_width", 0)
         return int(val) == 1
     except Exception:
@@ -118,19 +120,15 @@ def apply_emoji_width_patch() -> None:
         return orig_get_size(character, unicode_version)
 
     # Сбрасываем lru_cache на оригинале (он мог быть прогрет старыми значениями)
-    try:
+    with contextlib.suppress(AttributeError):
         orig_get_size.cache_clear()
-    except AttributeError:
-        pass
 
     rc.get_character_cell_size = patched_get_character_cell_size
 
     # cached_cell_len и cell_len используют get_character_cell_size через _cell_len
     # → достаточно очистить их lru_cache.
-    try:
+    with contextlib.suppress(AttributeError):
         rc.cached_cell_len.cache_clear()
-    except AttributeError:
-        pass
 
     _PATCHED = True
     logger.info("emoji_width patch applied: emoji counted as 1 cell")

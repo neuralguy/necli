@@ -73,22 +73,40 @@ async def params_interactive() -> None:
         effort = str(config.get("reasoning_effort", "") or "")
 
         items = [
-            {"label": _("params.temperature"), "hint": _("params.temp_hint"),
-             "badge": _fmt_temp(temp), "badge_style": "warning"},
-            {"label": _("params.max_tokens"), "hint": _("params.max_tokens_hint"),
-             "badge": _fmt_max_tokens(max_tok), "badge_style": "warning"},
-            {"label": _("params.reasoning_effort"),
-             "hint": _("params.reasoning_effort_hint"),
-             "badge": _fmt_reasoning_effort(effort), "badge_style": "warning"},
+            {
+                "label": _("params.temperature"),
+                "hint": _("params.temp_hint"),
+                "badge": _fmt_temp(temp),
+                "badge_style": "warning",
+                "action": True,
+            },
+            {
+                "label": _("params.max_tokens"),
+                "hint": _("params.max_tokens_hint"),
+                "badge": _fmt_max_tokens(max_tok),
+                "badge_style": "warning",
+                "action": True,
+            },
+            {
+                "label": _("params.reasoning_effort"),
+                "hint": _("params.reasoning_effort_hint"),
+                "badge": _fmt_reasoning_effort(effort),
+                "badge_style": "warning",
+                "action": True,
+            },
             {"label": _("common.back")},
         ]
         choice = await card_menu(
             items,
             title=_("params.title"),
-            facts=[facts_line(_("params.header"),
-                              f"temperature={_fmt_temp(temp)}",
-                              f"max_tokens={_fmt_max_tokens(max_tok)}",
-                              f"effort={_fmt_reasoning_effort(effort)}")],
+            facts=[
+                facts_line(
+                    _("params.header"),
+                    f"temperature={_fmt_temp(temp)}",
+                    f"max_tokens={_fmt_max_tokens(max_tok)}",
+                    f"effort={_fmt_reasoning_effort(effort)}",
+                )
+            ],
         )
         if choice is None or choice == 3:
             return
@@ -126,25 +144,44 @@ async def params_interactive() -> None:
         if choice == 2:
             vals = ["", "low", "medium", "high", "xhigh", "max"]
             items_effort = [
-                {"label": _("params.effort_default"), "hint": _("params.effort_default_hint"),
-                 "active": effort == ""},
-                {"label": _("params.effort_low"), "hint": _("params.effort_low_hint"),
-                 "active": effort == "low"},
-                {"label": _("params.effort_medium"), "hint": _("params.effort_medium_hint"),
-                 "active": effort == "medium"},
-                {"label": _("params.effort_high"), "hint": _("params.effort_high_hint"),
-                 "active": effort == "high"},
-                {"label": _("params.effort_xhigh"), "hint": _("params.effort_xhigh_hint"),
-                 "active": effort == "xhigh"},
-                {"label": _("params.effort_max"), "hint": _("params.effort_max_hint"),
-                 "active": effort == "max"},
+                {
+                    "label": _("params.effort_default"),
+                    "hint": _("params.effort_default_hint"),
+                    "active": effort == "",
+                },
+                {
+                    "label": _("params.effort_low"),
+                    "hint": _("params.effort_low_hint"),
+                    "active": effort == "low",
+                },
+                {
+                    "label": _("params.effort_medium"),
+                    "hint": _("params.effort_medium_hint"),
+                    "active": effort == "medium",
+                },
+                {
+                    "label": _("params.effort_high"),
+                    "hint": _("params.effort_high_hint"),
+                    "active": effort == "high",
+                },
+                {
+                    "label": _("params.effort_xhigh"),
+                    "hint": _("params.effort_xhigh_hint"),
+                    "active": effort == "xhigh",
+                },
+                {
+                    "label": _("params.effort_max"),
+                    "hint": _("params.effort_max_hint"),
+                    "active": effort == "max",
+                },
                 {"label": _("common.back")},
             ]
             # «Назад» — последний пункт (6), а не 4: раньше здесь стояла
             # четвёрка, из-за чего xhigh был недостижим, а Back падал в
             # IndexError по vals[6].
             sub_choice = await card_menu(
-                items_effort, title=_("params.reasoning_effort_title"),
+                items_effort,
+                title=_("params.reasoning_effort_title"),
                 current=vals.index(effort) if effort in vals else 0,
             )
             if sub_choice is None or sub_choice == 6:

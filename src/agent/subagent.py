@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from agent.subagent_render import SubagentBuffer
+from config.i18n import format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SubagentTask:
     """Одна задача для субагента."""
+
     prompt: str
     mode: str = "agent"
     model: str | None = None
@@ -116,7 +118,9 @@ class SubagentOrchestrator:
                 _fail_buffers(self._buffers, f"Git setup failed: {err_msg}")
                 return [
                     SubagentResult(
-                        task_index=i, mode=t.mode, response="",
+                        task_index=i,
+                        mode=t.mode,
+                        response="",
                         error=f"Git setup failed: {err_msg}",
                     )
                     for i, t in enumerate(tasks)
@@ -131,15 +135,19 @@ class SubagentOrchestrator:
         # Shared scratchpad: общий файл для всех субагентов прогона.
         # Лежит в .data/subagents/<run-id>/shared.md, на уровень выше worktree'ов.
         import os
+
         scratch_dir = os.path.join(
-            self._working_dir, ".data", "subagents", run_id,
+            self._working_dir,
+            ".data",
+            "subagents",
+            run_id,
         )
         self.run_dir = scratch_dir
         try:
             os.makedirs(scratch_dir, exist_ok=True)
             scratch_path = os.path.join(scratch_dir, "shared.md")
-            if not os.path.exists(scratch_path):  # noqa: ASYNC240
-                with open(scratch_path, "w", encoding="utf-8") as fh:  # noqa: ASYNC230
+            if not os.path.exists(scratch_path):
+                with open(scratch_path, "w", encoding="utf-8") as fh:
                     fh.write(
                         "# Shared scratchpad\n\n"
                         "Subagents of this run append contracts/interfaces/decisions here.\n\n"
@@ -153,20 +161,28 @@ class SubagentOrchestrator:
             try:
                 for i, _ in enumerate(tasks):
                     self._on_status(i, "Preparing worktree...")
-                    handles.append(create_worktree(
-                        self._working_dir, i, run_id, base_sha,
-                    ))
+                    handles.append(
+                        create_worktree(
+                            self._working_dir,
+                            i,
+                            run_id,
+                            base_sha,
+                        )
+                    )
             except GitError as e:
                 err_msg = str(e)
                 logger.error("subagent_git: create_worktree failed: %s", err_msg)
                 # сносим то, что успели создать
                 from agent.subagent_git import cleanup_worktree
+
                 for h in handles:
                     cleanup_worktree(self._working_dir, h)
                 _fail_buffers(self._buffers, f"Worktree setup failed: {err_msg}")
                 return [
                     SubagentResult(
-                        task_index=i, mode=t.mode, response="",
+                        task_index=i,
+                        mode=t.mode,
+                        response="",
                         error=f"Worktree setup failed: {err_msg}",
                     )
                     for i, t in enumerate(tasks)
@@ -192,21 +208,21 @@ class SubagentOrchestrator:
     async def _gather_proof(self) -> str:
         import os
         from datetime import datetime
-        pwd_val = os.path.abspath(self._working_dir)  # noqa: ASYNC240
+
+        pwd_val = os.path.abspath(self._working_dir)
         date_val = datetime.now().strftime("%a %b %d %H:%M:%S %Y")
-        return (
-            f"Working directory: {pwd_val}\n"
-            f"Today's date: {date_val}"
-        )
+        return f"Working directory: {pwd_val}\nToday's date: {date_val}"
 
 
 def format_subagent_results(
-    results: list[SubagentResult], run_dir: str | None = None,
+    results: list[SubagentResult],
+    run_dir: str | None = None,
 ) -> str:
     """Форматирует результаты для главного агента. Включает git-метаданные."""
     parts = []
     if run_dir:
         import os
+
         parts.append(
             "(incremental progress log of this run: "
             f"{os.path.join(run_dir, 'progress.md')} — each subagent was "
@@ -227,7 +243,7 @@ def format_subagent_results(
                     if r.files_changed:
                         body.append(f"files ({len(r.files_changed)}):")
                         for f in r.files_changed[:30]:
-                            body.append(f"  {f}")  # noqa: PERF401
+                            body.append(f"  {f}")
                     if r.diff_stat:
                         body.append("")
                         body.append(r.diff_stat)
@@ -236,7 +252,7 @@ def format_subagent_results(
             parts.append("\n".join(body))
             continue
 
-        stats = f"({r.iterations} iterations, {r.elapsed:.1f}s)"
+        stats = f"({r.iterations} iterations, {format_duration(r.elapsed, decimal_seconds=True)})"
         body = [f"{header} {stats}", r.response]
 
         if r.branch:
@@ -246,7 +262,7 @@ def format_subagent_results(
                 if r.files_changed:
                     git_lines.append(f"files ({len(r.files_changed)}):")
                     for f in r.files_changed[:30]:
-                        git_lines.append(f"  {f}")  # noqa: PERF401
+                        git_lines.append(f"  {f}")
                     if len(r.files_changed) > 30:
                         git_lines.append(f"  ... +{len(r.files_changed) - 30} more")
                 if r.diff_stat:
@@ -255,21 +271,17 @@ def format_subagent_results(
                 git_lines.append("")
                 base_short = r.commit_sha[:12] if r.commit_sha else r.branch
                 git_lines.append(
-                    f"To merge: git merge --no-ff {r.branch}    "
-                    f"(or: git cherry-pick {base_short})"
+                    f"To merge: git merge --no-ff {r.branch}    (or: git cherry-pick {base_short})"
                 )
                 # diff именно от base_sha, а не от ветки 'main' — у юзера
                 # может быть другая активная ветка (rework/feature/...).
                 if r.commit_sha:
                     git_lines.append(
-                        f"To inspect: git show {base_short}    "
-                        f"git log -p {r.branch} -1"
+                        f"To inspect: git show {base_short}    git log -p {r.branch} -1"
                     )
                 else:
                     git_lines.append(f"To inspect: git log {r.branch}")
-                git_lines.append(
-                    f"To discard: git branch -D {r.branch}"
-                )
+                git_lines.append(f"To discard: git branch -D {r.branch}")
             else:
                 git_lines.append("no changes (nothing to merge)")
             body.extend(git_lines)

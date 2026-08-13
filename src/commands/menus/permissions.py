@@ -50,8 +50,12 @@ async def permissions_interactive():
         tools_list = [tool for tool in list_tools() if tool != "poll"]
         items = [_tool_item(tool) for tool in tools_list]
         items.append({"label": _("perms.allow_all_title"), "skip": True})
-        items.append({"label": _("perms.allow_all"), "hint": _("perms.allow_all_hint")})
-        items.append({"label": _("perms.reset_all"), "hint": _("perms.reset_all_hint")})
+        items.append(
+            {"label": _("perms.allow_all"), "hint": _("perms.allow_all_hint"), "action": True}
+        )
+        items.append(
+            {"label": _("perms.reset_all"), "hint": _("perms.reset_all_hint"), "action": True}
+        )
 
         allow_idx = len(items) - 2
         reset_idx = len(items) - 1
@@ -63,8 +67,14 @@ async def permissions_interactive():
         choice = await card_menu(
             items,
             title=_("perms.title"),
-            facts=[facts_line(f"{counts['allow']} allow", f"{counts['deny']} deny",
-                              f"{counts['ask']} ask", f"{len(tools_list)} tools")],
+            facts=[
+                facts_line(
+                    f"{counts['allow']} allow",
+                    f"{counts['deny']} deny",
+                    f"{counts['ask']} ask",
+                    f"{len(tools_list)} tools",
+                )
+            ],
         )
         if choice is None:
             return
@@ -99,16 +109,32 @@ async def _tool_detail_menu(tool: str):
     scope = get_scope(tool)
 
     items = [
-        {"label": _("perms.allow_session_long"), "hint": _("perms.allow_session_hint_short"),
-         "icon": "✓", "icon_style": "success"},
-        {"label": _("perms.allow_process_long"), "hint": _("perms.allow_process_hint_short"),
-         "icon": "✓", "icon_style": "success"},
-        {"label": _("perms.allow_forever_long"), "hint": _("perms.allow_forever_hint_short"),
-         "icon": "✓", "icon_style": "success"},
+        {
+            "label": _("perms.allow_session_long"),
+            "hint": _("perms.allow_session_hint_short"),
+            "icon": "✓",
+            "icon_style": "success",
+        },
+        {
+            "label": _("perms.allow_process_long"),
+            "hint": _("perms.allow_process_hint_short"),
+            "icon": "✓",
+            "icon_style": "success",
+        },
+        {
+            "label": _("perms.allow_forever_long"),
+            "hint": _("perms.allow_forever_hint_short"),
+            "icon": "✓",
+            "icon_style": "success",
+        },
         {"label": _("perms.deny_session_long"), "icon": "✗", "icon_style": "error"},
         {"label": _("perms.deny_forever_long"), "icon": "✗", "icon_style": "error"},
-        {"label": _("perms.reset_one"), "hint": _("perms.reset_one_hint"),
-         "icon": "·", "icon_style": "dim"},
+        {
+            "label": _("perms.reset_one"),
+            "hint": _("perms.reset_one_hint"),
+            "icon": "·",
+            "icon_style": "dim",
+        },
         {"label": _("common.back")},
     ]
     c = await card_menu(
@@ -116,8 +142,7 @@ async def _tool_detail_menu(tool: str):
         title=tool,
         status=dec,
         status_style=_DECISION_STYLE.get(dec, "dim"),
-        facts=[facts_line(_("perms.detail_title", name=tool),
-                          _scope_hint(scope) if scope else "")],
+        facts=[facts_line(_("perms.detail_title", name=tool), _scope_hint(scope) if scope else "")],
     )
     if c is None or c == 6:
         return

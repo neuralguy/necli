@@ -21,9 +21,11 @@ from enum import Enum
 
 from rich.text import Text
 
+from config._atomic import atomic_write_text
 from config.themes import t
 
 logger = logging.getLogger(__name__)
+
 
 class StepStatus(str, Enum):
     PENDING = "pending"
@@ -74,6 +76,7 @@ def _normalize_status(s: str) -> StepStatus | None:
 @dataclass
 class PlanStep:
     """Один шаг плана."""
+
     title: str
     status: StepStatus = StepStatus.PENDING
     notes: str = ""
@@ -100,6 +103,7 @@ class PlanStep:
 @dataclass
 class Plan:
     """План выполнения задачи."""
+
     goal: str
     steps: list[PlanStep] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
@@ -118,7 +122,9 @@ class Plan:
         self.updated_at = time.time()
 
     def update_step(
-        self, index: int, status: str | None = None,
+        self,
+        index: int,
+        status: str | None = None,
         notes: str | None = None,
     ):
         """Обновить статус/заметки шага по индексу."""
@@ -157,10 +163,7 @@ class Plan:
 
     @property
     def done_count(self) -> int:
-        return sum(
-            1 for s in self.steps
-            if s.status in (StepStatus.DONE, StepStatus.SKIPPED)
-        )
+        return sum(1 for s in self.steps if s.status in (StepStatus.DONE, StepStatus.SKIPPED))
 
     @property
     def current_step(self) -> PlanStep | None:
@@ -228,19 +231,20 @@ class Plan:
 
         return "\n".join(lines)
 
+
 # Двоеточий допускаем 2-3 (`::call`/`:::call`, `call::`/`call:::`) — модель часто
 # роняет одно. Открытие якорим к началу строки, чтобы два двоеточия не задели
 # мид-строчный код. Согласовано с tools/call_parser._OPEN_MARKER/_CLOSE_MARKER.
 _PLAN_BLOCK_RE = re.compile(
-    r'^[ \t]*:{2,3}call[ \t]+plan[^\n]*\n'
-    r'(?P<body>.*?)'
-    r'(?:\n|^)call:{2,3}[ \t]*(?:\n|$)',
+    r"^[ \t]*:{2,3}call[ \t]+plan[^\n]*\n"
+    r"(?P<body>.*?)"
+    r"(?:\n|^)call:{2,3}[ \t]*(?:\n|$)",
     re.DOTALL | re.MULTILINE,
 )
 _PLAN_STRIP_RE = re.compile(
-    r'^[ \t]*:{2,3}call[ \t]+plan[^\n]*\n'
-    r'.*?'
-    r'(?:\n|^)call:{2,3}[ \t]*(?:\n|$)',
+    r"^[ \t]*:{2,3}call[ \t]+plan[^\n]*\n"
+    r".*?"
+    r"(?:\n|^)call:{2,3}[ \t]*(?:\n|$)",
     re.DOTALL | re.MULTILINE,
 )
 # Литеральная строка прогресса плана, которую модель эхо-повторяет из
@@ -248,20 +252,21 @@ _PLAN_STRIP_RE = re.compile(
 # `Plan [N/M] — complete.`). Срезаем из отображаемого текста, иначе
 # последнее сообщение агента дублирует строку плана.
 _PLAN_PROGRESS_LINE_RE = re.compile(
-    r'(?m)^[ \t]*Plan \[\d+/\d+\](?:[ \t]+—[ \t]+complete\.)?[ \t]*$\n?',
+    r"(?m)^[ \t]*Plan \[\d+/\d+\](?:[ \t]+—[ \t]+complete\.)?[ \t]*$\n?",
 )
 
 
 @dataclass
 class PlanCommand:
     """Распарсенная команда планирования."""
+
     action: str  # create | update | add_step | remove_step
     data: dict
 
 
 def _parse_plan_body(match):
     """Parse JSON from a :::call plan ... call::: block body."""
-    body = match.group('body').strip()
+    body = match.group("body").strip()
     if not body:
         return None
     try:
@@ -269,7 +274,7 @@ def _parse_plan_body(match):
     except (json.JSONDecodeError, ValueError):
         try:
             fixed = body.replace(chr(39), chr(34))
-            fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+            fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
             data = json.loads(fixed)
         except (json.JSONDecodeError, ValueError):
             return None
@@ -286,8 +291,9 @@ def _parse_plan_body(match):
             return None
         steps = data.get("steps")
         if not isinstance(steps, list) or len(steps) < 3:
-            from logger import logger
-            logger.warning(
+            from logger import logger as structured_logger
+
+            structured_logger.warning(
                 "plan create rejected: steps must be a list of 3+ items, got {} (raw_preview={!r})",
                 len(steps) if isinstance(steps, list) else type(steps).__name__,
                 match.group(0)[:200],
@@ -339,9 +345,9 @@ def strip_plan_commands(text: str) -> str:
     """Убирает :::call plan ... call::: блоки из текста."""
     if not text:
         return ""
-    result = _PLAN_STRIP_RE.sub('', text)
-    result = _PLAN_PROGRESS_LINE_RE.sub('', result)
-    result = re.sub(r'\n{3,}', '\n\n', result)
+    result = _PLAN_STRIP_RE.sub("", text)
+    result = _PLAN_PROGRESS_LINE_RE.sub("", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
 
 
@@ -368,8 +374,7 @@ def _resolve_step_index(plan: Plan, data: dict) -> int | None:
     if not plan.steps:
         return None
 
-    raw = _first_present(data, "step", "index", "step_index",
-                          "step_number", "n")
+    raw = _first_present(data, "step", "index", "step_index", "step_number", "n")
     if raw is not None:
         try:
             idx = int(raw)
@@ -478,7 +483,8 @@ def apply_plan_commands(
                     else:
                         logger.warning(
                             "plan update: step not resolved, data=%r, steps=%d",
-                            cmd.data, len(plan.steps),
+                            cmd.data,
+                            len(plan.steps),
                         )
 
             elif cmd.action == "add_step":
@@ -585,6 +591,7 @@ def render_plan_panel(
     subtitle = _truncate_goal(plan.goal)
 
     from rich.console import Group as RGroup
+
     header = Text()
     header.append(title, style=f"bold {border_style}")
     if subtitle:
@@ -596,7 +603,7 @@ def render_plan_panel(
 def _truncate_goal(goal: str, max_len: int = 60) -> str:
     goal = goal.replace("\n", " ").strip()
     if len(goal) > max_len:
-        return goal[:max_len - 1] + "…"
+        return goal[: max_len - 1] + "…"
     return goal
 
 
@@ -635,8 +642,7 @@ def save_plan_file(plan: Plan, plan_dir: str) -> None:
         return
     path = _plan_path(plan_dir)
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(_render_plan_markdown(plan))
+        atomic_write_text(path, _render_plan_markdown(plan))
     except OSError as e:
         logger.warning("Failed to save %s: %s", path, e)
 
@@ -662,7 +668,7 @@ def _parse_plan_markdown(text: str) -> Plan | None:
     goal = ""
     for line in lines:
         if line.startswith("# Plan: "):
-            goal = line[len("# Plan: "):].strip()
+            goal = line[len("# Plan: ") :].strip()
             break
     if not goal:
         return None
@@ -707,4 +713,3 @@ def delete_plan_file(plan_dir: str) -> None:
         pass
     except OSError as e:
         logger.warning("Failed to delete %s: %s", path, e)
-

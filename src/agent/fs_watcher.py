@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,8 +20,10 @@ _MAX_BLOCK_ENTRIES = 50
 
 # Throttle: не делать новый снимок чаще чем раз в N секунд per-workdir.
 _MIN_SNAPSHOT_INTERVAL_SEC = 2.0
+_SNAPSHOT_CACHE_MAX_ENTRIES = 32
 _LAST_SNAPSHOT_AT: dict[str, float] = {}
 _LAST_SNAPSHOT: dict[str, dict[str, tuple[float, int]]] = {}
+_SNAPSHOT_CACHE_LOCK = threading.Lock()
 
 
 def take_snapshot_throttled(working_dir: str) -> dict[str, tuple[float, int]]:
@@ -28,14 +32,20 @@ def take_snapshot_throttled(working_dir: str) -> dict[str, tuple[float, int]]:
     Если с прошлого снимка прошло меньше _MIN_SNAPSHOT_INTERVAL_SEC секунд —
     возвращается прошлый снимок. Иначе делается новый и кладётся в кэш.
     """
-    import time as _t
-    now = _t.monotonic()
-    last_at = _LAST_SNAPSHOT_AT.get(working_dir, 0.0)
-    if (now - last_at) < _MIN_SNAPSHOT_INTERVAL_SEC and working_dir in _LAST_SNAPSHOT:
-        return _LAST_SNAPSHOT[working_dir]
+    key = os.path.abspath(working_dir)
+    now = time.monotonic()
+    with _SNAPSHOT_CACHE_LOCK:
+        last_at = _LAST_SNAPSHOT_AT.get(key, 0.0)
+        if (now - last_at) < _MIN_SNAPSHOT_INTERVAL_SEC and key in _LAST_SNAPSHOT:
+            return _LAST_SNAPSHOT[key]
     snap = take_snapshot(working_dir)
-    _LAST_SNAPSHOT[working_dir] = snap
-    _LAST_SNAPSHOT_AT[working_dir] = now
+    with _SNAPSHOT_CACHE_LOCK:
+        _LAST_SNAPSHOT[key] = snap
+        _LAST_SNAPSHOT_AT[key] = time.monotonic()
+        while len(_LAST_SNAPSHOT) > _SNAPSHOT_CACHE_MAX_ENTRIES:
+            oldest = min(_LAST_SNAPSHOT_AT, key=_LAST_SNAPSHOT_AT.get)
+            _LAST_SNAPSHOT.pop(oldest, None)
+            _LAST_SNAPSHOT_AT.pop(oldest, None)
     return snap
 
 
@@ -44,42 +54,46 @@ def take_snapshot(working_dir: str) -> dict[str, tuple[float, int]]:
 
     Игнорирует виртуальные/кэш-директории и временные файлы.
     """
-    root = Path(working_dir)
-    if not root.is_dir():
-        return {}
+    from logger import debug, log_span
 
-    snap: dict[str, tuple[float, int]] = {}
-    count = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not is_ignored_dir(d)]
-        for fname in filenames:
-            if any(fname.endswith(s) for s in _IGNORE_SUFFIXES):
-                continue
-            fpath = Path(dirpath) / fname
-            try:
-                st = fpath.stat()
-            except (OSError, PermissionError):
-                continue
-            try:
-                rel = str(fpath.relative_to(root))
-            except ValueError:
-                rel = str(fpath)
-            snap[rel] = (st.st_mtime, st.st_size)
-            count += 1
-            if count >= _MAX_FILES:
-                logger.warning(
-                    "fs_watcher: snapshot cap hit ({} files), truncating",
-                    _MAX_FILES,
-                )
-                return snap
-    return snap
+    with log_span("fs.snapshot", working_dir=working_dir):
+        root = Path(working_dir)
+        if not root.is_dir():
+            return {}
+
+        snap: dict[str, tuple[float, int]] = {}
+        count = 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not is_ignored_dir(d)]
+            for fname in filenames:
+                if any(fname.endswith(s) for s in _IGNORE_SUFFIXES):
+                    continue
+                fpath = Path(dirpath) / fname
+                try:
+                    st = fpath.stat()
+                except (OSError, PermissionError):
+                    continue
+                try:
+                    rel = str(fpath.relative_to(root))
+                except ValueError:
+                    rel = str(fpath)
+                snap[rel] = (st.st_mtime, st.st_size)
+                count += 1
+                if count >= _MAX_FILES:
+                    logger.warning(
+                        "fs_watcher: snapshot cap hit ({} files), truncating",
+                        _MAX_FILES,
+                    )
+                    return snap
+        debug("fs.snapshot.complete", file_count=len(snap))
+        return snap
 
 
 @dataclass
 class ExternalChange:
-    op: str         # "created" | "modified" | "deleted"
+    op: str  # "created" | "modified" | "deleted"
     path: str
-    size: int = 0   # для created/modified — новый размер
+    size: int = 0  # для created/modified — новый размер
 
 
 def _normalize_own(p: str) -> str:

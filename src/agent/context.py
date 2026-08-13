@@ -12,6 +12,7 @@ from planner import Plan
 
 if TYPE_CHECKING:
     from agent.events import AgentEventHandler
+    from agent.telemetry import TurnStats
 
 
 @dataclass
@@ -28,6 +29,7 @@ class AgentContext:
     step_tracker: StepTracker = field(default_factory=StepTracker)
     last_fs_snapshot: dict | None = None
     silent_console: bool = False
+    suppress_project_stats: bool = False
     render_store: RenderStore = field(default_factory=RenderStore)
     turn_start_time: float = field(default_factory=time.monotonic)
     working_round: object | None = None
@@ -36,6 +38,9 @@ class AgentContext:
     #: чтобы статус-панель над вводом показывала свежие usage и git. Ставится
     #: интерактивным циклом; вне интерактива (headless) остаётся None.
     refresh_status: Callable[[], None] | None = None
+    tool_cancel_scope: object | None = None
+    memory_query: str = ""
+    _turn_stats: "TurnStats | None" = None
 
     @property
     def effective_plan_dir(self) -> str:
@@ -45,4 +50,3 @@ class AgentContext:
         self.interrupted = False
         self.hard_interrupted = False
         self.interrupt_level = 0
-

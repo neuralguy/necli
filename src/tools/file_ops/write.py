@@ -3,6 +3,7 @@
 import base64
 import re
 
+from config._atomic import atomic_write_text
 from logger import logger
 from tools._paths import clean_path, resolve_path
 from tools.file_ops.read import invalidate_read_cache
@@ -79,17 +80,24 @@ def create_file(call: ToolCall) -> ToolResult:
         existed = path.exists()
         old_size = path.stat().st_size if existed else 0
 
-        path.write_text(content, encoding=encoding)
+        if existed:
+            atomic_write_text(path, content, encoding=encoding)
+        else:
+            # New files keep pathlib/open's normal umask-derived permissions;
+            # atomic temp files intentionally default to 0600.
+            path.write_text(content, encoding=encoding)
         invalidate_read_cache(path)
 
         new_size = path.stat().st_size
-        lines = content.count("\n") + (
-            1 if content and not content.endswith("\n") else 0
-        )
+        lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
 
         logger.info(
             "create_file: {} ({}, {}→{}b, {} lines)",
-            path_str, "overwrite" if existed else "create", old_size, new_size, lines,
+            path_str,
+            "overwrite" if existed else "create",
+            old_size,
+            new_size,
+            lines,
         )
 
         action = "Overwritten" if existed else "Created"

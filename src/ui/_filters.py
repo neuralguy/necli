@@ -3,14 +3,43 @@
 import config
 
 # Суффиксы, которые всегда игнорируются (объединение из completer + file_context)
-_IGNORE_SUFFIXES = frozenset({
-    ".pyc", ".pyo", ".so", ".dylib", ".dll",
-    ".exe", ".o", ".obj", ".class", ".jar",
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
-    ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
-    ".woff", ".woff2", ".ttf", ".eot",
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
-})
+_IGNORE_SUFFIXES = frozenset(
+    {
+        ".pyc",
+        ".pyo",
+        ".so",
+        ".dylib",
+        ".dll",
+        ".exe",
+        ".o",
+        ".obj",
+        ".class",
+        ".jar",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
+        ".webp",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".7z",
+        ".rar",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".ppt",
+        ".pptx",
+        ".xls",
+        ".xlsx",
+    }
+)
 
 
 def should_ignore(name: str, is_dir: bool) -> bool:

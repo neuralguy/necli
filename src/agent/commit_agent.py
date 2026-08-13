@@ -12,7 +12,10 @@ on_status (печатаются над активным prompt'ом благод
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import shlex
+import time
 from collections.abc import Callable
 
 import tools
@@ -24,6 +27,7 @@ from apis.agent_adapter import (
     ApiSession,
     _content_to_text,
     _ensure_tool_call_ids,
+    close_pending_native_tool_calls,
 )
 from apis.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from apis.registry import get_provider
@@ -34,6 +38,31 @@ from tools._paths import use_working_dir
 from tools.registry import execute_call
 
 logger = logging.getLogger(__name__)
+
+_MAX_COMMIT_AGENT_ITERATIONS = 40
+_ALLOWED_GIT_SUBCOMMANDS = {"add", "commit", "diff", "log", "rev-parse", "status"}
+_SHELL_OPERATOR_TOKENS = {";", "&", "&&", "|", "||", "<", ">", "<<", ">>"}
+
+
+def _is_allowed_git_command(command: str) -> bool:
+    """Commit-agent shell guard: one whitelisted git command, no shell composition."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    if len(tokens) < 2 or tokens[0] != "git" or tokens[1] not in _ALLOWED_GIT_SUBCOMMANDS:
+        return False
+    if any(token in _SHELL_OPERATOR_TOKENS for token in tokens):
+        return False
+    if tokens[1] == "commit" and "--amend" in tokens[2:]:
+        return False
+    # Command substitution/backticks can execute arbitrary programs even when
+    # the apparent command starts with git. Quoted '$(' is harmless but is not
+    # needed by this narrowly-scoped agent, so fail closed.
+    return "$(" not in command and "`" not in command and "\n" not in command
+
 
 _COMMIT_MODE_BLOCK = (
     "\n\n━━━ COMMIT AGENT MODE ━━━\n"
@@ -49,7 +78,7 @@ _COMMIT_MODE_BLOCK = (
     "(specific paths, not blindly `-A` if changes are mixed).\n"
     "3. Write clear, concise commit messages (imperative mood, summary line "
     "<=72 chars, optional body explaining WHY).\n"
-    "4. Commit each group with `git commit -m \"...\"`.\n\n"
+    '4. Commit each group with `git commit -m "..."`.\n\n'
     "HARD RULES:\n"
     "- Use ONLY git via the shell tool. Do NOT edit/create/delete project files, "
     "do NOT refactor, do NOT run tests.\n"
@@ -73,8 +102,9 @@ def _build_task_prompt(hint: str) -> str:
     return base
 
 
-async def _call_model(session: ApiSession, provider_id: str, model_id: str,
-                      use_native: bool, schemas: list[dict]) -> tuple[str, list[dict]]:
+async def _call_model(
+    session: ApiSession, provider_id: str, model_id: str, use_native: bool, schemas: list[dict]
+) -> tuple[str, list[dict]]:
     llm = get_provider(provider_id, model_id)
     want_tools = use_native and bool(schemas)
     bound_ok = False
@@ -106,39 +136,43 @@ def _execute(calls: list, working_dir: str) -> list[tools.ToolResult]:
     results = []
     with use_working_dir(working_dir):
         for call in calls:
-            if call.tool_name != "shell":
-                results.append(tools.ToolResult(
-                    name=call.tool_name,
-                    status="error",
-                    output=(
-                        f"Tool '{call.tool_name}' is not available to the commit agent. "
-                        "Use only the shell tool with git commands."
-                    ),
-                    exit_code=1,
-                    command=call.command,
-                ))
+            if call.tool_name != "shell" or not _is_allowed_git_command(call.command):
+                results.append(
+                    tools.ToolResult(
+                        name=call.tool_name,
+                        status="error",
+                        output=(
+                            "Commit agent is restricted to one git command per call and these "
+                            f"subcommands only: {', '.join(sorted(_ALLOWED_GIT_SUBCOMMANDS))}."
+                        ),
+                        exit_code=1,
+                        command=call.command,
+                    )
+                )
                 continue
             try:
                 r = execute_call(call)
             except Exception as e:
                 logger.error("commit-agent tool %s crashed: %s", call.tool_name, e, exc_info=True)
                 r = tools.ToolResult(
-                    name=call.tool_name, status="error",
+                    name=call.tool_name,
+                    status="error",
                     output=f"Tool crashed: {type(e).__name__}: {e}",
-                    exit_code=1, command=call.command,
+                    exit_code=1,
+                    command=call.command,
                 )
             results.append(r)
     return results
 
 
 def _truncate(text: str, limit: int = 20000) -> str:
-    if len(text) <= limit:
-        return text
-    half = limit // 2
-    return text[:half] + f"\n... [{len(text)} chars, truncated] ...\n" + text[-half:]
+    """Обрезает длинный текст, сохраняя начало и конец (единый формат)."""
+    from tools.text_utils import truncate_middle
+
+    return truncate_middle(text, limit)
 
 
-async def run_commit_agent(
+async def _run_commit_agent_impl(
     provider_id: str,
     model_id: str,
     working_dir: str,
@@ -146,6 +180,7 @@ async def run_commit_agent(
     on_status: Callable[[str], None] | None = None,
 ) -> str:
     """Запускает фоновый commit-агентный цикл. Возвращает финальный текст."""
+
     def _status(msg: str) -> None:
         if on_status:
             try:
@@ -153,21 +188,32 @@ async def run_commit_agent(
             except Exception:
                 logger.debug("commit-agent on_status failed", exc_info=True)
 
-    logger.info("commit-agent start: provider=%s model=%s wd=%s", provider_id, model_id, working_dir)
+    from logger import bind, info
+
+    bind(subagent="commit-agent")
+    info("commit_agent.start", provider=provider_id, model=model_id, working_dir=working_dir)
+    start_time = time.monotonic()
+
+    logger.info(
+        "commit-agent start: provider=%s model=%s wd=%s", provider_id, model_id, working_dir
+    )
     session = ApiSession(provider_id, model_id)
     use_native = bool(getattr(session, "use_native_tools", False))
 
     proof = await gather_proof(working_dir)
-    system = build_system_prompt(
-        proof=proof, mode="agent", working_dir=working_dir,
-        think_enabled=False, native_tools=use_native,
-    ) + _COMMIT_MODE_BLOCK
+    system = (
+        build_system_prompt(
+            proof=proof,
+            mode="agent",
+            working_dir=working_dir,
+            think_enabled=False,
+            native_tools=use_native,
+        )
+        + _COMMIT_MODE_BLOCK
+    )
 
     # Только shell нужен commit-агенту.
-    schemas = [
-        s for s in get_tool_schemas("agent")
-        if s.get("function", {}).get("name") == "shell"
-    ]
+    schemas = [s for s in get_tool_schemas("agent") if s.get("function", {}).get("name") == "shell"]
 
     session.messages.append(SystemMessage(content=system))
     session.messages.append(HumanMessage(content=_build_task_prompt(hint)))
@@ -175,13 +221,15 @@ async def run_commit_agent(
     raw_text = ""
     last_tool_name: str | None = None
     iteration = 0
-    while True:
+    while iteration < _MAX_COMMIT_AGENT_ITERATIONS:
         iteration += 1
         _status(f"iteration {iteration}")
-        raw_text, native_calls = await _call_model(session, provider_id, model_id, use_native, schemas)
+        raw_text, native_calls = await _call_model(
+            session, provider_id, model_id, use_native, schemas
+        )
         raw_text = sanitize_response(raw_text)
 
-        kwargs = {"content": raw_text}
+        kwargs: dict[str, object] = {"content": raw_text}
         if native_calls and use_native:
             kwargs["tool_calls"] = native_calls
         session.messages.append(AIMessage(**kwargs))
@@ -194,9 +242,12 @@ async def run_commit_agent(
 
         repeat_tool_notice, last_tool_name = build_repeat_tool_notice(last_tool_name, calls)
         if not calls:
+            info("commit_agent.end", iterations=iteration, duration=time.monotonic() - start_time)
             return strip_tool_calls(raw_text).strip()
 
-        results = _execute(calls, working_dir)
+        # execute_call(shell) is synchronous and may block up to the shell
+        # timeout. Keep the background commit agent genuinely off the UI loop.
+        results = await asyncio.to_thread(_execute, calls, working_dir)
 
         if native_calls:
             by_name: dict = {}
@@ -209,9 +260,13 @@ async def run_commit_agent(
                 content = _truncate(r.output or "") if r else f"No result for {name}."
                 if r and r.status == "error":
                     content = f"[error exit={r.exit_code}]\n{content}"
-                session.messages.append(ToolMessage(
-                    content=content, tool_call_id=tc.get("id") or "", name=name,
-                ))
+                session.messages.append(
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=tc.get("id") or "",
+                        name=name,
+                    )
+                )
             if repeat_tool_notice:
                 session.messages.append(HumanMessage(content=repeat_tool_notice))
         else:
@@ -224,3 +279,38 @@ async def run_commit_agent(
             if repeat_tool_notice:
                 result_msg += "\n\n" + repeat_tool_notice
             session.messages.append(HumanMessage(content=result_msg))
+
+    logger.warning("commit-agent stopped after %s iterations", _MAX_COMMIT_AGENT_ITERATIONS)
+    return f"[Commit agent stopped after {_MAX_COMMIT_AGENT_ITERATIONS} iterations]"
+
+
+async def run_commit_agent(
+    provider_id: str,
+    model_id: str,
+    working_dir: str,
+    hint: str = "",
+    on_status: Callable[[str], None] | None = None,
+) -> str:
+    try:
+        return await _run_commit_agent_impl(
+            provider_id,
+            model_id,
+            working_dir,
+            hint=hint,
+            on_status=on_status,
+        )
+    except asyncio.CancelledError:
+        try:
+            close_pending_native_tool_calls()
+        except Exception:
+            logger.debug("commit-agent: close pending native calls failed", exc_info=True)
+        # Cancellation is control flow. Swallowing it makes shutdown believe the
+        # task completed normally and can leave callers waiting on owned work.
+        raise
+    finally:
+        try:
+            from logger import unbind
+
+            unbind("subagent")
+        except Exception:
+            logger.debug("commit-agent: logger unbind failed", exc_info=True)

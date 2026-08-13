@@ -29,8 +29,6 @@ from typing import Any
 
 from apis.messages import AIMessage, HumanMessage, ToolMessage
 from logger import logger
-
-
 from skills.registry import is_real_user_message as _is_real_user
 
 _BLOCK_SEP = "\n---\n"
@@ -43,8 +41,12 @@ _WRITE_NAMES = {"patch_file", "create_file"}
 # перечитать «тем же» нельзя — только повторный вызов. Применяем C (крупный
 # рано) и D (любой через _HARD_EVICT_ROUNDS), без A/B (нет пути/дедупа).
 _TOOL_EVICT_NAMES = {
-    "shell", "web_search", "web_fetch",
-    "lsp_references", "lsp_hover", "lsp_diagnostics",
+    "shell",
+    "web_search",
+    "web_fetch",
+    "lsp_references",
+    "lsp_hover",
+    "lsp_diagnostics",
 }
 _TOOL_CMD_RE = re.compile(
     r"^\$ (shell|web_search|web_fetch|"
@@ -56,12 +58,8 @@ _TOOL_CMD_RE = re.compile(
 _READ_RANGE_RE = re.compile(r"^(.+?):(\d+(?:-\d*)?)$")
 
 # Паттерн заголовка результата read: "[path lines A-B of N]" или "[path · N lines]".
-_READ_HEADER_RANGE_RE = re.compile(
-    r"^\[(.+?)\s+lines\s+(\d+)-(\d+)\s+of\s+(\d+)\]"
-)
-_READ_HEADER_FULL_RE = re.compile(
-    r"^\[(.+?)\s+·\s+(\d+)\s+lines"
-)
+_READ_HEADER_RANGE_RE = re.compile(r"^\[(.+?)\s+lines\s+(\d+)-(\d+)\s+of\s+(\d+)\]")
+_READ_HEADER_FULL_RE = re.compile(r"^\[(.+?)\s+·\s+(\d+)\s+lines")
 
 # Скилл-результаты (вывод инструмента `skill` — тело SKILL.md). Вытесняются по
 # собственному порогу: текст инструкции нужен только пока скилл «активен».
@@ -155,22 +153,6 @@ def _extract_range_from_result(block: str) -> tuple[int, int] | None:
     return None
 
 
-def _ranges_cover(
-    seen: list[tuple[int, int]], start: int, end: int,
-) -> bool:
-    """True если [start, end] полностью покрыт уже отправленными диапазонами.
-
-    _EOF_SENTINEL трактуем как «до конца» — покрывается любым диапазоном,
-    начинающимся не позже start. Частичное перекрытие НЕ считается покрытием
-    (по решению пользователя: новый read оставляем целиком).
-    """
-    if end == _EOF_SENTINEL:
-        # Полное чтение «до конца» покрывается только если уже видели
-        # диапазон, начинающийся не позже start и идущий до конца.
-        return any(s <= start and e == _EOF_SENTINEL for s, e in seen)
-    return any(s <= start and end <= e for s, e in seen)
-
-
 def _paths_from_args(args: Any) -> list[str]:
     """Достаёт пути из native tool_call args (read/create_file/...)."""
     if not isinstance(args, dict):
@@ -211,9 +193,7 @@ def _set_text_content(msg: Any, new_text: str) -> Any:
 def _placeholder(cmd: str, cmd_tail: str, paths: list[str], reason: str) -> str:
     path_disp = ", ".join(paths) if paths else cmd_tail
     return (
-        f"$ {cmd} {cmd_tail}\n"
-        f"{_EVICT_MARKER} — {reason}. "
-        f"Re-read with read if needed: {path_disp}]"
+        f"$ {cmd} {cmd_tail}\n{_EVICT_MARKER} — {reason}. Re-read with read if needed: {path_disp}]"
     )
 
 
@@ -355,8 +335,23 @@ def _range_dedup_reason(
     for p in paths:
         if write_rounds.get(p, 0) >= block_round:
             return None  # файл менялся в текущем/более позднем раунде — контент актуален
-        prior = [rng for (r, rng) in read_ranges.get(p, []) if r < block_round]
-        if not _ranges_cover(prior, block_range[0], block_range[1]):
+        # Не строим список всех prior ranges для КАЖДОГО read-блока. В native
+        # с длинной историей это превращалось в O(N²): каждый новый read заново
+        # копировал/просматривал всю историю диапазонов того же файла перед
+        # каждым API request. Список хронологический, поэтому проверяем на месте
+        # и выходим сразу при первом покрывающем диапазоне.
+        start, end = block_range
+        path_covered = False
+        for r, (seen_start, seen_end) in read_ranges.get(p, []):
+            if r >= block_round:
+                break
+            if end == _EOF_SENTINEL:
+                path_covered = seen_start <= start and seen_end == _EOF_SENTINEL
+            else:
+                path_covered = seen_start <= start and end <= seen_end
+            if path_covered:
+                break
+        if not path_covered:
             covered = False
             break
     if not covered:
@@ -394,7 +389,11 @@ def _should_evict(
     # E. range-dedup — диапазон уже читали раньше, файл не менялся
     if read_ranges is not None and block_range is not None:
         reason = _range_dedup_reason(
-            paths, block_range, block_round, read_ranges, write_rounds,
+            paths,
+            block_range,
+            block_round,
+            read_ranges,
+            write_rounds,
         )
         if reason is not None:
             return reason
@@ -411,7 +410,9 @@ def _should_evict(
 
 
 def _should_evict_tool(
-    block_round: int, current_round: int, block_chars: int,
+    block_round: int,
+    current_round: int,
+    block_chars: int,
     age_eviction: bool = True,
 ) -> str | None:
     """Возраст-вытеснение вывода инструмента: C (крупный рано) + D (любой через потолок).
@@ -446,11 +447,9 @@ def _skill_placeholder(cmd_line: str, reason: str) -> str:
         f"{_EVICT_MARKER} — {reason}. Reload the skill (skill tool) if you still need it.]"
     )
 
+
 def _tool_placeholder(cmd_line: str, reason: str) -> str:
-    return (
-        f"{cmd_line}\n"
-        f"{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
-    )
+    return f"{cmd_line}\n{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
 
 
 def _tool_fold_placeholder(cmd_line: str, reason: str) -> str:
@@ -460,14 +459,13 @@ def _tool_fold_placeholder(cmd_line: str, reason: str) -> str:
     (что было вызвано) и даёт компактное summary вместо полного вывода —
     чтобы в истории остался «след» вызова без объёма токенов.
     """
-    return (
-        f"{cmd_line}\n"
-        f"{_EVICT_MARKER} — {reason}. (tool output folded, command kept)]"
-    )
+    return f"{cmd_line}\n{_EVICT_MARKER} — {reason}. (tool output folded, command kept)]"
 
 
 def _should_fold_tool(
-    block_round: int, current_round: int, tool_fold_rounds: int,
+    block_round: int,
+    current_round: int,
+    tool_fold_rounds: int,
 ) -> str | None:
     """Fold-порог: вывод инструмента старше tool_fold_rounds раундов сворачивается.
 
@@ -575,9 +573,15 @@ def _prune_user_text(
             if block_range is None:
                 block_range = _extract_range_from_cmd_tail(cmd_tail)
             reason = _should_evict(
-                paths, user_round, current_round, len(block),
-                write_rounds, read_rounds, age_eviction,
-                read_ranges=read_ranges, block_range=block_range,
+                paths,
+                user_round,
+                current_round,
+                len(block),
+                write_rounds,
+                read_rounds,
+                age_eviction,
+                read_ranges=read_ranges,
+                block_range=block_range,
             )
             if reason is None:
                 new_blocks.append(block)
@@ -675,8 +679,7 @@ def _prune_native(
             fold_reason = _should_fold_tool(t_round, current_round, tool_fold_rounds)
             if fold_reason is not None:
                 new_content = (
-                    f"{_EVICT_MARKER} — {fold_reason}. "
-                    f"(tool output folded, tool call kept)]"
+                    f"{_EVICT_MARKER} — {fold_reason}. (tool output folded, tool call kept)]"
                 )
                 saved += len(content) - len(new_content)
                 pruned += 1
@@ -686,9 +689,7 @@ def _prune_native(
             if reason is None:
                 result.append(msg)
                 continue
-            new_content = (
-                f"{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
-            )
+            new_content = f"{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
             saved += len(content) - len(new_content)
             pruned += 1
             result.append(_set_text_content(msg, new_content))
@@ -704,8 +705,7 @@ def _prune_native(
                 result.append(msg)
                 continue
             new_content = (
-                f"{_EVICT_MARKER} — {reason}. "
-                f"Reload the skill (skill tool) if you still need it.]"
+                f"{_EVICT_MARKER} — {reason}. Reload the skill (skill tool) if you still need it.]"
             )
             saved += len(content) - len(new_content)
             pruned += 1
@@ -725,18 +725,21 @@ def _prune_native(
             continue
         block_range = _extract_range_from_result(content)
         reason = _should_evict(
-            paths, block_round, current_round, len(content),
-            write_rounds, read_rounds, age_eviction,
-            read_ranges=read_ranges, block_range=block_range,
+            paths,
+            block_round,
+            current_round,
+            len(content),
+            write_rounds,
+            read_rounds,
+            age_eviction,
+            read_ranges=read_ranges,
+            block_range=block_range,
         )
         if reason is None:
             result.append(msg)
             continue
         path_disp = ", ".join(paths) if paths else "(unknown)"
-        new_content = (
-            f"{_EVICT_MARKER} — {reason}. "
-            f"Re-read with read if needed: {path_disp}]"
-        )
+        new_content = f"{_EVICT_MARKER} — {reason}. Re-read with read if needed: {path_disp}]"
         saved += len(content) - len(new_content)
         pruned += 1
         evicted_paths.update(paths)
@@ -765,6 +768,23 @@ def prune_messages(
       frozen_until — индекс ПОСЛЕ последнего «замороженного» (уже вытесненного)
       сообщения; используется провайдером для стабильного cache breakpoint (Fix 3).
     """
+    from logger import log_span
+
+    with log_span("context.prune", message_count=len(messages)):
+        return _prune_messages_impl(
+            messages,
+            age_eviction=age_eviction,
+            tool_fold_rounds=tool_fold_rounds,
+            enable_range_dedup=enable_range_dedup,
+        )
+
+
+def _prune_messages_impl(
+    messages: list,
+    age_eviction: bool = True,
+    tool_fold_rounds: int = 0,
+    enable_range_dedup: bool = True,
+) -> tuple[list, dict]:
     if not messages:
         return list(messages), {"pruned_blocks": 0, "saved_chars": 0, "frozen_until": 0}
 
@@ -798,9 +818,15 @@ def prune_messages(
                 result.append(msg)
                 continue
             new_text = _prune_user_text(
-                text, round_idx, current_round, write_rounds, read_rounds,
-                evicted_paths, age_eviction,
-                read_ranges=read_ranges, tool_fold_rounds=tool_fold_rounds,
+                text,
+                round_idx,
+                current_round,
+                write_rounds,
+                read_rounds,
+                evicted_paths,
+                age_eviction,
+                read_ranges=read_ranges,
+                tool_fold_rounds=tool_fold_rounds,
             )
             if new_text != text:
                 pruned_blocks += new_text.count(_EVICT_MARKER) - text.count(_EVICT_MARKER)
@@ -813,8 +839,14 @@ def prune_messages(
 
     # ── Pass 2: native read-ToolMessage ──
     result, native_pruned, native_saved = _prune_native(
-        result, current_round, write_rounds, read_rounds, evicted_paths,
-        age_eviction, read_ranges=read_ranges, tool_fold_rounds=tool_fold_rounds,
+        result,
+        current_round,
+        write_rounds,
+        read_rounds,
+        evicted_paths,
+        age_eviction,
+        read_ranges=read_ranges,
+        tool_fold_rounds=tool_fold_rounds,
     )
     pruned_blocks += native_pruned
     saved += native_saved
@@ -834,6 +866,9 @@ def prune_messages(
         except Exception:
             logger.debug("pruner: read-cache invalidation failed", exc_info=True)
 
+    from logger import info
+
+    info("context.prune.complete", pruned_blocks=pruned_blocks, saved_chars=saved)
     return result, {
         "pruned_blocks": pruned_blocks,
         "saved_chars": saved,

@@ -1,23 +1,24 @@
 """Fuzzy find/replace для patch_file: нормализация пробелов и отступов."""
 
-
 # Ширина таба при нормализации строк (стандарт для Python-кода).
 _TAB_WIDTH = 4
 
+
 def _normalize_line(line: str) -> str:
     """Нормализует строку: табы → пробелы, схлопывает множественные пробелы."""
-    return ' '.join(line.expandtabs(_TAB_WIDTH).split())
+    return " ".join(line.expandtabs(_TAB_WIDTH).split())
+
 
 def _detect_eol(lines: list[str]) -> str:
     """Определяет стиль перевода строки в блоке (CRLF/CR/LF) по первой строке с переносом."""
     for ln in lines:
-        if ln.endswith('\r\n'):
-            return '\r\n'
-        if ln.endswith('\n'):
-            return '\n'
-        if ln.endswith('\r'):
-            return '\r'
-    return '\n'
+        if ln.endswith("\r\n"):
+            return "\r\n"
+        if ln.endswith("\n"):
+            return "\n"
+        if ln.endswith("\r"):
+            return "\r"
+    return "\n"
 
 
 def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
@@ -36,17 +37,17 @@ def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
         return text, False
 
     norm_find = [_normalize_line(ln) for ln in find_lines]
-    norm_text = [_normalize_line(ln.rstrip('\n')) for ln in text_lines]
+    norm_text = [_normalize_line(ln.rstrip("\n")) for ln in text_lines]
 
     for i in range(len(text_lines) - len(find_lines) + 1):
-        if norm_text[i:i + len(find_lines)] == norm_find:
+        if norm_text[i : i + len(find_lines)] == norm_find:
             orig_indent = len(text_lines[i]) - len(text_lines[i].lstrip())
             replace_lines = replace.splitlines()
             if replace_lines:
                 find_indent = len(find_lines[0]) - len(find_lines[0].lstrip())
                 indent_diff = orig_indent - find_indent
                 if indent_diff > 0:
-                    pad = ' ' * indent_diff
+                    pad = " " * indent_diff
                     replace_lines = [pad + ln if ln.strip() else ln for ln in replace_lines]
                 elif indent_diff < 0:
                     cut = -indent_diff
@@ -54,23 +55,23 @@ def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
                     # есть не-пробельные или табы (mixed tabs/spaces) — отказ,
                     # чтобы не отрезать значимые символы.
                     if any(
-                        ln.strip() and (ln[:cut].strip() != '' or '\t' in ln[:cut])
+                        ln.strip() and (ln[:cut].strip() != "" or "\t" in ln[:cut])
                         for ln in replace_lines
                     ):
                         return text, False
                     replace_lines = [ln[cut:] if ln.strip() else ln for ln in replace_lines]
-            eol = _detect_eol(text_lines[i:i + len(find_lines)])
+            eol = _detect_eol(text_lines[i : i + len(find_lines)])
             new_replace = eol.join(replace_lines)
             last_line = text_lines[i + len(find_lines) - 1]
-            if last_line.endswith('\n') and not new_replace.endswith(('\n', '\r')):
+            if last_line.endswith("\n") and not new_replace.endswith(("\n", "\r")):
                 new_replace += eol
-            result_lines = [*text_lines[:i], new_replace, *text_lines[i + len(find_lines):]]
-            return ''.join(result_lines), True
+            result_lines = [*text_lines[:i], new_replace, *text_lines[i + len(find_lines) :]]
+            return "".join(result_lines), True
 
     strip_find = [ln.strip() for ln in find_lines if ln.strip()]
     if strip_find:
         for i in range(len(text_lines) - len(strip_find) + 1):
-            window = [ln.rstrip('\n').strip() for ln in text_lines[i:i + len(strip_find)]]
+            window = [ln.rstrip("\n").strip() for ln in text_lines[i : i + len(strip_find)]]
             if window == strip_find:
                 orig_indent = len(text_lines[i]) - len(text_lines[i].lstrip())
                 replace_lines = replace.splitlines()
@@ -81,14 +82,16 @@ def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
                     # сознательный компромисс последней попытки: точную relative-
                     # вложенность сохраняет основная стратегия выше (indent_diff),
                     # сюда попадаем только когда та не нашла совпадения.
-                    pad = ' ' * orig_indent
-                    replace_lines = [pad + ln.lstrip() if ln.strip() else ln for ln in replace_lines]
-                eol = _detect_eol(text_lines[i:i + len(strip_find)])
+                    pad = " " * orig_indent
+                    replace_lines = [
+                        pad + ln.lstrip() if ln.strip() else ln for ln in replace_lines
+                    ]
+                eol = _detect_eol(text_lines[i : i + len(strip_find)])
                 new_replace = eol.join(replace_lines)
                 last_line = text_lines[i + len(strip_find) - 1]
-                if last_line.endswith('\n') and not new_replace.endswith(('\n', '\r')):
+                if last_line.endswith("\n") and not new_replace.endswith(("\n", "\r")):
                     new_replace += eol
-                result_lines = [*text_lines[:i], new_replace, *text_lines[i + len(strip_find):]]
-                return ''.join(result_lines), True
+                result_lines = [*text_lines[:i], new_replace, *text_lines[i + len(strip_find) :]]
+                return "".join(result_lines), True
 
     return text, False

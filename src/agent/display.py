@@ -14,6 +14,7 @@ from config.i18n import t as _i18n
 from config.themes import t
 from config.ui import ui
 from tools._html_unescape import unescape_nested as _unescape_for_display
+from tools.models import TOOL_TITLE_ARG as _TOOL_TITLE_ARG
 
 is_compact = True
 
@@ -80,6 +81,7 @@ def print_static(renderable) -> None:
         target.print(renderable)
         return
     from ui.shell import get_shell
+
     shell = get_shell()
     if shell is None:
         console.print(renderable)
@@ -111,6 +113,7 @@ def _render_store():
     if _REPLAY_ACTIVE:
         return None
     from agent.loop import get_current_ctx
+
     ctx = get_current_ctx()
     if ctx is None:
         return None
@@ -160,16 +163,23 @@ def show_plan_update(plan, action: str = "", focus_index: int | None = None) -> 
         focus_index = 0
     try:
         from planner import plan_to_snapshot, render_plan_panel
+
         # Ведущая пустая строка и панель уходят одним print_static: два вызова
         # означали бы два run_in_terminal, то есть лишний перерисованный кадр
         # рамки между пустой строкой и самой панелью.
-        print_static(Group(Text(""), render_plan_panel(
-            plan,
-            compact=False,
-            focus_index=focus_index,
-        )))
+        print_static(
+            Group(
+                Text(""),
+                render_plan_panel(
+                    plan,
+                    compact=False,
+                    focus_index=focus_index,
+                ),
+            )
+        )
         if not _REPLAY_ACTIVE:
             from agent.loop import get_current_ctx
+
             ctx = get_current_ctx()
             if ctx is not None and getattr(ctx, "render_store", None) is not None:
                 ctx.render_store.add_plan(
@@ -180,51 +190,56 @@ def show_plan_update(plan, action: str = "", focus_index: int | None = None) -> 
     except Exception:
         pass
 
-def MAX_WIDTH():  # noqa: N802
+
+def MAX_WIDTH():
     return int(ui.get("limits.max_width", 100))
 
-# Инструменты, у которых при успехе output скрывается: пользователь видит факт
+
+# Инструменты, которые при успехе output скрывается: пользователь видит факт
 # изменения по панели команды и ✓-статусу, текст не нужен.
-_TOOL_TITLE_ARG = {
-    "web_fetch": "urls",
-    "web_search": "queries",
-    "skill": "name",
-    "memory_read": "name",
-    "memory_write": "name",
-    "poll": "question",
-    "subagent": "prompt",
-    "expand_tool_result": "id",
-    "read": "path",
-}
-
-_SILENT_OK_TOOLS = frozenset({
-    "patch_file",
-    "create_docx",
-})
+_SILENT_OK_TOOLS = frozenset(
+    {
+        "patch_file",
+    }
+)
 
 
-def COMPACT_HEAD_LINES():  # noqa: N802
+def COMPACT_HEAD_LINES():
     return int(ui.get("limits.compact_head_lines", 10))
-def COMPACT_TAIL_LINES():  # noqa: N802
+
+
+def COMPACT_TAIL_LINES():
     return int(ui.get("limits.compact_tail_lines", 10))
+
 
 def _spinner_frames() -> list[str]:
     frames = ui.get("spinner.frames", None)
     if isinstance(frames, list) and frames:
         return [str(f) for f in frames]
     return [
-        "\u280B", "\u2819", "\u2839", "\u2838",
-        "\u283C", "\u2834", "\u2826", "\u2827",
-        "\u2807", "\u280F",
+        "\u280b",
+        "\u2819",
+        "\u2839",
+        "\u2838",
+        "\u283c",
+        "\u2834",
+        "\u2826",
+        "\u2827",
+        "\u2807",
+        "\u280f",
     ]
+
 
 class _SpinnerFramesProxy:
     def __iter__(self):
         return iter(_spinner_frames())
+
     def __getitem__(self, idx):
         return _spinner_frames()[idx]
+
     def __len__(self):
         return len(_spinner_frames())
+
 
 SPINNER_FRAMES = _SpinnerFramesProxy()
 
@@ -261,19 +276,24 @@ def _mcp_display_for(tool_name: str) -> tuple[str, str] | None:
     label = info.get("label", f"{server}.{tname}")
     return (f"{emoji} {label}".strip(), _resolve_color(info, "magenta"))
 
+
 class _ToolDisplayProxy:
     def _lookup(self, key):
         return _tool_display_entry(key) or _mcp_display_for(key)
+
     def get(self, key, default=None):
         entry = self._lookup(key)
         return entry if entry is not None else default
+
     def __getitem__(self, key):
         entry = self._lookup(key)
         if entry is None:
             raise KeyError(key)
         return entry
+
     def __contains__(self, key):
         return self._lookup(key) is not None
+
 
 TOOL_DISPLAY = _ToolDisplayProxy()
 
@@ -296,11 +316,7 @@ def _compact_content(text: str, head: int | None = None, tail: int | None = None
     head_lines = lines[:head]
     # lines[-0:] вернул бы ВЕСЬ список (а не пустой хвост) — явно гасим tail==0.
     tail_lines = lines[-tail:] if tail > 0 else []
-    return (
-        "\n".join(head_lines)
-        + f"\n\n... {skipped} lines\n\n"
-        + "\n".join(tail_lines)
-    )
+    return "\n".join(head_lines) + f"\n\n... {skipped} lines\n\n" + "\n".join(tail_lines)
 
 
 def _format_path_for_title(path) -> str:
@@ -323,6 +339,7 @@ def _format_path_for_title(path) -> str:
     if isinstance(path, dict):
         path = path.get("path", str(path))
     return str(path) if path else ""
+
 
 def _compact_display_value(value: str) -> str:
     """Compact display: head + ... + tail for large text values."""
@@ -393,9 +410,11 @@ def _file_uri(raw_path: str) -> str:
     """Абсолютный file URI для ссылки и авто-распознавания терминалом."""
     try:
         from tools._paths import resolve_path
+
         return resolve_path(raw_path).resolve().as_uri()
     except Exception:
         from pathlib import Path
+
         return Path(raw_path).expanduser().resolve().as_uri()
 
 
@@ -414,7 +433,11 @@ def _format_elapsed(elapsed: float) -> str:
     только когда оно не схлопнется в 0.0 (порог 0.05s → ≥0.1s после округления).
     """
     elapsed = elapsed or 0.0
-    return f" {elapsed:.1f}s" if elapsed >= 0.05 else ""
+    if elapsed < 0.05:
+        return ""
+    from config.i18n import format_duration
+
+    return " " + format_duration(elapsed, decimal_seconds=True)
 
 
 def _format_tool_tokens(call: tools.ToolCall | None, result: tools.ToolResult) -> str:
@@ -423,12 +446,29 @@ def _format_tool_tokens(call: tools.ToolCall | None, result: tools.ToolResult) -
     from ui import format_tokens
 
     read_tools = {
-        "read", "grep", "lsp_references",
-        "lsp_diagnostics", "web_search", "web_fetch", "image_search",
-        "docx_screenshot", "skill", "memory_list", "memory_read",
+        "read",
+        "grep",
+        "lsp_references",
+        "lsp_diagnostics",
+        "web_search",
+        "web_fetch",
+        "image_search",
+        "skill",
     }
-    write_tools = {"create_file", "patch_file", "create_docx", "memory_write"}
+    write_tools = {"create_file", "patch_file"}
     tool_name = call.tool_name if call else result.name
+    if tool_name == "memory":
+        action = str(((call.args if call else {}) or {}).get("action", ""))
+        if action in ("list", "read"):
+            return f" ↑{format_tokens(count_tokens(result.output))}"
+        payload = json.dumps(call.args if call else {}, ensure_ascii=False, default=str)
+        return f" ↓{format_tokens(count_tokens(payload))}"
+    if tool_name in ("docx", "pptx"):
+        action = str(((call.args if call else {}) or {}).get("action", "")).lower()
+        if action == "inspect":
+            return f" ↑{format_tokens(count_tokens(result.output))}"
+        payload = json.dumps(call.args if call else {}, ensure_ascii=False, default=str)
+        return f" ↓{format_tokens(count_tokens(payload))}"
     if tool_name in read_tools:
         return f" ↑{format_tokens(count_tokens(result.output))}"
     if tool_name in write_tools:
@@ -436,10 +476,7 @@ def _format_tool_tokens(call: tools.ToolCall | None, result: tools.ToolResult) -
         return f" ↓{format_tokens(count_tokens(payload))}"
 
     payload = json.dumps(call.args if call else {}, ensure_ascii=False, default=str)
-    return (
-        f" ↓{format_tokens(count_tokens(payload))}"
-        f" ↑{format_tokens(count_tokens(result.output))}"
-    )
+    return f" ↓{format_tokens(count_tokens(payload))} ↑{format_tokens(count_tokens(result.output))}"
 
 
 def _truncate_cmd(cmd: str) -> str:
@@ -451,7 +488,10 @@ def _truncate_cmd(cmd: str) -> str:
 
 
 def _compact_title_text(
-    tool_name: str, args: dict, status_icon: str = "", status_color: str = "",
+    tool_name: str,
+    args: dict,
+    status_icon: str = "",
+    status_color: str = "",
     lead_frame: str = "",
 ) -> Text:
     """Заголовок для compact-режима: ✨ Tool(path) ✓ 1.2s — тот же display_name что и с рамками.
@@ -460,6 +500,10 @@ def _compact_title_text(
     display_name (используется во время выполнения инструмента).
     """
     display_name, color = TOOL_DISPLAY.get(tool_name, ("⏺ Tool", "yellow"))
+    if tool_name in ("memory", "docx", "pptx"):
+        action = str(args.get("action", "")).strip().title()
+        if action:
+            display_name = f"{display_name} {action}"
     if lead_frame:
         # display_name = "🔎 Grep" → отрезаем эмодзи, ставим кадр анимации.
         parts = display_name.split(" ", 1)
@@ -482,9 +526,7 @@ def _compact_title_text(
     # оставляем компактный счётчик — сами запросы идут отдельными строками.
     search_queries = args.get("queries")
     grouped_search = (
-        tool_name == "web_search"
-        and isinstance(search_queries, list)
-        and len(search_queries) > 1
+        tool_name == "web_search" and isinstance(search_queries, list) and len(search_queries) > 1
     )
     if grouped_search:
         arg_disp = f"{len(search_queries)} queries" if _EXPANDED_PREVIEW else ""
@@ -530,7 +572,9 @@ def _compact_title_text(
     return txt
 
 
-def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult | None, cmd: str) -> str:
+def _compact_summary_line(
+    tool_name: str, args: dict, result: tools.ToolResult | None, cmd: str
+) -> str:
     """Одна короткая строка-сводка по инструменту для compact-режима."""
     if result is not None and result.status != "ok":
         first_line = (result.output or "").strip().split("\n")[0][:80]
@@ -578,16 +622,27 @@ def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult |
             return "\n".join(infos)
         return ""
 
-    if tool_name == "docx_screenshot":
-        if result is None:
-            return ""
-        out = (result.output or "").strip()
-        m = re.search(r"pages?\s+([\d, ]+?)\s+of", out)
-        if m:
-            nums = m.group(1).strip()
-            if "," in nums:
-                return _i18n("compact.pages_n", pages=nums)
-            return _i18n("compact.page_n", n=nums)
+    if tool_name in ("docx", "pptx"):
+        action = str(args.get("action", "")).lower()
+        if action == "inspect":
+            target = args.get("target")
+            if isinstance(target, list):
+                return f"{len(target)} blocks"
+            if target is not None:
+                return f"block {target}"
+            return "document metadata"
+        if action == "help":
+            return str(args.get("topic") or ("blocks" if tool_name == "docx" else "operations"))
+        if result is not None:
+            out = (result.output or "").strip()
+            if out:
+                return out.split("\n", 1)[0][:100]
+        if action == "create":
+            blocks = args.get("blocks")
+            return f"{len(blocks)} blocks" if isinstance(blocks, list) else ""
+        if action == "edit":
+            ops = args.get("ops") if tool_name == "docx" else args.get("operations")
+            return f"{len(ops)} ops" if isinstance(ops, list) else ""
         return ""
 
     if tool_name == "create_file":
@@ -625,10 +680,13 @@ def _compact_summary_line(tool_name: str, args: dict, result: tools.ToolResult |
     return ""
 
 
-def COMPACT_PREVIEW_LINES():  # noqa: N802
+def COMPACT_PREVIEW_LINES():
     return int(ui.get("limits.compact_preview_lines", 8))
-def COMPACT_PREVIEW_LINES_SHELL():  # noqa: N802
+
+
+def COMPACT_PREVIEW_LINES_SHELL():
     return int(ui.get("limits.compact_preview_lines_shell", 5))
+
 
 # Когда True — compact-preview показывает все строки, без обрезки и без "… +N lines"
 _EXPANDED_PREVIEW = False
@@ -648,7 +706,9 @@ def _preview_limit() -> int | None:
     return None if _EXPANDED_PREVIEW else COMPACT_PREVIEW_LINES()
 
 
-def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResult | None) -> list | None:
+def _compact_preview_content(
+    tool_name: str, args: dict, result: tools.ToolResult | None
+) -> list | None:
     """Превью контента под compact-заголовком.
 
     Возвращает список Rich-renderable строк (Text/Syntax) или None.
@@ -669,10 +729,12 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
 
         out: list = []
         n = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
-        out.append(Text(
-            f"   {ui.get('symbols.summary_prefix', '⎿  ')}{_i18n('compact.lines_n', n=n)}",
-            style=t("info"),
-        ))
+        out.append(
+            Text(
+                f"   {ui.get('symbols.summary_prefix', '⎿  ')}{_i18n('compact.lines_n', n=n)}",
+                style=t("info"),
+            )
+        )
 
         path = args.get("path", "")
         ext_m = re.match(r".*\.(\w+)$", path or "")
@@ -684,8 +746,13 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
             num = Text(f"      {str(i).rjust(num_w)} ", style=t("fg_primary"))
             try:
                 code = Syntax(
-                    ln or " ", lexer, theme="monokai", line_numbers=False,
-                    padding=(0, 0), background_color="default", word_wrap=False,
+                    ln or " ",
+                    lexer,
+                    theme="monokai",
+                    line_numbers=False,
+                    padding=(0, 0),
+                    background_color="default",
+                    word_wrap=False,
                 ).highlight(ln or " ")
                 if code.plain.endswith("\n"):
                     code.right_crop(1)
@@ -694,7 +761,12 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
                 out.append(num + Text(ln))
         if total > len(head):
             rest = total - len(head)
-            out.append(Text("        " + _i18n("compact.more_lines", n=rest), style=f"italic {t('dim_text')}"))
+            out.append(
+                Text(
+                    "        " + _i18n("compact.more_lines", n=rest),
+                    style=f"italic {t('dim_text')}",
+                )
+            )
         return out
 
     # shell — превью вывода. При успехе показываем ПЕРВЫЕ N строк, при падении —
@@ -713,7 +785,7 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
             head = lines
             offset = 0
         elif failed:
-            head = lines[-limit:]          # хвост — там сам текст ошибки
+            head = lines[-limit:]  # хвост — там сам текст ошибки
             offset = total - limit
         else:
             head = lines[:limit]
@@ -746,10 +818,12 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
 
         indent = "   "
         if not _EXPANDED_PREVIEW:
-            return [Text(
-                f"{indent}\u23bf {_i18n('compact.queries_n', n=len(queries))}",
-                style=f"italic {t('dim_text')}",
-            )]
+            return [
+                Text(
+                    f"{indent}\u23bf {_i18n('compact.queries_n', n=len(queries))}",
+                    style=f"italic {t('dim_text')}",
+                )
+            ]
 
         out: list = []
         for i, query in enumerate(queries):
@@ -758,9 +832,15 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
         return out
 
     # grep_files / lsp_* — первые 3 результата + "… +N строк"
-    if tool_name in (
-        "lsp_references", "lsp_diagnostics",
-    ) and result is not None and result.status == "ok":
+    if (
+        tool_name
+        in (
+            "lsp_references",
+            "lsp_diagnostics",
+        )
+        and result is not None
+        and result.status == "ok"
+    ):
         return _compact_result_list_preview(tool_name, result)
 
     # image_search — в свёрнутом виде None (сводка через _compact_summary_line),
@@ -777,8 +857,9 @@ def _compact_preview_content(tool_name: str, args: dict, result: tools.ToolResul
             out.append(Text(f"   {ln}"))
         return out
 
-    # memory_read/memory_write — метаданные + тело (первые 5 строк)
-    if tool_name in ("memory_read", "memory_write") and result is not None and result.status == "ok":
+    if tool_name == "memory" and result is not None and result.status == "ok":
+        if args.get("action") == "list":
+            return _compact_memory_catalog_preview(result)
         return _compact_memory_preview(result)
 
     # Read — кликабельный путь: полный файл без суффикса, диапазон через «·».
@@ -841,7 +922,7 @@ def _compact_read_preview(result: tools.ToolResult, args: dict | None = None) ->
         sep = txt.rfind("·")
         if sep >= 0:
             path_part = txt[:sep].strip()
-            suffix_part = txt[sep + 1:].strip()
+            suffix_part = txt[sep + 1 :].strip()
         else:
             path_part = txt
             suffix_part = ""
@@ -872,26 +953,30 @@ def _compact_result_list_preview(tool_name: str, result: tools.ToolResult) -> li
 
     out: list = []
     if header.strip():
-        out.append(Text(
-            f"   {ui.get('symbols.summary_prefix', '⎿  ')}{header.strip()}",
-            style=t("info"),
-        ))
+        out.append(
+            Text(
+                f"   {ui.get('symbols.summary_prefix', '⎿  ')}{header.strip()}",
+                style=t("info"),
+            )
+        )
 
     limit = None if _EXPANDED_PREVIEW else 2
     head = rows if limit is None else rows[:limit]
     for ln in head:
-        out.append(Text("      " + ln.strip(), style=t("dim_text")))  # noqa: PERF401
+        out.append(Text("      " + ln.strip(), style=t("dim_text")))
     if len(rows) > len(head):
         rest = len(rows) - len(head)
-        out.append(Text(
-            "        " + _i18n("compact.more_lines", n=rest),
-            style=f"italic {t('dim_text')}",
-        ))
+        out.append(
+            Text(
+                "        " + _i18n("compact.more_lines", n=rest),
+                style=f"italic {t('dim_text')}",
+            )
+        )
     return out
 
 
 def _compact_memory_preview(result: tools.ToolResult) -> list | None:
-    """Превью memory_read: метаданные + тело (первые 5 строк)."""
+    """Показывает метаданные и тело memory-операции."""
     output = (result.output or "").rstrip("\n")
     if not output:
         return None
@@ -905,31 +990,61 @@ def _compact_memory_preview(result: tools.ToolResult) -> list | None:
     meta_parts = []
     if meta_match:
         meta_str = meta_match.group(1)
-        body = rest[meta_match.end():].strip()
-        # Вытаскиваем scope и type, остальное убираем
+        body = rest[meta_match.end() :].strip()
+        # В compact оставляем только основные поля; Ctrl+O показывает все.
         for kv in meta_str.split(","):
             kv = kv.strip()
-            if kv.startswith(("scope=", "type=")):
+            if _EXPANDED_PREVIEW or kv.startswith(("scope=", "type=")):
                 meta_parts.append(kv)
 
     out: list = []
     if meta_parts:
-        out.append(Text(
-            f"   {ui.get('symbols.summary_prefix', '⎿  ')}{', '.join(meta_parts)}",
-            style=t("info"),
-        ))
+        out.append(
+            Text(
+                f"   {ui.get('symbols.summary_prefix', '⎿  ')}{', '.join(meta_parts)}",
+                style=t("info"),
+            )
+        )
 
-    # Показываем первые 5 строк тела
-    body_lines = body.split("\n")
-    limit = 5
-    head = body_lines[:limit]
+    body_lines = body.split("\n") if body else []
+    limit = None if _EXPANDED_PREVIEW else 5
+    head = body_lines if limit is None else body_lines[:limit]
     out.extend(Text(f"      {ln}", style=t("dim_text")) for ln in head)
-    if len(body_lines) > limit:
+    if limit is not None and len(body_lines) > limit:
         rest_n = len(body_lines) - limit
-        out.append(Text(
-            "      " + _i18n("compact.more_lines", n=rest_n),
-            style=f"italic {t('dim_text')}",
-        ))
+        out.append(
+            Text(
+                "      " + _i18n("compact.more_lines", n=rest_n),
+                style=f"italic {t('dim_text')}",
+            )
+        )
+    return out or None
+
+
+def _compact_memory_catalog_preview(result: tools.ToolResult) -> list | None:
+    """Показывает краткий или полный список memory-файлов."""
+    output = (result.output or "").rstrip("\n")
+    if not output:
+        return None
+    rows = [line for line in output.split("\n") if line.strip()]
+    limit = None if _EXPANDED_PREVIEW else 2
+    head = rows if limit is None else rows[:limit]
+    out = []
+    for i, line in enumerate(head):
+        prefix = ui.get("symbols.summary_prefix", "⎿  ") if i == 0 else "   "
+        out.append(
+            Text(
+                f"   {prefix}{line}",
+                style=t("info") if i == 0 else t("dim_text"),
+            )
+        )
+    if limit is not None and len(rows) > limit:
+        out.append(
+            Text(
+                "      " + _i18n("compact.more_lines", n=len(rows) - limit),
+                style=f"italic {t('dim_text')}",
+            )
+        )
     return out
 
 
@@ -962,7 +1077,9 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
                 else:
                     parts.append(c)
             summary = ", ".join(parts) if parts else stats
-        out.append(Text(f"   {ui.get('symbols.summary_prefix', '⎿  ')}{summary}", style=t("warning")))
+        out.append(
+            Text(f"   {ui.get('symbols.summary_prefix', '⎿  ')}{summary}", style=t("warning"))
+        )
 
     file_path = args.get("path", "") or ""
     m = re.match(r".*\.(\w+)$", file_path)
@@ -1006,8 +1123,8 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
             and find_lns[len(find_lns) - 1 - suf] == repl_lns[len(repl_lns) - 1 - suf]
         ):
             suf += 1
-        find_core = find_lns[pref: len(find_lns) - suf] if suf else find_lns[pref:]
-        repl_core = repl_lns[pref: len(repl_lns) - suf] if suf else repl_lns[pref:]
+        find_core = find_lns[pref : len(find_lns) - suf] if suf else find_lns[pref:]
+        repl_core = repl_lns[pref : len(repl_lns) - suf] if suf else repl_lns[pref:]
         for k, ln in enumerate(find_core):
             minus_lines.append((start + pref + k, ln))
         for k, ln in enumerate(repl_core):
@@ -1048,8 +1165,13 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
     def _hl(ln: str) -> Text:
         try:
             code = Syntax(
-                ln or " ", lexer, theme="monokai", line_numbers=False,
-                padding=(0, 0), background_color="default", word_wrap=False,
+                ln or " ",
+                lexer,
+                theme="monokai",
+                line_numbers=False,
+                padding=(0, 0),
+                background_color="default",
+                word_wrap=False,
             ).highlight(ln or " ")
             if code.plain.endswith("\n"):
                 code.right_crop(1)
@@ -1089,7 +1211,12 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
 
     rest_rows = total_lines - shown
     if rest_rows > 0:
-        out.append(Text("        " + _i18n("compact.more_lines", n=rest_rows), style=f"italic {t('dim_text')}"))
+        out.append(
+            Text(
+                "        " + _i18n("compact.more_lines", n=rest_rows),
+                style=f"italic {t('dim_text')}",
+            )
+        )
     return out
 
 
@@ -1105,8 +1232,8 @@ def _show_tool_compact(
 ):
     """Компактный режим: заголовок Tool(path) ✓ 1.2s + preview/сводка."""
     raw_args = args or {}
-    # memory_read/memory_write: inject file path from result into raw_args for title
-    if tool_name in ("memory_read", "memory_write") and result is not None:
+    # Memory file operations: inject path from result into args for the title.
+    if tool_name == "memory" and result is not None:
         _out = result.output or ""
         _pm = re.search(r"^=== path: (.+?) ===\s*", _out)
         if _pm:
@@ -1143,9 +1270,11 @@ def _show_tool_compact(
     # После текста агента инструмент идёт без пустой строки. Если предыдущим
     # видимым блоком тоже был инструмент, _space_compact_tool добавит ровно
     # один separator, чтобы соседние вызовы не слипались.
-    parts: list = _space_compact_tool([
-        _compact_title_text(tool_name, args, status_full, status_color),
-    ])
+    parts: list = _space_compact_tool(
+        [
+            _compact_title_text(tool_name, args, status_full, status_color),
+        ]
+    )
 
     # Сначала пробуем богатое превью контента (только если успех).
     # Используем НЕурезанные raw_args — _compact_preview_content сам ограничивает
@@ -1168,10 +1297,13 @@ def _show_tool_compact(
                 prefix = ui.get("symbols.summary_prefix", "⎿  ")
             else:
                 indent = "   "
-                prefix = ui.get("symbols.tree_last", "└─ ") if i == len(lines) - 1 else ui.get("symbols.tree_branch", "├─ ")
+                prefix = (
+                    ui.get("symbols.tree_last", "└─ ")
+                    if i == len(lines) - 1
+                    else ui.get("symbols.tree_branch", "├─ ")
+                )
             parts.append(Text(f"{indent}{prefix}{line}", style=sum_color))
     print_static(Group(*parts))
-
 
 
 def show_tool_combined(
@@ -1211,6 +1343,7 @@ def show_read_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> 
 
     from session.tokens import count_tokens
     from ui import format_tokens
+
     total_tk = sum(count_tokens(r.output) for _, r in pairs)
 
     # Один список является источником истины и для счётчика, и для обоих видов.
@@ -1248,11 +1381,16 @@ def show_read_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> 
 
     # Рендер заголовка — без скобок (paths в теле блока). Блок целиком уходит
     # одним print_static: см. _show_tool_compact.
-    parts: list = _space_compact_tool([_compact_title_text(
-        "read", {"_combined_read_count": n},
-        f"{icon}{time_str} ↑{format_tokens(total_tk)}",
-        status_color,
-    )])
+    parts: list = _space_compact_tool(
+        [
+            _compact_title_text(
+                "read",
+                {"_combined_read_count": n},
+                f"{icon}{time_str} ↑{format_tokens(total_tk)}",
+                status_color,
+            )
+        ]
+    )
 
     if not info_items:
         print_static(Group(*parts))
@@ -1271,10 +1409,12 @@ def show_read_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> 
     else:
         # Свёрнутый вид — "N файлов (ctrl+o развернуть)"
         indent = "   "
-        parts.append(Text(
-            f"{indent}\u23bf {_i18n('compact.files_n', n=n)}",
-            style=f"italic {t('dim_text')}",
-        ))
+        parts.append(
+            Text(
+                f"{indent}\u23bf {_i18n('compact.files_n', n=n)}",
+                style=f"italic {t('dim_text')}",
+            )
+        )
     print_static(Group(*parts))
 
 
@@ -1339,11 +1479,14 @@ def render_md_panel(text: str, subtitle: str = "", message_num: int = 0):
 
     _store_assistant(text, subtitle=subtitle, message_num=message_num)
     text = latex_to_unicode(text)
-    md = ResponseMarkdown(escape_md_underscores(text), code_theme="monokai", inline_code_theme="monokai")
+    md = ResponseMarkdown(
+        escape_md_underscores(text), code_theme="monokai", inline_code_theme="monokai"
+    )
 
     from rich.console import Group as RGroup
 
     from agent.stream_render import _inline_md, _is_markdown_block
+
     stripped = text.lstrip("\n").rstrip()
     # Первая строка склеивается с "●". Если она — block-element
     # (заголовок/список/цитата/fence) — рендерим всё как Markdown под header.
@@ -1351,7 +1494,7 @@ def render_md_panel(text: str, subtitle: str = "", message_num: int = 0):
     # в rich-markup через _inline_md.
     first_nl = stripped.find("\n")
     first_line = stripped if first_nl < 0 else stripped[:first_nl]
-    rest = "" if first_nl < 0 else stripped[first_nl + 1:].lstrip("\n")
+    rest = "" if first_nl < 0 else stripped[first_nl + 1 :].lstrip("\n")
     is_block = _is_markdown_block(first_line, rest)
     header = Text()
     header.append("● ", style=f"bold {t('success')}")
@@ -1359,7 +1502,9 @@ def render_md_panel(text: str, subtitle: str = "", message_num: int = 0):
         header.append(Text.from_markup(_inline_md(first_line)))
         if not rest:
             return header
-        rest_md = ResponseMarkdown(escape_md_underscores(rest), code_theme="monokai", inline_code_theme="monokai")
+        rest_md = ResponseMarkdown(
+            escape_md_underscores(rest), code_theme="monokai", inline_code_theme="monokai"
+        )
         return RGroup(header, rest_md)
     return RGroup(header, md)
 

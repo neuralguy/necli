@@ -2,6 +2,7 @@
 
 import difflib
 
+from config._atomic import atomic_write_text
 from logger import logger
 from tools._paths import clean_path, resolve_path
 from tools.file_ops._fuzzy import _fuzzy_find_replace
@@ -21,7 +22,7 @@ def _reveal_ws(line: str) -> str:
     line = line.replace("\r", "↵")
     # trailing whitespace (пробелы/табы в конце) помечаем точками/стрелками
     stripped = line.rstrip(" \t")
-    trailing = line[len(stripped):]
+    trailing = line[len(stripped) :]
     body = stripped.replace("\t", "»   ")
     trailing = trailing.replace("\t", "»   ").replace(" ", "·")
     return body + trailing
@@ -72,21 +73,61 @@ def patch_file(call: ToolCall) -> ToolResult:
         return text.count("\n", 0, idx) + 1
 
     if "patches" in args:
-        return ToolResult(
-            name="patch_file",
-            status="error",
-            output=(
-                "Multiple patches in one call are not allowed. patch_file does "
-                "ONE change per call (find/replace, line/insert, or delete_lines). "
-                "Make a separate patch_file call for each edit."
-            ),
-            exit_code=1,
-            command=call.command,
-        )
+        patches = args["patches"]
+        if not isinstance(patches, list):
+            return ToolResult(
+                name="patch_file",
+                status="error",
+                output="'patches' must be a list of {find, replace} objects.",
+                exit_code=1,
+                command=call.command,
+            )
+        for i, patch in enumerate(patches):
+            if not isinstance(patch, dict) or "find" not in patch:
+                return ToolResult(
+                    name="patch_file",
+                    status="error",
+                    output=f"patches[{i}]: each patch must have 'find' key.",
+                    exit_code=1,
+                    command=call.command,
+                )
+            find = patch["find"]
+            replace = patch.get("replace", "")
+            if not find:
+                return ToolResult(
+                    name="patch_file",
+                    status="error",
+                    output=f"patches[{i}]: empty 'find' string.",
+                    exit_code=1,
+                    command=call.command,
+                )
+            if find not in modified:
+                modified_fuzzy, found = _fuzzy_find_replace(modified, find, replace)
+                if not found:
+                    return ToolResult(
+                        name="patch_file",
+                        status="error",
+                        output=f"patches[{i}]: fragment not found: '{find[:200]}'",
+                        exit_code=1,
+                        command=call.command,
+                    )
+                modified = modified_fuzzy
+            else:
+                line_starts.append(_line_of(modified, find))
+                modified = modified.replace(find, replace, 1)
+            changes.append(f"  patches[{i}] find/replace: applied 1")
 
     elif "find" in args:
         find = args["find"]
         replace = args.get("replace", "")
+        if not find:
+            return ToolResult(
+                name="patch_file",
+                status="error",
+                output="Empty 'find' string — nothing to search for.",
+                exit_code=1,
+                command=call.command,
+            )
         if find not in modified:
             modified, found_fuzzy = _fuzzy_find_replace(modified, find, replace)
             if found_fuzzy:
@@ -97,26 +138,35 @@ def patch_file(call: ToolCall) -> ToolResult:
                     find_lines = find.splitlines()
                     if find_lines:
                         file_lines = modified.splitlines()
-                        matcher = difflib.get_close_matches(find_lines[0], file_lines, n=1, cutoff=0.6)
+                        matcher = difflib.get_close_matches(
+                            find_lines[0], file_lines, n=1, cutoff=0.6
+                        )
                         if matcher:
                             idx = file_lines.index(matcher[0])
                             ctx_start = max(0, idx - 1)
                             ctx_end = min(len(file_lines), idx + len(find_lines) + 1)
-                            ctx = "\n".join(f"  {i+1}: {_reveal_ws(ln)}" for i, ln in enumerate(file_lines[ctx_start:ctx_end], start=ctx_start))
+                            ctx = "\n".join(
+                                f"  {i + 1}: {_reveal_ws(ln)}"
+                                for i, ln in enumerate(
+                                    file_lines[ctx_start:ctx_end], start=ctx_start
+                                )
+                            )
                             # Показываем твою find-строку и ближайшую в файле с
                             # видимыми пробелами/табами — частая причина промаха.
                             ws_legend = "(whitespace shown: »=tab, ·=trailing space, ↵=CR)"
                             cmp_block = (
                                 f"\n\nYour find (line 1):\n  {_reveal_ws(find_lines[0])}"
-                                f"\nClosest in file (line {idx+1}):\n  {_reveal_ws(matcher[0])}"
+                                f"\nClosest in file (line {idx + 1}):\n  {_reveal_ws(matcher[0])}"
                             )
                             hint = (
-                                f"\n\nClosest match in file (around line {idx+1}) {ws_legend}:\n{ctx}"
+                                f"\n\nClosest match in file (around line {idx + 1}) {ws_legend}:\n{ctx}"
                                 f"{cmp_block}"
                                 "\n\nNote: if you ran multiple patch_file calls in one response, an earlier patch may have modified this fragment. Re-read the file."
                             )
                 except Exception:
-                    logger.debug("patch_file: close-match hint failed for {}", path_str, exc_info=True)
+                    logger.debug(
+                        "patch_file: close-match hint failed for {}", path_str, exc_info=True
+                    )
                 return ToolResult(
                     name="patch_file",
                     status="error",
@@ -148,7 +198,7 @@ def patch_file(call: ToolCall) -> ToolResult:
         )
 
     try:
-        path.write_text(modified, encoding="utf-8")
+        atomic_write_text(path, modified, encoding="utf-8")
         invalidate_read_cache(path)
     except Exception as e:
         logger.opt(exception=True).error("patch_file write failed for {}: {}", path_str, e)
@@ -186,7 +236,11 @@ def patch_file(call: ToolCall) -> ToolResult:
 
     logger.info(
         "patch_file: {} (+{} -{} ~{}, sections={})",
-        path_str, added, removed, changed, len(changes),
+        path_str,
+        added,
+        removed,
+        changed,
+        len(changes),
     )
 
     return ToolResult(

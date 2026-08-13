@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -33,14 +34,22 @@ from tools.models import ToolCall, ToolResult
 # ── язык по расширению ─────────────────────────────────────────
 
 _EXT_TO_LANG = {
-    ".py": "python", ".pyi": "python",
-    ".ts": "typescript", ".tsx": "typescriptreact",
-    ".js": "javascript", ".jsx": "javascriptreact",
-    ".mjs": "javascript", ".cjs": "javascript",
+    ".py": "python",
+    ".pyi": "python",
+    ".ts": "typescript",
+    ".tsx": "typescriptreact",
+    ".js": "javascript",
+    ".jsx": "javascriptreact",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
     ".go": "go",
     ".rs": "rust",
-    ".c": "c", ".h": "c",
-    ".cpp": "cpp", ".cc": "cpp", ".hpp": "cpp", ".hh": "cpp",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
     ".java": "java",
     ".rb": "ruby",
     ".php": "php",
@@ -59,6 +68,7 @@ def _uri_for_path(path: Path) -> str:
 def _path_from_uri(uri: str) -> str:
     if uri.startswith("file://"):
         from urllib.parse import unquote, urlparse
+
         p = urlparse(uri)
         return unquote(p.path)
     return uri
@@ -66,20 +76,23 @@ def _path_from_uri(uri: str) -> str:
 
 # ── LSP server ─────────────────────────────────────────────────
 
+
 @dataclass
 class LSPServer:
     id: str
     config: dict
-    status: str = "disconnected"   # disconnected | connected | error
+    status: str = "disconnected"  # disconnected | connected | error
     error: str = ""
     root_path: str | None = None
-    _proc: Any = None              # asyncio.subprocess.Process
+    _proc: Any = None  # asyncio.subprocess.Process
     _reader_task: Any = None
     _next_id: int = 1
-    _pending: dict = field(default_factory=dict)   # id → asyncio.Future
-    _opened: dict = field(default_factory=dict)    # path → version
-    _diagnostics: dict = field(default_factory=dict)   # uri → list[dict]
-    _diag_events: dict = field(default_factory=dict)   # uri → list[asyncio.Event] (по одному на ожидающий вызов)
+    _pending: dict = field(default_factory=dict)  # id → asyncio.Future
+    _opened: dict = field(default_factory=dict)  # path → version
+    _diagnostics: dict = field(default_factory=dict)  # uri → list[dict]
+    _diag_events: dict = field(
+        default_factory=dict
+    )  # uri → list[asyncio.Event] (по одному на ожидающий вызов)
 
 
 def _detect_root(file_path: Path, markers: list[str]) -> Path:
@@ -93,8 +106,10 @@ def _detect_root(file_path: Path, markers: list[str]) -> Path:
 
 # ── LSPManager ─────────────────────────────────────────────────
 
+
 class LSPManager:
     _instance: LSPManager | None = None
+    _instance_lock = threading.Lock()
 
     def __init__(self):
         self.servers: dict[str, LSPServer] = {}
@@ -103,12 +118,14 @@ class LSPManager:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._servers_lock = threading.Lock()
+        self._reply_tasks: dict[asyncio.Task, str] = {}
 
     @classmethod
     def instance(cls) -> LSPManager:
-        if cls._instance is None:
-            cls._instance = LSPManager()
-        return cls._instance
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = LSPManager()
+            return cls._instance
 
     # ── фоновый loop ──
 
@@ -208,19 +225,23 @@ class LSPManager:
         fallback = " Use read to locate the symbol instead."
         cfg = self._find_config_for(file_path)
         if not cfg:
-            return (f"No LSP server configured for {suffix} files "
-                    f"(check .data/lsp_servers.json)." + fallback)
+            return (
+                f"No LSP server configured for {suffix} files "
+                f"(check .data/lsp_servers.json)." + fallback
+            )
         root = _detect_root(file_path, cfg.get("root_markers") or [])
         if root is None:
             markers = ", ".join(cfg.get("root_markers") or []) or "a project root"
-            return (f"LSP server '{cfg['id']}' is configured but no project root was found "
-                    f"for {file_path} (looked for: {markers}). LSP needs a project root to "
-                    f"start." + fallback)
+            return (
+                f"LSP server '{cfg['id']}' is configured but no project root was found "
+                f"for {file_path} (looked for: {markers}). LSP needs a project root to "
+                f"start." + fallback
+            )
         # config есть, root есть → сервер не стартовал/упал
         key = f"{cfg['id']}@{root}"
         srv = self.servers.get(key)
-        err = (srv.error if srv and srv.error else "failed to start")
-        return (f"LSP server '{cfg['id']}' could not start ({err})." + fallback)
+        err = srv.error if srv and srv.error else "failed to start"
+        return f"LSP server '{cfg['id']}' could not start ({err})." + fallback
 
     # ── async-имплементация ──
 
@@ -229,7 +250,8 @@ class LSPManager:
         args = server.config.get("args") or []
         env = {**os.environ, **(server.config.get("env") or {})}
         proc = await asyncio.create_subprocess_exec(
-            cmd, *args,
+            cmd,
+            *args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -242,7 +264,7 @@ class LSPManager:
         # initialize
         if server.root_path is None:
             raise RuntimeError(f"lsp[{server.id}]: root_path is None")
-        root_uri = Path(server.root_path).resolve().as_uri()  # noqa: ASYNC240
+        root_uri = Path(server.root_path).resolve().as_uri()
         params = {
             "processId": os.getpid(),
             "rootUri": root_uri,
@@ -297,6 +319,14 @@ class LSPManager:
             return
         except Exception as e:
             logger.error("lsp[{}] reader crashed: {}", server.id, e)
+        finally:
+            # Любой EOF/crash означает, что ответы на outstanding requests уже
+            # не придут. Не держим futures до индивидуальных timeout'ов.
+            pending = list(server._pending.values())
+            server._pending.clear()
+            for fut in pending:
+                if not fut.done():
+                    fut.set_exception(ConnectionError(f"LSP server '{server.id}' reader stopped"))
 
     def _dispatch(self, server: LSPServer, msg: dict) -> None:
         if "id" in msg and ("result" in msg or "error" in msg):
@@ -330,9 +360,26 @@ class LSPManager:
         чтобы сервер не зависал на старте (workspace/configuration и т.п.)."""
         rid = msg.get("id")
         try:
-            asyncio.create_task(  # noqa: RUF006
+            task = asyncio.create_task(
                 self._send(server, {"jsonrpc": "2.0", "id": rid, "result": None})
             )
+            self._reply_tasks[task] = server.id
+
+            def _done(done: asyncio.Task) -> None:
+                self._reply_tasks.pop(done, None)
+                try:
+                    exc = done.exception()
+                except asyncio.CancelledError:
+                    return
+                if exc is not None:
+                    logger.debug(
+                        "lsp[{}] reply to server request id={} failed: {}",
+                        server.id,
+                        rid,
+                        exc,
+                    )
+
+            task.add_done_callback(_done)
         except Exception as e:
             logger.debug("lsp[{}] reply to server request id={} failed: {}", server.id, rid, e)
 
@@ -347,34 +394,43 @@ class LSPManager:
         server._next_id += 1
         fut = asyncio.get_running_loop().create_future()
         server._pending[rid] = fut
-        await self._send(server, {"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
         try:
+            await self._send(
+                server, {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+            )
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
-            server._pending.pop(rid, None)
             raise RuntimeError(f"LSP request '{method}' timed out after {timeout}s")  # noqa: B904
+        finally:
+            # Also runs on send failure and caller cancellation. _dispatch may
+            # already have popped it; pop is intentionally idempotent.
+            server._pending.pop(rid, None)
 
     async def _notify(self, server: LSPServer, method: str, params: dict) -> None:
         await self._send(server, {"jsonrpc": "2.0", "method": method, "params": params})
 
     async def _ensure_open(self, server: LSPServer, file_path: Path) -> None:
-        path_str = str(file_path.resolve())  # noqa: ASYNC240
+        path_str = str(file_path.resolve())
         if path_str in server._opened:
             return
         try:
-            text = file_path.read_text(encoding="utf-8", errors="replace")  # noqa: ASYNC240
+            text = file_path.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
             raise RuntimeError(f"cannot read {file_path}: {e}")  # noqa: B904
         version = 1
         server._opened[path_str] = version
-        await self._notify(server, "textDocument/didOpen", {
-            "textDocument": {
-                "uri": _uri_for_path(file_path),
-                "languageId": _lang_id_for_path(file_path),
-                "version": version,
-                "text": text,
+        await self._notify(
+            server,
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": _uri_for_path(file_path),
+                    "languageId": _lang_id_for_path(file_path),
+                    "version": version,
+                    "text": text,
+                },
             },
-        })
+        )
 
     # ── публичные действия ──
 
@@ -383,26 +439,46 @@ class LSPManager:
 
         path = resolve_path(file_path_str)
         if not path.exists():
-            return ToolResult(name=f"lsp_{action}", status="error",
-                              output=f"Файл не найден: {file_path_str}",
-                              exit_code=1, command=f"lsp_{action}")
+            return ToolResult(
+                name=f"lsp_{action}",
+                status="error",
+                output=f"Файл не найден: {file_path_str}",
+                exit_code=1,
+                command=f"lsp_{action}",
+            )
         server = self._ensure_server(path)
         if server is None:
-            return ToolResult(name=f"lsp_{action}", status="error",
-                              output=self._unavailable_reason(path),
-                              exit_code=1, command=f"lsp_{action}")
+            return ToolResult(
+                name=f"lsp_{action}",
+                status="error",
+                output=self._unavailable_reason(path),
+                exit_code=1,
+                command=f"lsp_{action}",
+            )
         try:
-            text = self._submit(self._action_async(server, path, line, character, action), timeout=20.0)
-            return ToolResult(name=f"lsp_{action}", status="ok",
-                              output=text, exit_code=0,
-                              command=f"{server.id} {action} {path}:{line}:{character}")
+            text = self._submit(
+                self._action_async(server, path, line, character, action), timeout=20.0
+            )
+            return ToolResult(
+                name=f"lsp_{action}",
+                status="ok",
+                output=text,
+                exit_code=0,
+                command=f"{server.id} {action} {path}:{line}:{character}",
+            )
         except Exception as e:
             logger.error("lsp_{} failed: {}", action, e)
-            return ToolResult(name=f"lsp_{action}", status="error",
-                              output=f"LSP {action} failed: {type(e).__name__}: {e}",
-                              exit_code=1, command=f"lsp_{action}")
+            return ToolResult(
+                name=f"lsp_{action}",
+                status="error",
+                output=f"LSP {action} failed: {type(e).__name__}: {e}",
+                exit_code=1,
+                command=f"lsp_{action}",
+            )
 
-    async def _action_async(self, server: LSPServer, path: Path, line: int, character: int, action: str) -> str:
+    async def _action_async(
+        self, server: LSPServer, path: Path, line: int, character: int, action: str
+    ) -> str:
         await self._ensure_open(server, path)
         # LSP использует 0-индексы для строк и колонок; пользователь даёт 1-based строку.
         pos = {"line": max(0, line - 1), "character": max(0, character)}
@@ -435,24 +511,24 @@ class LSPManager:
             try:
                 # Force re-open: closeDoc + didOpen с новой версией
                 try:
-                    if str(path.resolve()) in server._opened:  # noqa: ASYNC240
-                        await self._notify(server, "textDocument/didClose", {
-                            "textDocument": {"uri": uri},
-                        })
-                        server._opened.pop(str(path.resolve()), None)  # noqa: ASYNC240
+                    if str(path.resolve()) in server._opened:
+                        await self._notify(
+                            server,
+                            "textDocument/didClose",
+                            {
+                                "textDocument": {"uri": uri},
+                            },
+                        )
+                        server._opened.pop(str(path.resolve()), None)
                     await self._ensure_open(server, path)
                 except Exception as e:
                     logger.debug("lsp diagnostics re-open failed: {}", e)
-                try:
+                with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(ev.wait(), timeout=4.0)
-                except asyncio.TimeoutError:
-                    pass
             finally:
                 # Удаляем только свой event; чужие ожидающие вызовы не трогаем.
-                try:
+                with contextlib.suppress(ValueError):
                     waiters.remove(ev)
-                except ValueError:
-                    pass
                 if not waiters:
                     server._diag_events.pop(uri, None)
             diags = server._diagnostics.get(uri) or []
@@ -465,7 +541,7 @@ class LSPManager:
         for sid in list(self.servers.keys()):
             try:
                 self._submit(self._shutdown_async(self.servers[sid]), timeout=5.0)
-            except Exception as e:  # noqa: PERF203
+            except Exception as e:
                 logger.debug("lsp shutdown '{}' error: {}", sid, e)
         self.servers.clear()
         if self._loop and self._loop.is_running():
@@ -480,14 +556,19 @@ class LSPManager:
         self._loop = None
 
     async def _shutdown_async(self, server: LSPServer) -> None:
-        try:
+        reply_tasks = [
+            task
+            for task, sid in list(self._reply_tasks.items())
+            if sid == server.id and not task.done()
+        ]
+        for task in reply_tasks:
+            task.cancel()
+        if reply_tasks:
+            await asyncio.gather(*reply_tasks, return_exceptions=True)
+        with contextlib.suppress(Exception):
             await self._request(server, "shutdown", {}, timeout=2.0)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             await self._notify(server, "exit", {})
-        except Exception:
-            pass
         if server._reader_task:
             server._reader_task.cancel()
             try:
@@ -502,18 +583,17 @@ class LSPManager:
                     server._proc.stdin.close()
                 except Exception as e:
                     logger.debug("lsp[{}] stdin close failed: {}", server.id, e)
-            try:
+            with contextlib.suppress(OSError, ProcessLookupError):
                 server._proc.terminate()
-            except (OSError, ProcessLookupError):
-                pass
             try:
                 await asyncio.wait_for(server._proc.wait(), timeout=2.0)
             except Exception:
                 try:
                     server._proc.kill()
                 except (OSError, ProcessLookupError) as e:
-                    logger.warning("lsp proc kill failed pid=%s: %s",
-                                   getattr(server._proc, "pid", None), e)
+                    logger.warning(
+                        "lsp proc kill failed pid={}: {}", getattr(server._proc, "pid", None), e
+                    )
             # Явно закрываем subprocess-transport, ПОКА фоновый loop ещё жив.
             # Иначе BaseSubprocessTransport.__del__ дёрнет loop.call_soon уже
             # после loop.close() → "RuntimeError: Event loop is closed" при GC.
@@ -534,11 +614,17 @@ class LSPManager:
                 pid = getattr(s._proc, "pid", None)
                 if pid:
                     rss_kb = _read_proc_rss(pid)
-            out.append({
-                "id": s.id, "status": s.status, "error": s.error,
-                "root": s.root_path, "command": s.config.get("command"),
-                "pid": pid, "rss_kb": rss_kb,
-            })
+            out.append(
+                {
+                    "id": s.id,
+                    "status": s.status,
+                    "error": s.error,
+                    "root": s.root_path,
+                    "command": s.config.get("command"),
+                    "pid": pid,
+                    "rss_kb": rss_kb,
+                }
+            )
         return out
 
     def disconnect_by_key(self, key: str) -> None:
@@ -552,6 +638,7 @@ class LSPManager:
 
 
 # ── форматирование результатов ─────────────────────────────────
+
 
 def _format_locations(res: Any, kind: str) -> str:
     if not res:
@@ -635,20 +722,29 @@ def _format_hover(res: Any) -> str:
 
 # ── tools ──────────────────────────────────────────────────────
 
+
 def _exec_action(call: ToolCall, action: str) -> ToolResult:
     args = call.args or {}
     path = args.get("path") or args.get("file") or ""
     if not path:
-        return ToolResult(name=f"lsp_{action}", status="error",
-                          output="Не указан path",
-                          exit_code=1, command=call.command)
+        return ToolResult(
+            name=f"lsp_{action}",
+            status="error",
+            output="Не указан path",
+            exit_code=1,
+            command=call.command,
+        )
     try:
         line = int(args.get("line", 1))
         character = int(args.get("character", args.get("col", 0)))
     except (TypeError, ValueError):
-        return ToolResult(name=f"lsp_{action}", status="error",
-                          output="line/character должны быть числами",
-                          exit_code=1, command=call.command)
+        return ToolResult(
+            name=f"lsp_{action}",
+            status="error",
+            output="line/character должны быть числами",
+            exit_code=1,
+            command=call.command,
+        )
     return LSPManager.instance()._run_action(path, line, character, action)
 
 
@@ -660,13 +756,14 @@ def execute_lsp_diagnostics(call: ToolCall) -> ToolResult:
     return _exec_action(call, "diagnostics")
 
 
-
 # ── публичный API ──────────────────────────────────────────────
+
 
 def init_lsp_from_config() -> int:
     """Загружает конфиги enabled-серверов. Серверы стартуют лениво при первом
     запросе по соответствующему расширению. Возвращает кол-во конфигов."""
     from config.lsp import list_servers
+
     cfgs = list_servers()
     if not cfgs:
         return 0

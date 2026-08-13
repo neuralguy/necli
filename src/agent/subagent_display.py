@@ -6,6 +6,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from config.i18n import format_duration
 from config.themes import t
 from config.ui import ui
 
@@ -17,7 +18,10 @@ def _w() -> int:
 
 
 def show_subagent_start(
-    index: int, total: int, mode: str, prompt: str,
+    index: int,
+    total: int,
+    mode: str,
+    prompt: str,
     model_label: str = "",
 ):
     """Показывает панель запуска субагента."""
@@ -41,8 +45,7 @@ def show_subagent_status(index: int, message: str):
     """Показывает обновление статуса субагента."""
     icon = ui.get("subagent.header_emoji", "\U0001f916")
     console.print(
-        f"  [dim {t('magenta')}]{icon} Subagent {index + 1}: {message}"
-        f"[/dim {t('magenta')}]",
+        f"  [dim {t('magenta')}]{icon} Subagent {index + 1}: {message}[/dim {t('magenta')}]",
     )
 
 
@@ -59,7 +62,7 @@ def show_subagent_done(index: int, result=None):
         text.append(f"FAILED: {result.error[:200]}", style=t("error"))
         console.print(Panel(text, border_style=t("error"), padding=pad, width=_w()))
     else:
-        elapsed = f"{result.elapsed:.1f}s" if result.elapsed else ""
+        elapsed = format_duration(result.elapsed, decimal_seconds=True) if result.elapsed else ""
         iters = f"{result.iterations} iter" if result.iterations else ""
         stats = ", ".join(filter(None, [iters, elapsed]))
         text = Text()

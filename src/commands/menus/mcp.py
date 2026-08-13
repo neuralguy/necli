@@ -5,6 +5,8 @@
 добавления, удаления и ошибок — в динамическом notice.
 """
 
+import contextlib
+
 from commands.menus._style import (
     card_menu,
     confirm_delete,
@@ -32,6 +34,7 @@ async def mcp_interactive():
     while True:
         servers = list_servers()
         from apis.mcp_client import MCPManager
+
         mgr_servers = {s["id"]: s for s in MCPManager.instance().list_servers_info()}
 
         items = []
@@ -39,19 +42,22 @@ async def mcp_interactive():
             sid = cfg.get("id", "?")
             icon, role, status_str = _status_of(cfg, mgr_servers.get(sid, {}))
             args = " ".join(cfg.get("args", []))
-            items.append({
-                "icon": icon,
-                "icon_style": role,
-                "label": sid,
-                "hint": f"{cfg.get('command', '')} {args}".strip(),
-                "badge": status_str,
-                "badge_style": role,
-            })
-        items.append({"label": _("mcp.add_server"), "hint": _("mcp.add_hint")})
-        items.append({"label": _("mcp.reconnect_all"), "hint": ""})
+            items.append(
+                {
+                    "icon": icon,
+                    "icon_style": role,
+                    "label": sid,
+                    "hint": f"{cfg.get('command', '')} {args}".strip(),
+                    "badge": status_str,
+                    "badge_style": role,
+                }
+            )
+        items.append({"label": _("mcp.add_server"), "hint": _("mcp.add_hint"), "action": True})
+        items.append({"label": _("mcp.reconnect_all"), "hint": "", "action": True})
 
-        facts = [f"{len(servers)} server(s)"] if servers else [
-            _("mcp.no_servers"), _("mcp.examples")]
+        facts = (
+            [f"{len(servers)} server(s)"] if servers else [_("mcp.no_servers"), _("mcp.examples")]
+        )
 
         choice = await card_menu(items, title=_("mcp.title"), facts=facts)
         if choice is None:
@@ -72,6 +78,7 @@ async def _detail(sid: str):
         if not cfg:
             return "back"
         from apis.mcp_client import MCPManager
+
         info_map = {s["id"]: s for s in MCPManager.instance().list_servers_info()}
         info = info_map.get(sid, {})
 
@@ -86,21 +93,38 @@ async def _detail(sid: str):
         if info.get("error"):
             facts.append(f"{_('mcp.error_label')} {info['error']}")
         if tools:
-            facts.append(f"{_('mcp.tools_label')} ({len(tools)}): "
-                         f"{', '.join(tools[:12])}{' …' if len(tools) > 12 else ''}")
+            facts.append(
+                f"{_('mcp.tools_label')} ({len(tools)}): "
+                f"{', '.join(tools[:12])}{' …' if len(tools) > 12 else ''}"
+            )
 
         actions = [
-            {"label": _("mcp.reconnect"), "hint": _("mcp.reconnect_hint"), "icon": "↻",
-             "icon_style": "accent"},
-            {"label": _("mcp.enable") if not enabled else _("mcp.disable"),
-             "icon": "●" if not enabled else "○",
-             "icon_style": "success" if not enabled else "warning"},
-            {"label": _("api.delete"), "hint": _("api.delete_permanent"), "icon": "✗",
-             "icon_style": "error"},
+            {
+                "label": _("mcp.reconnect"),
+                "hint": _("mcp.reconnect_hint"),
+                "icon": "↻",
+                "icon_style": "accent",
+                "action": True,
+            },
+            {
+                "label": _("mcp.enable") if not enabled else _("mcp.disable"),
+                "icon": "●" if not enabled else "○",
+                "icon_style": "success" if not enabled else "warning",
+                "action": True,
+            },
+            {
+                "label": _("api.delete"),
+                "hint": _("api.delete_permanent"),
+                "icon": "✗",
+                "icon_style": "error",
+                "action": True,
+            },
             {"label": _("common.back"), "icon": " "},
         ]
         choice = await card_menu(
-            actions, title=sid, status=status,
+            actions,
+            title=sid,
+            status=status,
             status_style="success" if status == "connected" else "muted",
             facts=facts,
         )
@@ -118,6 +142,7 @@ async def _detail(sid: str):
         if choice == 2 and await confirm_delete(_("mcp.delete_q", name=sid)):
             from apis.mcp_client import MCPManager
             from tools.registry import TOOL_REGISTRY
+
             MCPManager.instance().disconnect(sid)
             for k in list(TOOL_REGISTRY.keys()):
                 if k.startswith(f"mcp__{sid}__"):
@@ -146,20 +171,23 @@ async def _add_interactive():
         if "=" in token:
             k, v = token.split("=", 1)
             env[k] = v
-    add_server({
-        "id": sid,
-        "command": command,
-        "args": args_raw.split() if args_raw else [],
-        "env": env,
-        "transport": "stdio",
-        "enabled": True,
-    })
+    add_server(
+        {
+            "id": sid,
+            "command": command,
+            "args": args_raw.split() if args_raw else [],
+            "env": env,
+            "transport": "stdio",
+            "enabled": True,
+        }
+    )
     await _reconnect_all(silent=True)
 
 
 async def _reconnect_one(sid: str):
     from apis.mcp_client import MCPManager, _register_in_tool_registry
     from tools.registry import TOOL_REGISTRY
+
     mgr = MCPManager.instance()
     for k in list(TOOL_REGISTRY.keys()):
         if k.startswith(f"mcp__{sid}__"):
@@ -177,11 +205,10 @@ async def _reconnect_all(silent: bool = False):
     import asyncio
 
     from apis.mcp_client import reconnect_mcp
+
     if silent:
-        try:
+        with contextlib.suppress(Exception):
             await asyncio.to_thread(reconnect_mcp)
-        except Exception:
-            pass
         return
     try:
         await with_spinner(_("mcp.reconnecting"), reconnect_mcp)

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 import config
@@ -19,24 +20,27 @@ logger = logging.getLogger(__name__)
 
 def _build_main_menu():
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🧩 Mode", callback_data="menu:mode"),
-            InlineKeyboardButton(text="🤖 Model", callback_data="menu:model"),
-        ],
-        [
-            InlineKeyboardButton(text="📋 Plan", callback_data="menu:plan"),
-            InlineKeyboardButton(text="📊 Status", callback_data="menu:status"),
-        ],
-        [
-            InlineKeyboardButton(text="↻ New chat", callback_data="menu:new"),
-            InlineKeyboardButton(text="🗜 Compress", callback_data="menu:compress"),
-        ],
-        [
-            InlineKeyboardButton(text="■ Stop", callback_data="menu:stop"),
-            InlineKeyboardButton(text="✕ Close", callback_data="menu:close"),
-        ],
-    ])
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🧩 Mode", callback_data="menu:mode"),
+                InlineKeyboardButton(text="🤖 Model", callback_data="menu:model"),
+            ],
+            [
+                InlineKeyboardButton(text="📋 Plan", callback_data="menu:plan"),
+                InlineKeyboardButton(text="📊 Status", callback_data="menu:status"),
+            ],
+            [
+                InlineKeyboardButton(text="↻ New chat", callback_data="menu:new"),
+                InlineKeyboardButton(text="🗜 Compress", callback_data="menu:compress"),
+            ],
+            [
+                InlineKeyboardButton(text="■ Stop", callback_data="menu:stop"),
+                InlineKeyboardButton(text="✕ Close", callback_data="menu:close"),
+            ],
+        ]
+    )
 
 
 # Текстовые лейблы кнопок reply-клавиатуры → slash-команды.
@@ -49,6 +53,7 @@ _REPLY_BUTTON_TO_CMD = {
 
 def _build_reply_keyboard():
     from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🎛 Menu"), KeyboardButton(text="■ Stop")],
@@ -61,13 +66,19 @@ def _build_reply_keyboard():
 
 def _build_mode_menu(current_mode: str):
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
     modes = [("agent", "🚀 agent"), ("planning", "🧠 planning"), ("swarm", "🔮 swarm")]
     rows = []
     for mid, label in modes:
         mark = "● " if mid == current_mode else "  "
-        rows.append([InlineKeyboardButton(
-            text=f"{mark}{label}", callback_data=f"mode:{mid}",
-        )])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark}{label}",
+                    callback_data=f"mode:{mid}",
+                )
+            ]
+        )
     rows.append([InlineKeyboardButton(text="← Back", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -76,6 +87,7 @@ def _build_model_menu(current_model_id: str):
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     from apis.registry import get_definition
+
     api_id = config.get_active_api()
     defn = get_definition(api_id) if api_id else None
     rows = []
@@ -85,19 +97,30 @@ def _build_model_menu(current_model_id: str):
             label = f"{mark}{m.display_name}"
             if len(label) > 50:
                 label = label[:49] + "…"
-            rows.append([InlineKeyboardButton(
-                text=label, callback_data=f"model:{m.id}",
-            )])
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=label,
+                        callback_data=f"model:{m.id}",
+                    )
+                ]
+            )
     if not rows:
-        rows.append([InlineKeyboardButton(
-            text="No models", callback_data="menu:main",
-        )])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="No models",
+                    callback_data="menu:main",
+                )
+            ]
+        )
     rows.append([InlineKeyboardButton(text="← Back", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _format_status(state) -> str:
     import html
+
     s = state.session
     api_id = config.get_active_api() or "—"
     mode = state.mode_state.get("mode", "agent")
@@ -121,11 +144,13 @@ def _format_plan(state) -> str:
     import html
 
     from agent import get_current_ctx
+
     ctx = get_current_ctx()
     plan = ctx.plan if ctx else None
     if not plan or not plan.steps:
         return "<i>No active plan</i>"
     from planner import StepStatus
+
     icons = {
         StepStatus.PENDING: "⏳",
         StepStatus.IN_PROGRESS: "▶️",
@@ -152,6 +177,7 @@ async def _do_new_chat(state) -> None:
     """
     from agent import get_current_ctx
     from apis.telegram import IncomingMessage
+
     bridge = get_bridge()
     ctx = get_current_ctx()
     if ctx is not None:
@@ -160,12 +186,14 @@ async def _do_new_chat(state) -> None:
     if bridge.is_running and bridge.incoming_queue is not None:
         # Спец-маркер: main loop увидит его в _read_user_with_tg и обработает.
         try:
-            bridge.incoming_queue.put_nowait(IncomingMessage(
-                text="__tg_action__:new_chat",
-                chat_id=bridge.chat_id or 0,
-                user_id=0,
-                username="",
-            ))
+            bridge.incoming_queue.put_nowait(
+                IncomingMessage(
+                    text="__tg_action__:new_chat",
+                    chat_id=bridge.chat_id or 0,
+                    user_id=0,
+                    username="",
+                )
+            )
         except Exception as e:
             logger.warning("tg new_chat queue put failed: %s", e)
             bridge.send("⚠️ <i>new chat request dropped (queue busy)</i>")
@@ -193,6 +221,7 @@ def register_tg_menu(state) -> None:
 
     async def cmd_stop(arg, message):
         from agent import get_current_ctx
+
         ctx = get_current_ctx()
         if ctx:
             ctx.interrupted = True
@@ -225,28 +254,29 @@ def register_tg_menu(state) -> None:
 
         if data == "menu:main":
             await bridge.edit_inline_message(
-                cb, _menu_title(),
+                cb,
+                _menu_title(),
                 reply_markup=_build_main_menu(),
             )
             return
 
         if data == "menu:close":
-            try:
+            with contextlib.suppress(Exception):
                 await cb.message.delete()
-            except Exception:
-                pass
             return
 
         if data == "menu:status":
             await bridge.edit_inline_message(
-                cb, _format_status(state),
+                cb,
+                _format_status(state),
                 reply_markup=_build_main_menu(),
             )
             return
 
         if data == "menu:plan":
             await bridge.edit_inline_message(
-                cb, _format_plan(state),
+                cb,
+                _format_plan(state),
                 reply_markup=_build_main_menu(),
             )
             return
@@ -254,7 +284,8 @@ def register_tg_menu(state) -> None:
         if data == "menu:mode":
             current = state.mode_state.get("mode", "agent")
             await bridge.edit_inline_message(
-                cb, "<b>🧩 Select mode</b>",
+                cb,
+                "<b>🧩 Select mode</b>",
                 reply_markup=_build_mode_menu(current),
             )
             return
@@ -267,6 +298,7 @@ def register_tg_menu(state) -> None:
             state.mode_state["mode"] = new_mode
             state.mode_state["changed"] = True
             from agent import get_current_ctx
+
             ctx = get_current_ctx()
             if ctx:
                 ctx.mode = new_mode
@@ -274,14 +306,16 @@ def register_tg_menu(state) -> None:
             if getattr(state, "prompt_input", None) is not None:
                 state.prompt_input.mode = new_mode
             await bridge.edit_inline_message(
-                cb, f"✅ Mode switched: <b>{new_mode}</b>",
+                cb,
+                f"✅ Mode switched: <b>{new_mode}</b>",
                 reply_markup=_build_main_menu(),
             )
             return
 
         if data == "menu:model":
             await bridge.edit_inline_message(
-                cb, "<b>🤖 Select model</b>",
+                cb,
+                "<b>🤖 Select model</b>",
                 reply_markup=_build_model_menu(config.get_active_api_model()),
             )
             return
@@ -290,6 +324,7 @@ def register_tg_menu(state) -> None:
             model_id = data.split(":", 1)[1]
             from apis.agent_adapter import create_api_session
             from apis.registry import get_definition
+
             api_id = config.get_active_api()
             defn = get_definition(api_id) if api_id else None
             if not defn:
@@ -308,7 +343,8 @@ def register_tg_menu(state) -> None:
             state.cur_model = mi.display_name
             state.msg_num = 0
             await bridge.edit_inline_message(
-                cb, f"✅ Model: <b>{mi.display_name}</b>\n<code>{model_id}</code>",
+                cb,
+                f"✅ Model: <b>{mi.display_name}</b>\n<code>{model_id}</code>",
                 reply_markup=_build_main_menu(),
             )
             return
@@ -316,7 +352,8 @@ def register_tg_menu(state) -> None:
         if data == "menu:new":
             await _do_new_chat(state)
             await bridge.edit_inline_message(
-                cb, "↻ <b>New chat created</b>",
+                cb,
+                "↻ <b>New chat created</b>",
                 reply_markup=_build_main_menu(),
             )
             return
@@ -332,6 +369,7 @@ def register_tg_menu(state) -> None:
 
         if data == "menu:stop":
             from agent import get_current_ctx
+
             ctx = get_current_ctx()
             if ctx:
                 ctx.interrupted = True
@@ -345,10 +383,12 @@ def register_tg_menu(state) -> None:
 
     bridge.register_callback_handler(on_callback)
 
-    bridge.set_bot_commands_sync([
-        ("menu", "Main menu"),
-        ("status", "Current status"),
-        ("plan", "Active plan"),
-        ("new", "New chat"),
-        ("stop", "Stop agent"),
-    ])
+    bridge.set_bot_commands_sync(
+        [
+            ("menu", "Main menu"),
+            ("status", "Current status"),
+            ("plan", "Active plan"),
+            ("new", "New chat"),
+            ("stop", "Stop agent"),
+        ]
+    )

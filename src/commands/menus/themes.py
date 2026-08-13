@@ -32,7 +32,7 @@ from config.themes import (
 from ui import overlays
 from ui.menu import render_width
 
-_HEX_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 _SWATCH_ROLES = ("accent", "success", "warning", "error", "info", "magenta", "purple")
 
@@ -73,18 +73,28 @@ async def themes_interactive():
             if name == current:
                 initial = i
             colors = BUILTIN_THEMES[name]
-            items.append({
-                "label": name,
-                "swatch": [colors[role] for role in _SWATCH_ROLES],
-                "badge": ("● " + _("themes.current")
-                          + (" " + _("themes.plus_custom") if custom else "")
-                          if name == current else ""),
-                "badge_style": "success",
-            })
+            items.append(
+                {
+                    "label": name,
+                    "swatch": [colors[role] for role in _SWATCH_ROLES],
+                    "badge": (
+                        "● "
+                        + _("themes.current")
+                        + (" " + _("themes.plus_custom") if custom else "")
+                        if name == current
+                        else ""
+                    ),
+                    "badge_style": "success",
+                }
+            )
         custom_idx = len(theme_names)
-        items.append({"label": _("themes.customize"), "hint": _("themes.customize_hint")})
+        items.append(
+            {"label": _("themes.customize"), "hint": _("themes.customize_hint"), "action": True}
+        )
         if custom:
-            items.append({"label": _("themes.reset"), "hint": _("themes.reset_hint")})
+            items.append(
+                {"label": _("themes.reset"), "hint": _("themes.reset_hint"), "action": True}
+            )
 
         def footer(sel: int, names=theme_names) -> str:
             # Палитра для превью: подсвеченная тема либо актуальная (на
@@ -142,14 +152,16 @@ async def _theme_customize():
         items = []
         for role in roles_list:
             color = current_colors.get(role, FALLBACK)
-            items.append({
-                "icon": "✎" if role in custom_overrides else " ",
-                "icon_style": "warning",
-                "label": ROLE_LABELS.get(role, role),
-                "swatch": [color],
-                "badge": color,
-                "badge_style": "dim",
-            })
+            items.append(
+                {
+                    "icon": "✎" if role in custom_overrides else " ",
+                    "icon_style": "warning",
+                    "label": ROLE_LABELS.get(role, role),
+                    "swatch": [color],
+                    "badge": color,
+                    "badge_style": "dim",
+                }
+            )
         items.append({"label": _("common.back")})
 
         def footer(_sel: int, colors=current_colors) -> str:

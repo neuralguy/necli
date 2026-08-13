@@ -36,7 +36,9 @@ def parse_depends_on(raw: Any) -> list[int]:
     return out
 
 
-def normalize_task(raw: Any, *, phase: str = "", depends_on: list[int] | None = None) -> dict[str, Any] | None:
+def normalize_task(
+    raw: Any, *, phase: str = "", depends_on: list[int] | None = None
+) -> dict[str, Any] | None:
     if isinstance(raw, str):
         raw = {"prompt": raw}
     if not isinstance(raw, dict):
@@ -81,11 +83,13 @@ def _item_context(item: Any, item_index: int, stage_index: int, phase: str = "")
     if isinstance(item, dict):
         for key, value in item.items():
             if isinstance(key, str):
-                ctx[key] = value  # noqa: PERF403
+                ctx[key] = value
     return ctx
 
 
-def render_template(template: str, item: Any, item_index: int, stage_index: int, phase: str = "") -> str:
+def render_template(
+    template: str, item: Any, item_index: int, stage_index: int, phase: str = ""
+) -> str:
     ctx = _SafeFormatDict(_item_context(item, item_index, stage_index, phase))
     try:
         return template.format_map(ctx)
@@ -145,7 +149,9 @@ def _pipeline_tasks(
                 stage = {"prompt": stage}
             if not isinstance(stage, dict):
                 continue
-            stage_name = _clean_str(stage.get("phase") or stage.get("name") or stage.get("title")) or phase
+            stage_name = (
+                _clean_str(stage.get("phase") or stage.get("name") or stage.get("title")) or phase
+            )
             template = _clean_str(stage.get("prompt") or stage.get("template"))
             if not template:
                 continue
@@ -187,7 +193,10 @@ def build_subagent_task_specs(args: dict[str, Any]) -> tuple[list[dict[str, Any]
                 phase_raw = {"name": f"Phase {phase_index}", "tasks": [phase_raw]}
             if not isinstance(phase_raw, dict):
                 continue
-            phase_name = _clean_str(phase_raw.get("name") or phase_raw.get("title")) or f"Phase {phase_index}"
+            phase_name = (
+                _clean_str(phase_raw.get("name") or phase_raw.get("title"))
+                or f"Phase {phase_index}"
+            )
             if "depends_on" in phase_raw:
                 phase_deps = parse_depends_on(phase_raw.get("depends_on"))
             else:
@@ -197,10 +206,14 @@ def build_subagent_task_specs(args: dict[str, Any]) -> tuple[list[dict[str, Any]
             phase_tasks = phase_raw.get("tasks")
             if isinstance(phase_tasks, list):
                 for raw in phase_tasks:
-                    if not _append_task(tasks, normalize_task(raw, phase=phase_name, depends_on=phase_deps)):
+                    if not _append_task(
+                        tasks, normalize_task(raw, phase=phase_name, depends_on=phase_deps)
+                    ):
                         return tasks[:100], f"{name} · phases · {len(tasks[:100])} task(s)"
 
-            if isinstance(phase_raw.get("items"), list) and isinstance(phase_raw.get("stages"), list):
+            if isinstance(phase_raw.get("items"), list) and isinstance(
+                phase_raw.get("stages"), list
+            ):
                 for task in _pipeline_tasks(
                     phase_raw,
                     phase=phase_name,

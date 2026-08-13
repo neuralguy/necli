@@ -6,18 +6,18 @@ import time
 from collections.abc import Callable
 
 from config import READ_ONLY_TOOLS as _READ_ONLY_CANONICAL
-from logger import logger
+from logger import logger, payload_preview
 from tools.expand_result import execute_expand_tool_result
 from tools.file_ops import (
-    create_docx,
     create_file,
-    docx_screenshot,
+    docx,
     execute_grep,
     patch_file,
+    pptx,
     read,
 )
 from tools.image_search import execute_image_search
-from tools.memory_tool import memory_list, memory_read, memory_write
+from tools.memory_tool import memory
 from tools.models import ToolCall, ToolResult
 from tools.poll import execute_poll
 from tools.shell import execute_shell
@@ -32,12 +32,15 @@ from tools.web_search import execute_web_search
 # который импортирует tools.registry. Регистрируем тонкие обёртки.
 def _lsp_ref(call):
     from apis.lsp_client import execute_lsp_references
+
     return execute_lsp_references(call)
 
 
 def _lsp_diag(call):
     from apis.lsp_client import execute_lsp_diagnostics
+
     return execute_lsp_diagnostics(call)
+
 
 # Маппинг имя → функция-обработчик
 TOOL_REGISTRY: dict[str, Callable] = {
@@ -46,8 +49,8 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "grep": execute_grep,
     "patch_file": patch_file,
     "create_file": create_file,
-    "create_docx": create_docx,
-    "docx_screenshot": docx_screenshot,
+    "docx": docx,
+    "pptx": pptx,
     "poll": execute_poll,
     "skill": execute_skill,
     "subagent": execute_subagent,
@@ -55,9 +58,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "web_fetch": execute_web_fetch,
     "image_search": execute_image_search,
     "expand_tool_result": execute_expand_tool_result,
-    "memory_write": memory_write,
-    "memory_list": memory_list,
-    "memory_read": memory_read,
+    "memory": memory,
     "lsp_references": _lsp_ref,
     "lsp_diagnostics": _lsp_diag,
 }
@@ -127,8 +128,79 @@ def _run_post_tool_hooks(call: ToolCall, result: ToolResult) -> None:
         logger.opt(exception=True).warning("PostToolUse hook error ignored: {}", e)
 
 
+def get_disabled_tools() -> set[str]:
+    """Возвращает сохранённый набор отключённых пользователем инструментов."""
+    try:
+        from config.settings import get
+
+        value = get("disabled_tools", [])
+        return (
+            {name for name in value if isinstance(name, str)} if isinstance(value, list) else set()
+        )
+    except Exception:
+        logger.debug("disabled_tools lookup failed", exc_info=True)
+        return set()
+
+
+def is_tool_enabled(tool_name: str) -> bool:
+    return tool_name not in get_disabled_tools()
+
+
+def set_tool_enabled(tool_name: str, enabled: bool) -> None:
+    """Сохраняет пользовательское состояние одного инструмента."""
+    from config.settings import set_value
+
+    disabled = get_disabled_tools()
+    if enabled:
+        disabled.discard(tool_name)
+    else:
+        disabled.add(tool_name)
+    set_value("disabled_tools", sorted(disabled))
+
+
+def list_tool_info() -> list[dict[str, object]]:
+    """Список зарегистрированных инструментов с описаниями и состоянием."""
+    descriptions: dict[str, str] = {}
+    try:
+        from apis.tool_schemas import TOOL_SCHEMAS
+
+        schemas = list(TOOL_SCHEMAS)
+        try:
+            from apis.mcp_client import get_mcp_tool_schemas
+
+            schemas.extend(get_mcp_tool_schemas())
+        except Exception:
+            pass
+        descriptions = {
+            schema["function"]["name"]: " ".join(
+                schema["function"].get("description", "").split()
+            ).split(". ", 1)[0]
+            for schema in schemas
+        }
+    except Exception:
+        logger.debug("tool descriptions lookup failed", exc_info=True)
+    return [
+        {
+            "name": name,
+            "description": descriptions.get(name, "External tool"),
+            "enabled": is_tool_enabled(name),
+        }
+        for name in sorted(TOOL_REGISTRY)
+    ]
+
+
 def execute_call(call: ToolCall) -> ToolResult:
     """Выполняет вызов инструмента через реестр."""
+    if not is_tool_enabled(call.tool_name):
+        return ToolResult(
+            name=call.tool_name or "unknown",
+            status="error",
+            output=(
+                f"Инструмент '{call.tool_name}' отключён пользователем. Включите его через /tools."
+            ),
+            exit_code=1,
+            command=call.command,
+        )
     # PreToolUse hooks: могут заблокировать вызов до выполнения.
     blocked = _run_pre_tool_hooks(call)
     if blocked is not None:
@@ -159,7 +231,9 @@ def execute_call(call: ToolCall) -> ToolResult:
     from tools.arg_validation import validate_and_normalize
 
     norm_args, arg_error = validate_and_normalize(
-        call.tool_name, call.args or {}, command=call.command,
+        call.tool_name,
+        call.args or {},
+        command=call.command,
     )
     if arg_error is not None:
         logger.warning("execute_call: invalid args for {}: {}", call.tool_name, arg_error)
@@ -173,21 +247,28 @@ def execute_call(call: ToolCall) -> ToolResult:
     call.args = norm_args
 
     # `patches` тоже отрезаем — без него предпросмотр огромный.
-    args_preview = {k: (v if not isinstance(v, str) or len(v) <= 120 else v[:120] + "…")
-                    for k, v in (call.args or {}).items()
-                    if k not in ("content", "b64", "insert", "replace", "find", "patches")}
+    args_preview = {
+        k: (v if not isinstance(v, str) or len(v) <= 120 else v[:120] + "…")
+        for k, v in (call.args or {}).items()
+        if k not in ("content", "b64", "insert", "replace", "find", "patches")
+    }
     logger.debug("→ tool {} args={}", call.tool_name, args_preview)
     t0 = time.monotonic()
     try:
         result = handler(call)
     except Exception as e:
         logger.opt(exception=True).error(
-            "✗ tool {} raised {}: {}", call.tool_name, type(e).__name__, e,
+            "✗ tool {} raised {}: {}",
+            call.tool_name,
+            type(e).__name__,
+            e,
         )
         err = ToolResult(
-            name=call.tool_name, status="error",
+            name=call.tool_name,
+            status="error",
             output=f"Внутренняя ошибка инструмента: {type(e).__name__}: {e}",
-            exit_code=1, command=call.command,
+            exit_code=1,
+            command=call.command,
         )
         err.elapsed = time.monotonic() - t0
         return err
@@ -198,12 +279,18 @@ def execute_call(call: ToolCall) -> ToolResult:
     if not getattr(result, "elapsed", 0):
         result.elapsed = time.monotonic() - t0
     if result.status == "error":
-        logger.warning(
-            "← tool {} ERROR exit={} out={!r}",
-            call.tool_name, result.exit_code, (result.output or "")[:200],
+        from logger import error
+
+        error(
+            "tool.error",
+            tool=call.tool_name,
+            exit_code=result.exit_code,
+            output_preview=payload_preview(result.output),
         )
     else:
-        logger.debug("← tool {} ok ({}b)", call.tool_name, len(result.output or ""))
+        from logger import debug
+
+        debug("tool.success", tool=call.tool_name, output_chars=len(result.output or ""))
     # PostToolUse hooks: могут подмешать контекст в вывод.
     _run_post_tool_hooks(call, result)
     return result
@@ -214,22 +301,35 @@ PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"poll", "skill", "web_search"
 SWARM_TOOLS = frozenset(PLANNING_TOOLS | {"shell", "subagent"})
 
 
-
-
 def is_tool_allowed(
     tool_name: str,
     mode: str,
     active_skills: set[str] | None = None,
+    args: dict | None = None,
 ) -> bool:
+    if not is_tool_enabled(tool_name):
+        return False
     if mode == "agent":
         return True
+    if tool_name == "memory":
+        return str((args or {}).get("action", "")).lower() in ("list", "read")
     if mode in ("swarm", "auto"):
         return tool_name in SWARM_TOOLS
     return tool_name in PLANNING_TOOLS
 
 
 def build_blocked_result(call: ToolCall, mode: str = "planning") -> ToolResult:
-    """Создаёт ToolResult для инструмента, запрещённого текущим режимом."""
+    """Создаёт ToolResult для инструмента, запрещённого настройками или режимом."""
+    if not is_tool_enabled(call.tool_name):
+        return ToolResult(
+            name=call.tool_name,
+            status="error",
+            output=(
+                f"Инструмент '{call.tool_name}' отключён пользователем. Включите его через /tools."
+            ),
+            exit_code=1,
+            command=call.command,
+        )
     allowed = SWARM_TOOLS if mode in ("swarm", "auto") else PLANNING_TOOLS
     allowed_human = ", ".join(sorted(allowed))
     return ToolResult(
@@ -247,3 +347,18 @@ def build_blocked_result(call: ToolCall, mode: str = "planning") -> ToolResult:
 def list_tools() -> list[str]:
     """Возвращает список доступных инструментов."""
     return sorted(TOOL_REGISTRY.keys())
+
+
+__all__ = [
+    "PLANNING_TOOLS",
+    "SWARM_TOOLS",
+    "TOOL_REGISTRY",
+    "build_blocked_result",
+    "execute_call",
+    "get_disabled_tools",
+    "is_tool_allowed",
+    "is_tool_enabled",
+    "list_tool_info",
+    "list_tools",
+    "set_tool_enabled",
+]

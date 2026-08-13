@@ -36,6 +36,7 @@ class CustomHttpProvider(BaseProvider):
             if key:
                 prefix = (self._auth_prefix + " ") if self._auth_prefix else ""
                 headers[self._auth_header] = f"{prefix}{key}"
+        headers.update(self._opencode_headers())
         return headers
 
     def _build_params(self, **kwargs: Any) -> dict[str, Any]:
@@ -82,7 +83,9 @@ def create_custom_provider(
     # reasoning-параметры берём из definition.extra (per-provider в JSON-конфиге),
     # либо из per-model override extra.reasoning_models = {"<model_id>": "high"}.
     extra = definition.extra or {}
-    provider._prompt_cache_mode = str(extra.get("prompt_cache", extra.get("prompt_caching", "auto")))
+    provider._prompt_cache_mode = str(
+        extra.get("prompt_cache", extra.get("prompt_caching", "auto"))
+    )
     provider._cache_read_factor = float(extra.get("cache_read_factor", provider._cache_read_factor))
     extra_body = dict(extra.get("extra_body") or {})
     reasoning_models = extra.get("reasoning_models") or {}

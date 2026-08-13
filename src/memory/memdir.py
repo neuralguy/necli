@@ -23,10 +23,12 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from config._atomic import atomic_write_text
 from config.paths import global_memory_dir, memory_dir_for
 from logger import logger
 
@@ -35,6 +37,7 @@ MEMORY_TYPES: tuple[str, ...] = ("user", "feedback", "project", "reference")
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _SAFE_NAME_RE = re.compile(r"[^a-z0-9._-]+")
 _MAX_FILE_CHARS = 8_000
+_WORD_RE = re.compile(r"[\w-]{2,}", re.UNICODE)
 
 
 @dataclass
@@ -86,6 +89,16 @@ def _safe_filename(name: str) -> str:
     return name
 
 
+def memory_path(name: str, *, working_dir: str | None = None, scope: str = "project") -> Path:
+    """Canonical in-scope path for a memory name.
+
+    All CRUD operations use this function so ``read`` cannot bypass the same
+    filename normalization that protects ``write`` and ``delete``.
+    """
+    mdir = global_memory_dir() if scope == "global" else memory_dir_for(working_dir)
+    return mdir / _safe_filename(name)
+
+
 def _scan_dir(mdir: Path) -> list[MemoryFile]:
     if not mdir.exists():
         return []
@@ -97,9 +110,7 @@ def _scan_dir(mdir: Path) -> list[MemoryFile]:
     return out
 
 
-def scan_memories(
-    working_dir: str | None = None, *, scope: str = "project"
-) -> list[MemoryFile]:
+def scan_memories(working_dir: str | None = None, *, scope: str = "project") -> list[MemoryFile]:
     """Сканирует memory-файлы.
 
     scope="project" — память текущего проекта (working_dir).
@@ -126,8 +137,12 @@ def read_memory(path: Path) -> MemoryFile | None:
     created = meta.pop("created", "")
     updated = meta.pop("updated", "")
     return MemoryFile(
-        path=path, type=mtype, created=created, updated=updated,
-        body=body, extra=meta,
+        path=path,
+        type=mtype,
+        created=created,
+        updated=updated,
+        body=body,
+        extra=meta,
     )
 
 
@@ -150,9 +165,8 @@ def write_memory(
     """
     if mtype not in MEMORY_TYPES:
         mtype = "project"
-    mdir = global_memory_dir() if scope == "global" else memory_dir_for(working_dir)
-    mdir.mkdir(parents=True, exist_ok=True)
-    path = mdir / _safe_filename(name)
+    path = memory_path(name, working_dir=working_dir, scope=scope)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     now = timestamp or today
     created = now
@@ -164,7 +178,7 @@ def write_memory(
     body = (body or "").strip()[:_MAX_FILE_CHARS]
     mf = MemoryFile(path=path, type=mtype, created=created, updated=now, body=body, extra=extra)
     try:
-        path.write_text(mf.render(), encoding="utf-8")
+        atomic_write_text(path, mf.render())
         logger.info("memory: wrote {} (type={})", path.name, mtype)
     except OSError as e:
         logger.error("memory: write failed {}: {}", path, e)
@@ -172,10 +186,67 @@ def write_memory(
     return mf
 
 
+def delete_memory(
+    name: str,
+    *,
+    working_dir: str | None = None,
+    scope: str = "project",
+) -> MemoryFile | None:
+    """Удаляет memory-файл и возвращает его последнее содержимое.
+
+    Имя всегда нормализуется через тот же путь, что и при записи, поэтому
+    удалить файл за пределами каталога памяти невозможно.
+    """
+    path = memory_path(name, working_dir=working_dir, scope=scope)
+    if not path.is_file():
+        return None
+    existing = read_memory(path)
+    if existing is None:
+        return None
+    path.unlink()
+    logger.info("memory: deleted {} (scope={})", path.name, scope)
+    return existing
+
+
 def _is_pinned(f: MemoryFile) -> bool:
     pinned = f.extra.get("pinned", "").strip().lower()
     priority = f.extra.get("priority", "").strip().lower()
     return pinned in ("1", "true", "yes", "on") or priority in ("pinned", "high", "critical")
+
+
+def _tokens(text: str) -> set[str]:
+    return {word.lower() for word in _WORD_RE.findall(text or "")}
+
+
+def find_similar_memories(
+    query: str,
+    working_dir: str | None = None,
+    *,
+    limit: int = 8,
+) -> list[MemoryFile]:
+    """Return memories lexically closest to *query*, across both scopes."""
+    files = scan_memories(working_dir, scope="all")
+    query_tokens = _tokens(query)
+    if not query_tokens:
+        return []
+    document_frequency: dict[str, int] = {}
+    token_sets: list[set[str]] = []
+    for memory in files:
+        tokens = _tokens(f"{memory.path.stem} {memory.type} {memory.body}")
+        token_sets.append(tokens)
+        for token in tokens:
+            document_frequency[token] = document_frequency.get(token, 0) + 1
+    total = max(1, len(files))
+    ranked: list[tuple[float, MemoryFile]] = []
+    for memory, tokens in zip(files, token_sets, strict=True):
+        overlap = query_tokens & tokens
+        if not overlap:
+            continue
+        score = sum(math.log((total + 1) / (document_frequency[t] + 1)) + 1 for t in overlap)
+        score /= math.sqrt(max(1, len(tokens)))
+        ranked.append((score, memory))
+    ranked.sort(key=lambda item: (item[0], item[1].updated, item[1].name), reverse=True)
+    return [memory for _, memory in ranked[: max(0, limit)]]
 
 
 def _time_suffix(f: MemoryFile) -> str:
@@ -189,7 +260,13 @@ def _time_suffix(f: MemoryFile) -> str:
     return f" ({', '.join(details)})" if details else ""
 
 
-def format_memory_block(working_dir: str | None = None, *, max_chars: int = 6_000) -> str:
+def format_memory_block(
+    working_dir: str | None = None,
+    *,
+    query: str = "",
+    max_chars: int = 6_000,
+    relevant_limit: int = 8,
+) -> str:
     """Собирает память (глобальную + проекта) в блок для системного промпта.
 
     Глобальная (кросс-проектная) память идёт первой и помечается [global …],
@@ -200,19 +277,15 @@ def format_memory_block(working_dir: str | None = None, *, max_chars: int = 6_00
     if not global_files and not project_files:
         return ""
 
-    # Группируем по типу в осмысленном порядке (внутри каждой области).
-    order = {t: i for i, t in enumerate(MEMORY_TYPES)}
-    sort_key = lambda f: (order.get(f.type, 99), f.name)  # noqa: E731
-    global_files.sort(key=sort_key)
-    project_files.sort(key=sort_key)
-
     parts: list[str] = [
         "<persistent_memory>",
-        "Долговременная память из прошлых сессий. Используй её, чтобы учитывать "
-        "предпочтения пользователя и контекст. Записи [global …] относятся ко "
-        "ВСЕМ проектам (кто пользователь, общие предпочтения/стиль работы); "
-        "остальные — к текущему проекту. Если факт устарел — обнови файл "
-        "(тем же scope).",
+        (
+            "Долговременная память из прошлых сессий. Используй её, чтобы учитывать "
+            "предпочтения пользователя и контекст. Записи [global …] относятся ко "
+            "ВСЕМ проектам (кто пользователь, общие предпочтения/стиль работы); "
+            "остальные — к текущему проекту. Если факт устарел — обнови файл "
+            "(тем же scope)."
+        ),
         "",
     ]
     entries: list[tuple[str, MemoryFile]] = [
@@ -220,18 +293,22 @@ def format_memory_block(working_dir: str | None = None, *, max_chars: int = 6_00
         *[("project", f) for f in project_files],
     ]
     pinned_entries = [(scope_label, f) for scope_label, f in entries if _is_pinned(f)]
-    regular_entries = [(scope_label, f) for scope_label, f in entries if not _is_pinned(f)]
+    relevant = find_similar_memories(query, working_dir, limit=relevant_limit)
+    relevant_paths = {f.path for f in relevant}
+    regular_entries = [
+        (scope_label, f)
+        for scope_label, f in entries
+        if not _is_pinned(f) and f.path in relevant_paths
+    ]
+    regular_entries.sort(key=lambda item: relevant_paths and relevant.index(item[1]))
 
     def _chunk(scope_label: str, f: MemoryFile) -> str:
         tag = f"{scope_label}/{f.type}" if scope_label == "global" else f.type
         return f"### [{tag}] {f.name}{_time_suffix(f)}\n{f.body}\n"
 
-    for scope_label, f in pinned_entries:
-        parts.append(_chunk(scope_label, f))
-
     used = 0
     truncated = False
-    for scope_label, f in regular_entries:
+    for scope_label, f in [*pinned_entries, *regular_entries]:
         chunk = _chunk(scope_label, f)
         if used + len(chunk) > max_chars:
             truncated = True
@@ -239,7 +316,7 @@ def format_memory_block(working_dir: str | None = None, *, max_chars: int = 6_00
         parts.append(chunk)
         used += len(chunk)
     if truncated:
-        parts.append("… (память усечена по лимиту)")
+        parts.append("… (часть выбранной памяти не поместилась в лимит)")
     parts.append("</persistent_memory>")
     return "\n".join(parts)
 
@@ -255,3 +332,18 @@ def format_manifest(working_dir: str | None = None) -> str:
         for f in files
     ]
     return "\n".join(lines)
+
+
+def format_similar_memories(query: str, working_dir: str | None = None, *, limit: int = 8) -> str:
+    """Full candidate records used before a model changes persistent memory."""
+    files = find_similar_memories(query, working_dir, limit=limit)
+    if not files:
+        return ""
+    global_root = global_memory_dir()
+    parts = []
+    for memory in files:
+        scope = "global" if memory.path.parent == global_root else "project"
+        parts.append(
+            f"### {scope}/{memory.name} (type={memory.type}{_time_suffix(memory)})\n{memory.body}"
+        )
+    return "\n\n".join(parts)

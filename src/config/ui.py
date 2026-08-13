@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from copy import deepcopy
 from typing import Any
 
+from ._atomic import atomic_write_json
 from .paths import BASE_DIR
 
 UI_FILE = BASE_DIR / "ui.json"
@@ -14,7 +17,6 @@ DEFAULTS: dict[str, Any] = {
     "_comment": "UI customization. Edit and restart CLI. Delete file to regenerate defaults.",
     "_help": {
         "_": "JSON не поддерживает комментарии — описание ключей здесь. Эта секция игнорируется кодом.",
-
         "limits.max_width": "Максимальная ширина любых панелей (response, tool, subagent). Реальная ширина = min(max_width, ширина_терминала).",
         "limits.compact_preview_lines": "Сколько строк показывать в compact-превью результата инструмента (не shell). Полный вывод доступен по Ctrl+O.",
         "limits.compact_preview_lines_shell": "То же для shell-команд. Обычно меньше, т.к. вывод длинный.",
@@ -28,7 +30,6 @@ DEFAULTS: dict[str, Any] = {
         "limits.think_snippet_max_len": "Максимальная длина одной мысли (think) в компактной строке.",
         "limits.think_stream_lines": "Сколько последних строк thinking-блока держать видимыми во время стрима.",
         "limits.think_preview_lines": "Сколько строк thinking показывать в статичном превью после завершения.",
-
         "paddings.*": "Все padding — пара [vertical, horizontal] для Rich Panel/Syntax/Table.",
         "paddings.response_panel": "Отступы внутри панели ответа модели.",
         "paddings.tool_panel": "Отступы внутри панели инструмента (write/patch/etc).",
@@ -38,7 +39,6 @@ DEFAULTS: dict[str, Any] = {
         "paddings.reasoning_panel": "Отступы Reasoning-панели (стрим thinking от модели).",
         "paddings.think_panel": "Отступы статичной панели think (после завершения).",
         "paddings.executor_panel": "Отступы панели executor (выполнение команды с прогрессом).",
-
         "symbols.separator_horizontal": "Символ горизонтальной линии между args и output (по умолчанию '─').",
         "symbols.tree_branch": "Префикс для не-последнего элемента tree-вывода с пробелом.",
         "symbols.tree_last": "Префикс для последнего элемента tree-вывода с пробелом.",
@@ -56,10 +56,8 @@ DEFAULTS: dict[str, Any] = {
         "symbols.ellipsis": "Многоточие для усечения ('…').",
         "symbols.thinking_emoji": "Эмодзи рядом с мыслями модели ('💭').",
         "symbols.interrupt_marker": "Маркер перед 'Waiting for response' ('■ ').",
-
         "spinner.frames": "Кадры спиннера (рисуются по очереди). По умолчанию braille-точки.",
         "spinner.interval": "Интервал между кадрами в секундах (используется только некоторыми спиннерами).",
-
         "diff_colors.bg_delete": "ОПЦИОНАЛЬНО. Фон удалённой строки в diff (HEX). По умолчанию — роль темы diff_del_bg.",
         "diff_colors.bg_add": "ОПЦИОНАЛЬНО. Фон добавленной строки (тема: diff_add_bg).",
         "diff_colors.fg_delete": "ОПЦИОНАЛЬНО. Цвет удалённой строки (тема: diff_del_fg).",
@@ -67,7 +65,6 @@ DEFAULTS: dict[str, Any] = {
         "diff_colors.prefix_delete": "Префикс удалённой строки ('- ' с пробелом).",
         "diff_colors.prefix_add": "Префикс добавленной строки ('+ ').",
         "diff_colors.prefix_equal": "Префикс неизменной строки (два пробела).",
-
         "tools.<name>": "Display для каждого инструмента: label, emoji, color_role или color.",
         "tools.<name>.label": "Название в заголовке панели.",
         "tools.<name>.emoji": "Эмодзи перед label.",
@@ -75,21 +72,17 @@ DEFAULTS: dict[str, Any] = {
         "tools.<name>.color": "ОПЦИОНАЛЬНО. Прямой HEX ('#ff8800') или имя ('bright_red') — перебивает color_role и не зависит от темы. Удобно когда хочешь конкретный цвет для одного инструмента.",
         "tools._default": "Fallback для незнакомых инструментов.",
         "tools._mcp": "Шаблон для MCP-инструментов. В label можно использовать {server} и {tool} — подставится автоматически. Тоже поддерживает 'color'.",
-
         "indicators.thinking_suffix": "Текст рядом со спиннером во время ожидания ответа ('thinking…').",
         "indicators.writing_prefix": "Префикс перед именем инструмента в индикаторе ('writing ').",
         "indicators.writing_suffix": "Суффикс ('…').",
         "indicators.interrupt_text": "Основной текст индикатора прерывания.",
         "indicators.interrupt_hint": "Подсказка как прервать ('(Ctrl+C = stop)').",
-
         "live_stream.refresh_per_second": "Частота перерисовки Live-стрима (Гц). Выше → плавнее, но больше CPU.",
         "live_stream.reserved_lines": "Сколько строк терминала зарезервировать под чат (заголовок/футер). Live использует остаток.",
         "live_stream.min_visible_lines": "Минимум строк Live даже на крошечных терминалах.",
         "live_stream.compact_active_live": "Компактнее отрисовывать активный Live-блок (без рамки/лишних отступов).",
-
         "response.title_format": "Формат заголовка response-панели. {num} = ' 5' / '' (для первой).",
         "response.title_format_compact_bullet": "Bullet перед заголовком в compact (не используется напрямую, для совместимости).",
-
         "subagent.max_width": "Максимальная ширина панелей субагентов = min(значение, ширина_терминала). 0 — на всю ширину терминала.",
         "subagent.max_concurrency": "Сколько субагентов внутри одной волны исполняются ОДНОВРЕМЕННО. Остальные ждут в очереди. Защита от rate-limit провайдера и пика по диску/FD при сотнях задач. 0/отрицательное = без лимита.",
         "subagent.block_threshold": "Если активных субагентов БОЛЬШЕ этого числа — все рисуются однострочно (компактно), иначе каждый занимает многострочный блок. Защита от разрыва терминала при десятках агентов. 0 = всегда блочный вид.",
@@ -99,7 +92,6 @@ DEFAULTS: dict[str, Any] = {
         "subagent.done_emoji": "Эмодзи успешного завершения ('✓').",
         "subagent.error_emoji": "Эмодзи ошибки ('✗').",
     },
-
     "limits": {
         "max_width": 100,
         "compact_preview_lines": 8,
@@ -115,7 +107,6 @@ DEFAULTS: dict[str, Any] = {
         "think_stream_lines": 6,
         "think_preview_lines": 5,
     },
-
     "paddings": {
         "response_panel": [0, 2],
         "tool_panel": [0, 0],
@@ -126,7 +117,6 @@ DEFAULTS: dict[str, Any] = {
         "think_panel": [0, 2],
         "executor_panel": [0, 1],
     },
-
     "symbols": {
         "separator_horizontal": "─",
         "tree_branch": "├─ ",
@@ -146,20 +136,31 @@ DEFAULTS: dict[str, Any] = {
         "thinking_emoji": "💭",
         "interrupt_marker": "■ ",
     },
-
     "spinner": {
         "frames": [
-            "\u280B", "\u2819", "\u2839", "\u2838",
-            "\u283C", "\u2834", "\u2826", "\u2827",
-            "\u2807", "\u280F",
+            "\u280b",
+            "\u2819",
+            "\u2839",
+            "\u2838",
+            "\u283c",
+            "\u2834",
+            "\u2826",
+            "\u2827",
+            "\u2807",
+            "\u280f",
         ],
         "interval": 0.08,
         "exec_frames": [
-            "\u25CF", "\u25CF", "\u25CF", "\u25CF",
-            " ", " ", " ", " ",
+            "\u25cf",
+            "\u25cf",
+            "\u25cf",
+            "\u25cf",
+            " ",
+            " ",
+            " ",
+            " ",
         ],
     },
-
     "diff_colors": {
         # Цвета diff теперь берутся из темы (роли diff_del_*/diff_add_*);
         # здесь только символы-префиксы.
@@ -167,33 +168,29 @@ DEFAULTS: dict[str, Any] = {
         "prefix_add": "+ ",
         "prefix_equal": "  ",
     },
-
     "tools": {
-        "poll":          {"label": "Poll",       "emoji": "❓", "color_role": "accent"},
-        "shell":         {"label": "Shell",      "emoji": "⏺",  "color_role": "warning"},
-        "read":     {"label": "Read",       "emoji": "📖", "color_role": "info"},
-        "grep":          {"label": "Grep",       "emoji": "🔎", "color_role": "info"},
-        "patch_file":    {"label": "Patch",      "emoji": "🔧", "color_role": "warning"},
-        "create_file":   {"label": "Create",     "emoji": "✨", "color_role": "success"},
-        "web_search":    {"label": "Search",     "emoji": "🌐", "color_role": "accent"},
-        "web_fetch":     {"label": "Fetch",      "emoji": "🌐", "color_role": "accent"},
-        "image_search":  {"label": "Images",     "emoji": "🖼 ", "color_role": "accent"},
-        "subagent":      {"label": "Subagent",   "emoji": "🤖", "color_role": "magenta"},
-        "plan":          {"label": "Plan",       "emoji": "📋", "color_role": "accent"},
-        "skill":         {"label": "Skill",      "emoji": "🎓", "color_role": "info"},
-        "create_docx":   {"label": "DOCX",       "emoji": "📄", "color_role": "success"},
-        "docx_screenshot": {"label": "Docx Shot",  "emoji": "🖼 ", "color_role": "info"},
-        "think":         {"label": "Think",      "emoji": "💭", "color_role": "purple"},
-        "lsp_references":{"label": "References", "emoji": "🔗", "color_role": "warning"},
-        "lsp_diagnostics":{"label": "Diagnostics","emoji": "🩺", "color_role": "warning"},
-        "expand_tool_result": {"label": "Expand","emoji": "🔍", "color_role": "info"},
-        "memory_write":  {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},
-        "memory_list":   {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},
-        "memory_read":   {"label": "Memory",     "emoji": "🧠", "color_role": "purple"},
-        "_default":      {"label": "Tool",       "emoji": "⏺",  "color_role": "warning"},
-        "_mcp":          {"label": "{server}.{tool}", "emoji": "🔌", "color_role": "magenta"},
+        "poll": {"label": "Poll", "emoji": "❓", "color_role": "accent"},
+        "shell": {"label": "Shell", "emoji": "⏺", "color_role": "warning"},
+        "read": {"label": "Read", "emoji": "📖", "color_role": "info"},
+        "grep": {"label": "Grep", "emoji": "🔎", "color_role": "info"},
+        "patch_file": {"label": "Patch", "emoji": "🔧", "color_role": "warning"},
+        "create_file": {"label": "Create", "emoji": "✨", "color_role": "success"},
+        "web_search": {"label": "Search", "emoji": "🌐", "color_role": "accent"},
+        "web_fetch": {"label": "Fetch", "emoji": "🌐", "color_role": "accent"},
+        "image_search": {"label": "Images", "emoji": "🖼 ", "color_role": "accent"},
+        "subagent": {"label": "Subagent", "emoji": "🤖", "color_role": "magenta"},
+        "plan": {"label": "Plan", "emoji": "📋", "color_role": "accent"},
+        "skill": {"label": "Skill", "emoji": "🎓", "color_role": "info"},
+        "docx": {"label": "DOCX", "emoji": "📄", "color_role": "success"},
+        "pptx": {"label": "PPTX", "emoji": "📊", "color_role": "success"},
+        "think": {"label": "Think", "emoji": "💭", "color_role": "purple"},
+        "lsp_references": {"label": "References", "emoji": "🔗", "color_role": "warning"},
+        "lsp_diagnostics": {"label": "Diagnostics", "emoji": "🩺", "color_role": "warning"},
+        "expand_tool_result": {"label": "Expand", "emoji": "🔍", "color_role": "info"},
+        "memory": {"label": "Memory", "emoji": "🧠", "color_role": "purple"},
+        "_default": {"label": "Tool", "emoji": "⏺", "color_role": "warning"},
+        "_mcp": {"label": "{server}.{tool}", "emoji": "🔌", "color_role": "magenta"},
     },
-
     "indicators": {
         "thinking_suffix": "thinking…",
         "writing_prefix": "writing ",
@@ -201,19 +198,16 @@ DEFAULTS: dict[str, Any] = {
         "interrupt_text": "Waiting for response",
         "interrupt_hint": "(Ctrl+C = stop)",
     },
-
     "live_stream": {
         "refresh_per_second": 8,
         "reserved_lines": 14,
         "min_visible_lines": 10,
         "compact_active_live": False,
     },
-
     "response": {
         "title_format": "— Response{num}",
         "title_format_compact_bullet": "● ",
     },
-
     "subagent": {
         "max_width": 0,
         "header_emoji": "🤖",
@@ -229,12 +223,12 @@ DEFAULTS: dict[str, Any] = {
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """Глубоко мержит override в base. Не мутирует входы."""
-    result = dict(base)
+    result = deepcopy(base)
     for k, v in override.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
             result[k] = _deep_merge(result[k], v)
         else:
-            result[k] = v
+            result[k] = deepcopy(v)
     return result
 
 
@@ -243,38 +237,39 @@ class UIConfig:
 
     def __init__(self) -> None:
         self._data: dict[str, Any] | None = None
+        self._lock = threading.RLock()
 
     def _ensure_loaded(self) -> dict[str, Any]:
-        if self._data is not None:
-            return self._data
-        try:
-            BASE_DIR.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            _log.warning("ui_config: failed to create BASE_DIR: %s", e)
+        with self._lock:
+            if self._data is not None:
+                return self._data
+            try:
+                BASE_DIR.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                _log.warning("ui_config: failed to create BASE_DIR: %s", e)
 
-        if not UI_FILE.exists():
-            self._write_defaults()
-            self._data = dict(DEFAULTS)
-            return self._data
+            if not UI_FILE.exists():
+                self._write_defaults()
+                self._data = deepcopy(DEFAULTS)
+                return self._data
 
-        try:
-            with UI_FILE.open("r", encoding="utf-8") as f:
-                user_data = json.load(f)
-            if not isinstance(user_data, dict):
-                _log.warning("ui_config: %s is not a dict, using defaults", UI_FILE)
-                self._data = dict(DEFAULTS)
-            else:
-                # Мержим, чтобы новые ключи из DEFAULTS подтянулись автоматически
-                self._data = _deep_merge(DEFAULTS, user_data)
-        except (json.JSONDecodeError, OSError) as e:
-            _log.error("ui_config: failed to read %s: %s — using defaults", UI_FILE, e)
-            self._data = dict(DEFAULTS)
-        return self._data
+            try:
+                with UI_FILE.open("r", encoding="utf-8") as f:
+                    user_data = json.load(f)
+                if not isinstance(user_data, dict):
+                    _log.warning("ui_config: %s is not a dict, using defaults", UI_FILE)
+                    self._data = deepcopy(DEFAULTS)
+                else:
+                    # Мержим, чтобы новые ключи из DEFAULTS подтянулись автоматически
+                    self._data = _deep_merge(DEFAULTS, user_data)
+            except (json.JSONDecodeError, OSError) as e:
+                _log.error("ui_config: failed to read %s: %s — using defaults", UI_FILE, e)
+                self._data = deepcopy(DEFAULTS)
+            return self._data
 
     def _write_defaults(self) -> None:
         try:
-            with UI_FILE.open("w", encoding="utf-8") as f:
-                json.dump(DEFAULTS, f, ensure_ascii=False, indent=2)
+            atomic_write_json(UI_FILE, DEFAULTS)
         except OSError as e:
             _log.error("ui_config: failed to write defaults to %s: %s", UI_FILE, e)
 
@@ -286,14 +281,14 @@ class UIConfig:
             if not isinstance(cur, dict) or part not in cur:
                 return default
             cur = cur[part]
-        return cur
+        return deepcopy(cur) if isinstance(cur, (dict, list, set)) else cur
 
     def tool(self, tool_name: str) -> dict[str, str]:
         """Возвращает {label, emoji, color_role} для инструмента."""
         tools = self._ensure_loaded().get("tools", {})
         if tool_name in tools:
-            return tools[tool_name]
-        return tools.get("_default", DEFAULTS["tools"]["_default"])
+            return deepcopy(tools[tool_name])
+        return deepcopy(tools.get("_default", DEFAULTS["tools"]["_default"]))
 
     def mcp_display(self, server: str, tool: str) -> dict[str, str]:
         """Возвращает display для MCP-инструмента (с подстановкой server/tool)."""

@@ -77,6 +77,7 @@ def _raw(text: str) -> None:
         _SINK[1].write(text)
         return
     from ui.shell import get_shell
+
     shell = get_shell()
     if shell is not None:
         shell.print_static_raw(text)
@@ -86,12 +87,14 @@ def _raw(text: str) -> None:
         sys.__stdout__.flush()
     except Exception:
         from logger import logger
+
         logger.opt(exception=True).debug("raw write failed")
 
 
 def _term_width() -> int:
     try:
         import os as _os
+
         return _os.get_terminal_size().columns
     except Exception:
         return 80
@@ -108,8 +111,11 @@ def _open_sink():
 
     buf = io.StringIO()
     con = Console(
-        file=buf, force_terminal=True, width=_term_width(),
-        color_system=_replay_color_system(), soft_wrap=False,
+        file=buf,
+        force_terminal=True,
+        width=_term_width(),
+        color_system=_replay_color_system(),
+        soft_wrap=False,
     )
     saved_sink, saved_capture = _SINK, _ad.get_static_capture()
     _SINK = (con, buf)
@@ -131,6 +137,7 @@ def _replay_color_system() -> str:
     """Та же глубина цвета, что у Shell: иначе история и рамка разъедутся в тонах."""
     try:
         from ui.shell import color_system_for, detect_color_depth, get_shell
+
         shell = get_shell()
         if shell is not None:
             return shell.bridge.color_system
@@ -179,18 +186,26 @@ def _replay_inner(store: RenderStore) -> None:
     for item in store.items:
         try:
             _replay_item(
-                item, show_tool_combined, show_command, render_md_panel,
+                item,
+                show_tool_combined,
+                show_command,
+                render_md_panel,
                 previous_kind=previous_kind,
             )
             previous_kind = item.kind
-        except Exception:  # noqa: PERF203
+        except Exception:
             from logger import logger
+
             logger.opt(exception=True).debug("replay item failed: kind={}", item.kind)
 
 
 def _replay_item(
-    item, show_tool_combined, show_command, render_md_panel,
-    *, previous_kind: str = "",
+    item,
+    show_tool_combined,
+    show_command,
+    render_md_panel,
+    *,
+    previous_kind: str = "",
 ) -> None:
     kind = item.kind
     p = item.payload or {}
@@ -207,11 +222,13 @@ def _replay_item(
         if not text.strip():
             return
         _out().print()
-        _out().print(render_md_panel(
-            text,
-            subtitle=p.get("subtitle", ""),
-            message_num=int(p.get("message_num") or 0),
-        ))
+        _out().print(
+            render_md_panel(
+                text,
+                subtitle=p.get("subtitle", ""),
+                message_num=int(p.get("message_num") or 0),
+            )
+        )
         return
 
     if kind == "tool":
@@ -225,8 +242,7 @@ def _replay_item(
         call = deserialize_tool_call(call_d)
         result = deserialize_tool_result(result_d) if result_d else None
         if result is None:
-            show_command(call.command, tool_name=call.tool_name,
-                         args=call.args, subtitle=subtitle)
+            show_command(call.command, tool_name=call.tool_name, args=call.args, subtitle=subtitle)
         else:
             show_tool_combined(call, result, subtitle=subtitle)
         return
@@ -238,8 +254,9 @@ def _replay_item(
         if previous_kind in ("tool", "command_only"):
             _out().print()
         call = deserialize_tool_call(call_d)
-        show_command(call.command, tool_name=call.tool_name,
-                     args=call.args, subtitle=p.get("subtitle", ""))
+        show_command(
+            call.command, tool_name=call.tool_name, args=call.args, subtitle=p.get("subtitle", "")
+        )
         return
 
     if kind == "think":
@@ -266,11 +283,12 @@ def _replay_item(
 
     if kind == "working":
         from agent.working import _finished_header
-        from config.i18n import t as tr
         from config.themes import t as theme
         from ui.formatting import format_tokens
+
         elapsed = float(p.get("elapsed", 0.0) or 0.0)
         calls = int(p.get("calls", 0) or 0)
+        ai_requests = int(p.get("ai_requests", 0) or 0)
         outcome = str(p.get("outcome") or "worked")
         has_split_tokens = "input_tokens" in p or "output_tokens" in p
         input_tokens = int(p.get("input_tokens", 0) or 0)
@@ -281,12 +299,15 @@ def _replay_item(
         _out().print()
         header = _finished_header(elapsed, outcome)
         details = Text("   ⎿  ", style=theme("dim_text"))
-        details.append(tr("working.calls", n=calls), style=theme("fg_primary"))
+        details.append(f"{ai_requests} ⟳", style=theme("fg_primary"))
+        details.append(" · ", style="dim")
+        details.append(f"{calls} 🛠", style=theme("fg_primary"))
         details.append(" · ", style="dim")
         details.append(f"↑{format_tokens(input_tokens)}", style=theme("fg_primary"))
         details.append(" ", style="dim")
         details.append(
-            f"↓{output_prefix}{format_tokens(output_tokens)}", style=theme("fg_primary"),
+            f"↓{output_prefix}{format_tokens(output_tokens)}",
+            style=theme("fg_primary"),
         )
         _out().print(header)
         _out().print(details)
@@ -297,6 +318,7 @@ def _replay_item(
         output = p.get("output", "")
         if cmd_text:
             from config.themes import t as theme
+
             _out().print()
             line = Text()
             line.append("\u2500 ", style=theme("muted"))
@@ -313,8 +335,8 @@ def print_session_history(necli_session, *, max_messages: int = 20) -> None:
 
     Используется при смене сессии (/sessions) и при старте с --resume, чтобы
     пользователь сразу видел недавнюю историю диалога. Рендер тот же, что в
-    live: user-строка, assistant-панель, tool-вызовы из :::call блоков.
-    tool_result-сообщения пропускаются — их вывод уже виден под tool-вызовом.
+    live: user-строка, assistant-панель (с мыслями), tool-вызовы из :::call
+    блоков вместе с их результатами из tool_result-сообщений.
     """
     messages = getattr(necli_session, "messages", None) or []
     if not messages:
@@ -322,44 +344,243 @@ def print_session_history(necli_session, *, max_messages: int = 20) -> None:
 
     # Берём хвост из max_messages не-system сообщений; ведущие/служебные
     # system-сообщения (compressed-мета и т.п.) в визуальную историю не идут.
-    visible = [m for m in messages if m.role in ("user", "assistant")]
+    visible = [
+        m for m in messages if m.role in ("user", "assistant", "tool_result", "worked", "tool_call")
+    ]
     if not visible:
         return
     if max_messages > 0:
         visible = visible[-max_messages:]
+        # Не начинаем с tool_result — он принадлежит отрезанному assistant.
+        if visible and visible[0].role == "tool_result":
+            visible = visible[1:]
 
-    from agent.display import render_md_panel, set_expanded_preview, set_replay_active, show_command
+    from agent.display import (
+        render_md_panel,
+        set_expanded_preview,
+        set_replay_active,
+        show_command,
+        show_tool_combined,
+    )
+    from tools.models import ToolCall
     from tools.parser import parse_tool_calls, strip_tool_calls
 
     set_replay_active(True)
     set_expanded_preview(False)
     close = _open_sink()
     try:
-        previous_was_tool = False
+        pending_calls: list[ToolCall] = []
         for msg in visible:
             content = msg.content or ""
             if not content.strip():
                 continue
             if msg.role == "user":
+                _flush_pending(pending_calls, show_command)
                 _out().print()
                 _print_user_line(content)
-                previous_was_tool = False
                 continue
-            # assistant: текст + восстановленные tool-вызовы (без результатов).
-            clean = strip_tool_calls(content)
-            if clean.strip():
-                _out().print()
-                _out().print(render_md_panel(clean))
-                previous_was_tool = False
-            for call in parse_tool_calls(content):
-                if previous_was_tool:
+            if msg.role == "assistant":
+                # Мысли (think) — отдельным блоком перед текстом.
+                if msg.thoughts:
+                    _replay_think(msg.thoughts)
+                # Raw reasoning (reasoning_content) — отдельной панелью с пометкой raw.
+                if getattr(msg, "reasoning", ""):
+                    _replay_reasoning(msg.reasoning)
+                clean = strip_tool_calls(content)
+                if clean.strip():
                     _out().print()
-                show_command(call.command, tool_name=call.tool_name, args=call.args)
-                previous_was_tool = True
+                    _out().print(render_md_panel(clean))
+                pending_calls.extend(parse_tool_calls(content))
+                continue
+            if msg.role == "worked":
+                _render_worked(content)
+                continue
+            if msg.role == "tool_call":
+                # Native: вызовы хранятся отдельным JSON-сообщением. Копим их
+                # в pending_calls, чтобы следующий tool_result связал их с выводом.
+                pending_calls.extend(_parse_tool_calls_json(content))
+                continue
+            # tool_result: парсим результаты и связываем с вызовами по индексу.
+            results = _parse_tool_results(content)
+            for res in results:
+                call = None
+                if pending_calls:
+                    call = pending_calls.pop(0)
+                if call is not None:
+                    show_tool_combined(call, res)
+                else:
+                    show_command(
+                        res.command or res.name,
+                        tool_name=res.name,
+                        args={"exit_code": res.exit_code},
+                    )
+        _flush_pending(pending_calls, show_command)
         _out().print()
     finally:
         set_replay_active(False)
         close()
+
+
+def _flush_pending(pending_calls: list, show_command) -> None:
+    """Дорисовывает tool-вызовы, у которых не было tool_result (обрыв/прерывание)."""
+    for call in pending_calls:
+        _out().print()
+        show_command(call.command, tool_name=call.tool_name, args=call.args)
+    pending_calls.clear()
+
+
+def _parse_tool_results(text: str) -> list:
+    """Разбирает tool_result-сообщение в ToolResult'ы.
+
+    Поддерживает два формата:
+      - <runtime_tool_results> XML (fenced-режим);
+      - '$ cmd [exit N]\\n<output>' (native-режим, см. _split_tool_result_segments).
+    """
+    import re
+
+    from tools.models import ToolResult
+
+    results: list[ToolResult] = []
+    for m in re.finditer(
+        r"<result\s+([^>]*)>\s*<!\[CDATA\[(.*?)\]\]>\s*</result>",
+        text,
+        flags=re.DOTALL,
+    ):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+        output = m.group(2).strip("\n")
+        exit_code = 0
+        try:
+            exit_code = int(attrs.get("exit_code", "0"))
+        except (TypeError, ValueError):
+            exit_code = 0
+        name = attrs.get("tool", "tool")
+        results.append(
+            ToolResult(
+                name=name,
+                status="ok" if exit_code == 0 else "error",
+                output=output,
+                exit_code=exit_code,
+                command=attrs.get("command", name),
+            )
+        )
+    if results:
+        return results
+
+    # Формат '$ cmd [exit N]\\n<output>' — режем по заголовкам '$ '.
+    segments: list[str] = []
+    cur: list[str] = []
+    for ln in text.split("\n"):
+        if ln.startswith("$ ") and cur:
+            segments.append("\n".join(cur))
+            cur = [ln]
+        else:
+            cur.append(ln)
+    if cur:
+        segments.append("\n".join(cur))
+
+    known_tools = {
+        "shell",
+        "read",
+        "grep",
+        "patch_file",
+        "create_file",
+        "docx",
+        "pptx",
+        "poll",
+        "skill",
+        "subagent",
+        "web_search",
+        "web_fetch",
+        "image_search",
+        "expand_tool_result",
+        "memory",
+        "lsp_references",
+        "lsp_diagnostics",
+    }
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        first, _, output = seg.partition("\n")
+        m2 = re.match(r"\$ (.+?)(?: \[exit (-?\d+)\])?$", first)
+        cmd = m2.group(1) if m2 else first[2:]
+        exit_code = int(m2.group(2)) if m2 and m2.group(2) else 0
+        first_word = cmd.split()[0] if cmd.split() else ""
+        name = first_word if first_word in known_tools else "shell"
+        results.append(
+            ToolResult(
+                name=name,
+                status="ok" if exit_code == 0 else "error",
+                output=output.strip("\n"),
+                exit_code=exit_code,
+                command=cmd,
+            )
+        )
+    return results
+
+
+def _parse_tool_calls_json(content: str) -> list:
+    """Разбирает JSON-сообщение роли tool_call (native-режим) в ToolCall'ы."""
+    import json
+
+    from tools.models import ToolCall
+
+    try:
+        data = json.loads(content)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    calls: list[ToolCall] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "shell")
+        args = item.get("args") if isinstance(item.get("args"), dict) else {}
+        command = str(args.get("command") or name) if name == "shell" else name
+        calls.append(ToolCall(command=command, tool_name=name, args=args, raw=""))
+    return calls
+
+
+def _render_worked(content: str) -> None:
+    """Рендерит сводку Working-раунда (роль "worked") как в live: заголовок + детали."""
+    try:
+        import json
+
+        p = json.loads(content)
+    except Exception:
+        p = {}
+    if not isinstance(p, dict):
+        p = {}
+
+    from agent.working import _finished_header
+    from config.themes import t as theme
+    from ui.formatting import format_tokens
+
+    elapsed = float(p.get("elapsed", 0.0) or 0.0)
+    calls = int(p.get("calls", 0) or 0)
+    ai_requests = int(p.get("ai_requests", 0) or 0)
+    outcome = str(p.get("outcome") or "worked")
+    has_split_tokens = "input_tokens" in p or "output_tokens" in p
+    input_tokens = int(p.get("input_tokens", 0) or 0)
+    output_tokens = int(
+        p.get("output_tokens", 0) or (p.get("tokens", 0) if not has_split_tokens else 0)
+    )
+    output_prefix = "~" if p.get("output_estimated") or not has_split_tokens else ""
+
+    _out().print()
+    header = _finished_header(elapsed, outcome)
+    details = Text("   ⎿  ", style=theme("dim_text"))
+    details.append(f"{ai_requests} 🔄", style=theme("fg_primary"))
+    details.append(" · ", style="dim")
+    details.append(f"{calls} 🛠", style=theme("fg_primary"))
+    details.append(" · ", style="dim")
+    details.append(f"↑{format_tokens(input_tokens)}", style=theme("fg_primary"))
+    details.append(" ", style="dim")
+    details.append(f"↓{output_prefix}{format_tokens(output_tokens)}", style=theme("fg_primary"))
+    _out().print(header)
+    _out().print(details)
+
 
 def _replay_welcome() -> None:
     """Перепечатывает welcome-панель из кэша (быстрый replay)."""
@@ -376,6 +597,7 @@ def _replay_welcome() -> None:
         # отдельным потоком и оказалась НИЖЕ истории.
         import commands.helpers as _h
         from session import storage as _sst
+
         sid = args.get("session_id", "")
         sess = None
         try:
@@ -392,12 +614,14 @@ def _replay_welcome() -> None:
                 raw_input_tokens = 0
                 output_tokens = 0
                 total_cost = 0.0
+
             sess = _Stub()
         _saved_h = _h.console
         _h.console = _out()
         try:
             _h._print_welcome(
-                args.get("model", ""), sess,
+                args.get("model", ""),
+                sess,
                 workdir=args.get("workdir", "."),
                 n_lsp=int(args.get("n_lsp", 0) or 0),
                 n_mcp=int(args.get("n_mcp", 0) or 0),
@@ -408,6 +632,7 @@ def _replay_welcome() -> None:
             _h.console = _saved_h
     except Exception:
         from logger import logger
+
         logger.opt(exception=True).debug("replay welcome failed")
 
 
@@ -418,6 +643,7 @@ def _print_user_line(text: str, status: str = "") -> None:
 
     try:
         import os as _os
+
         w = _os.get_terminal_size().columns
     except Exception:
         w = 80
@@ -433,6 +659,7 @@ def _print_user_line(text: str, status: str = "") -> None:
     if status:
         try:
             from ui.prompt import InputPrompt
+
             _ip = InputPrompt.__new__(InputPrompt)
             frags = _ip._make_separator_fragments(status)
             _cls_style = {
@@ -482,10 +709,7 @@ def _replay_think(steps: list) -> None:
         from agent.think import ThinkLog, ThoughtStep, render_think_static
     except Exception:
         return
-    log = ThinkLog(steps=[
-        ThoughtStep(text=str(s), raw_text=str(s))
-        for s in steps if s
-    ])
+    log = ThinkLog(steps=[ThoughtStep(text=str(s), raw_text=str(s)) for s in steps if s])
     if not log.steps:
         return
     _out().print()
@@ -493,15 +717,15 @@ def _replay_think(steps: list) -> None:
 
 
 def _replay_reasoning(text: str) -> None:
-    text = (text or "").strip()
-    if not text:
+    text = text or ""
+    if not text.strip():
         return
     try:
         from agent.stream_render import render_reasoning_panel
     except Exception:
         return
     _out().print()
-    _out().print(render_reasoning_panel(text, streaming=False))
+    _out().print(render_reasoning_panel(text))
 
 
 def _replay_plan(plan: dict, action: str = "", focus_index=None) -> None:
@@ -510,17 +734,19 @@ def _replay_plan(plan: dict, action: str = "", focus_index=None) -> None:
     except Exception:
         return
     steps = []
-    for s in (plan.get("steps") or []):
+    for s in plan.get("steps") or []:
         status_str = s.get("status", "pending")
         try:
             status = StepStatus(status_str)
         except Exception:
             status = StepStatus.PENDING
-        steps.append(PlanStep(
-            title=s.get("title", ""),
-            status=status,
-            notes=s.get("notes") or "",
-        ))
+        steps.append(
+            PlanStep(
+                title=s.get("title", ""),
+                status=status,
+                notes=s.get("notes") or "",
+            )
+        )
     p = Plan(goal=plan.get("goal", ""), steps=steps)
     if not p.steps:
         return

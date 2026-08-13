@@ -7,6 +7,7 @@ test.py
 *.py[oc]
 build/
 dist/
+*.spec
 wheels/
 *.egg-info
 
@@ -22,10 +23,12 @@ wheels/
 .ruff_cache/
 .pytest_cache/
 .prev_git/
+
+
 logs/
 dist/
 *.zip
 scripts/
 .claude/
+AGENTS.md
 tests/
-docx_engine_port/

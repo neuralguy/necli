@@ -4,21 +4,21 @@ from .settings import get, set_value
 
 # Семантические роли цветов
 ROLES = (
-    "accent",      # промпт, поиск, poll, thinking
-    "success",     # response border, OK-статусы, agent mode
-    "warning",     # shell, patch, предупреждения
-    "error",       # ошибки
-    "info",        # read, list, tree, cyan-элементы
-    "magenta",     # subagent
-    "purple",      # mode labels
-    "muted",       # разделители, бордеры
-    "dim_text",    # hint text, приглушённый текст
+    "accent",  # промпт, поиск, poll, thinking
+    "success",  # response border, OK-статусы, agent mode
+    "warning",  # shell, patch, предупреждения
+    "error",  # ошибки
+    "info",  # read, list, tree, cyan-элементы
+    "magenta",  # subagent
+    "purple",  # mode labels
+    "muted",  # разделители, бордеры
+    "dim_text",  # hint text, приглушённый текст
     "fg_primary",  # основной текст (строка ввода, номера строк)
-    "dim_alt",     # приглушённый текст 2-го уровня (автосаггест, completion)
+    "dim_alt",  # приглушённый текст 2-го уровня (автосаггест, completion)
     "bar_filled",  # progress bar заполненная часть
-    "bg_code",     # фон блоков кода
-    "bg_output",   # фон вывода команд
-    "bg_select",   # фон выделения в меню
+    "bg_code",  # фон блоков кода
+    "bg_output",  # фон вывода команд
+    "bg_select",  # фон выделения в меню
     "diff_del_fg",  # diff: удаление — текст
     "diff_del_bg",  # diff: удаление — фон
     "diff_add_fg",  # diff: добавление — текст

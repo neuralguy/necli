@@ -12,6 +12,7 @@ import re
 import tools
 from agent.events import AgentEventHandler
 from agent.tg_format import md_to_tg_html
+from config.i18n import format_duration
 from planner import Plan, StepStatus
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ _RE_PATCH_CHANGED = re.compile(r"(\d+)\s+changed")
 _RE_PATCH_ADDED = re.compile(r"\+(\d+)\s+added")
 _RE_PATCH_REMOVED = re.compile(r"-(\d+)\s+removed")
 _RE_WRITE_LINES = re.compile(r"(\d+)\s+lines")
+
 
 def _tool_label_with_emoji(tool_name: str) -> str:
     """`📖 Read` — те же эмодзи и подписи, что в CLI (из config/ui.py).
@@ -50,6 +52,7 @@ def _tool_label_with_emoji(tool_name: str) -> str:
     emoji = (entry.get("emoji") or "").strip()
     label = entry.get("label") or tool_name
     return f"{emoji} {label}".strip()
+
 
 def _line_stats(result: tools.ToolResult) -> str:
     """Компактная сводка строк по файловой операции (без содержимого).
@@ -77,6 +80,7 @@ def _line_stats(result: tools.ToolResult) -> str:
         return f" · {m.group(1)} lines" if m else ""
     return ""
 
+
 def _trunc(text: str, limit: int) -> str:
     if not text:
         return ""
@@ -85,12 +89,15 @@ def _trunc(text: str, limit: int) -> str:
     head = limit // 2
     tail = max(0, limit - head - 20)
     # tail==0 → text[-0:] вернул бы ВСЮ строку, поэтому хвост берём явно.
-    tail_str = text[len(text) - tail:] if tail > 0 else ""
+    tail_str = text[len(text) - tail :] if tail > 0 else ""
     return f"{text[:head]}\n…(truncated {len(text) - limit} chars)…\n{tail_str}"
+
 
 def _html_escape(text: str) -> str:
     import html
+
     return html.escape(text, quote=False)
+
 
 def _format_invocation(call: tools.ToolCall) -> str:
     """Человекочитаемое представление вызова инструмента для блока кода в TG.
@@ -117,6 +124,7 @@ def _format_invocation(call: tools.ToolCall) -> str:
             lines.append(f"  {k}: {_trunc(sval, 200)}")
     return "\n".join(lines)
 
+
 class TelegramEventHandler:
     """Зеркало событий агента в Telegram. Делегирует базовому handler'у."""
 
@@ -127,6 +135,7 @@ class TelegramEventHandler:
     def _send(self, text: str) -> None:
         try:
             from apis.telegram import get_bridge
+
             bridge = get_bridge()
             if bridge.is_running:
                 bridge.send(text)
@@ -149,7 +158,9 @@ class TelegramEventHandler:
         ok = result.status == "ok"
         icon = "✓" if ok else "✗"
         label = _tool_label_with_emoji(name)
-        elapsed = f" · {result.elapsed:.1f}s" if result.elapsed else ""
+        elapsed = (
+            f" · {format_duration(result.elapsed, decimal_seconds=True)}" if result.elapsed else ""
+        )
         stats = _line_stats(result) if ok else ""
 
         # Заголовок: `✓ Label · 1.2s · ~3 +5 -2`
@@ -213,7 +224,11 @@ class TelegramEventHandler:
         self._send(f"{emoji} {_html_escape(_trunc(message, 500))}")
 
     def on_subagent_start(
-        self, index: int, total: int, mode: str, prompt: str,
+        self,
+        index: int,
+        total: int,
+        mode: str,
+        prompt: str,
         model_label: str = "",
     ) -> None:
         self._base.on_subagent_start(index, total, mode, prompt, model_label=model_label)
@@ -239,8 +254,7 @@ class TelegramEventHandler:
         else:
             resp = getattr(result, "response", "") or ""
             self._send(
-                f"✅ <b>Subagent {index + 1}</b> done\n"
-                f"{md_to_tg_html(_trunc(resp, MAX_OUTPUT))}"
+                f"✅ <b>Subagent {index + 1}</b> done\n{md_to_tg_html(_trunc(resp, MAX_OUTPUT))}"
             )
 
     # дополнительные методы зеркалирования (не из протокола)
@@ -250,6 +264,7 @@ class TelegramEventHandler:
 
     def mirror_assistant(self, text: str, cancelled: bool = False) -> None:
         import config as _cfg
+
         body = (text or "").strip()
         if not body and not cancelled:
             return
@@ -264,4 +279,7 @@ class TelegramEventHandler:
         if not text or not text.strip():
             return
         from config.i18n import t as _i18n
-        self._send(f"💭 <i>{_i18n('ui.thinking')}</i>\n<blockquote>{_html_escape(_trunc(text, MAX_OUTPUT))}</blockquote>")
+
+        self._send(
+            f"💭 <i>{_i18n('ui.thinking')}</i>\n<blockquote>{_html_escape(_trunc(text, MAX_OUTPUT))}</blockquote>"
+        )

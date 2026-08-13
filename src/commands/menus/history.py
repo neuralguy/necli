@@ -10,7 +10,7 @@ from ui.overlays import key_hints
 from ui.shell import Overlay, get_shell
 
 _TOOL_BLOCK_RE = re.compile(
-    r'^[ \t]*:{2,3}call[ \t]+(?P<tool>\w+)(?P<header>[^\n]*)\n(?P<body>.*?)(?:\n|^)call:{2,3}[ \t]*(?:\n|$)'
+    r"^[ \t]*:{2,3}call[ \t]+(?P<tool>\w+)(?P<header>[^\n]*)\n(?P<body>.*?)(?:\n|^)call:{2,3}[ \t]*(?:\n|$)"
     r"|(?P<fence>`{3,}|~{3,})call[ \t]+(?P<old_tool>\w+)[^\n]*\n(?P<old_body>.*?)(?:\n|^)(?P=fence)[ \t]*(?:\n|$)",
     re.DOTALL | re.MULTILINE,
 )
@@ -48,7 +48,7 @@ def _render_assistant(content: str) -> Text:
     out = Text()
     pos = 0
     for m in _TOOL_BLOCK_RE.finditer(content):
-        prefix = content[pos:m.start()].strip()
+        prefix = content[pos : m.start()].strip()
         if prefix:
             if out.plain:
                 out.append("\n")
@@ -105,7 +105,7 @@ class HistoryOverlay(Overlay):
 
         out = self.title.copy()
         out.append("\n\n")
-        visible = self.lines[self.top:self.top + self.page]
+        visible = self.lines[self.top : self.top + self.page]
         for i, source in enumerate(visible):
             line = source.copy()
             line.truncate(max(1, width - 2), overflow="ellipsis")
@@ -156,8 +156,9 @@ async def show_history(session: Session, n: int) -> None:
     selected = msgs[-n:]
 
     # Блок без рамки и линеек-разделителей показывается как динамическое notice.
-    title = Text("  " + _("history.title", n=len(selected), total=len(msgs)),
-                 style=f"bold {t('accent')}")
+    title = Text(
+        "  " + _("history.title", n=len(selected), total=len(msgs)), style=f"bold {t('accent')}"
+    )
     body = Text()
     for i, msg in enumerate(selected):
         if i > 0:

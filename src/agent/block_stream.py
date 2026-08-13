@@ -115,12 +115,14 @@ class BlockStreamer:
         # print_static, единый канал вывода агента (см. agent/display.py).
         self.console = console
         self._refresh = refresh_per_second
-        self._printed_blocks: int = 0       # сколько блоков уже ушло в scrollback
-        self._emitted_blocks: list[str] = []  # тексты блоков, уже ушедших в scrollback (по содержимому)
-        self._active_text: str = ""          # текст текущего активного блока
-        self._live: bool = False             # занята ли зона _BLOCK_ZONE нашим кадром
-        self._done: bool = False             # finalize() вызван — update() игнорируем до reset()
-        self._emitted_any: bool = False      # хоть один блок ушёл в scrollback
+        self._printed_blocks: int = 0  # сколько блоков уже ушло в scrollback
+        self._emitted_blocks: list[
+            str
+        ] = []  # тексты блоков, уже ушедших в scrollback (по содержимому)
+        self._active_text: str = ""  # текст текущего активного блока
+        self._live: bool = False  # занята ли зона _BLOCK_ZONE нашим кадром
+        self._done: bool = False  # finalize() вызван — update() игнорируем до reset()
+        self._emitted_any: bool = False  # хоть один блок ушёл в scrollback
 
     def _print_block(self, block_text: str, is_first: bool) -> None:
         """Печатает один блок в scrollback с ровно одной пустой строкой-разделителем.
@@ -150,11 +152,13 @@ class BlockStreamer:
 
     def _make_renderable(self, block_text: str, is_first: bool = False):
         from rich.text import Text
+
         if not block_text or not block_text.strip():
             return Text("")
 
         def _md(txt):
             from ui.formatting import escape_md_underscores, latex_to_unicode
+
             txt = escape_md_underscores(latex_to_unicode(txt))
             try:
                 return ResponseMarkdown(txt, code_theme="monokai", inline_code_theme="monokai")
@@ -167,11 +171,12 @@ class BlockStreamer:
             from agent.stream_render import _inline_md, _is_markdown_block
             from config.themes import t
             from ui.formatting import latex_to_unicode
+
             block_text = latex_to_unicode(block_text)
             stripped = block_text.lstrip("\n").rstrip()
             first_nl = stripped.find("\n")
             first_line = stripped if first_nl < 0 else stripped[:first_nl]
-            rest = "" if first_nl < 0 else stripped[first_nl + 1:].lstrip("\n")
+            rest = "" if first_nl < 0 else stripped[first_nl + 1 :].lstrip("\n")
             is_block = _is_markdown_block(first_line, rest)
             header = Text()
             header.append("● ", style=f"bold {t('success')}")
@@ -196,11 +201,13 @@ class BlockStreamer:
             return
         try:
             from config.ui import ui
+
             if not bool(ui.get("live_stream.compact_active_live", False)):
                 return
         except Exception:
             return
         from ui.shell import get_shell
+
         sh = get_shell()
         if sh is None:
             # Headless / не-TTY: кадр всё равно был transient и ничего не
@@ -219,6 +226,7 @@ class BlockStreamer:
         if not text:
             return text
         from agent.stream_render import _stream_max_lines
+
         max_lines = _stream_max_lines()
         # Высота кадра считается по ВИЗУАЛЬНЫМ строкам с учётом word-wrap, а не
         # по числу \n: длинный абзац без переносов в одну логическую строку при
@@ -271,6 +279,7 @@ class BlockStreamer:
             return
         self._live = False
         from ui.shell import get_shell
+
         sh = get_shell()
         if sh is not None:
             sh.clear_dynamic(_BLOCK_ZONE)
@@ -292,13 +301,13 @@ class BlockStreamer:
         # было активным), потом напечатать в scrollback ВСЕ ещё не выведенные
         # закрытые блоки, потом поднять кадр заново с новым активным блоком.
         total = len(blocks)
-        closed = blocks[:total - 1]  # последний — активный
+        closed = blocks[: total - 1]  # последний — активный
         # Печатаем закрытые блоки ПО СОДЕРЖИМОМУ, а не по индексу: разбиение
         # _split_into_blocks между тиками может сдвигать границы (склейка
         # списков в merged, дозревающие переносы), из-за чего индекс closed_count
         # «дрожит» и уже напечатанный блок печатался бы заново. Сверяемся с
         # фактически выведенными текстами — дубль исключён.
-        new_closed = closed[len(self._emitted_blocks):]
+        new_closed = closed[len(self._emitted_blocks) :]
         if new_closed:
             # Сначала гасим кадр (он сейчас держит то что раньше было активным).
             self._stop_live()

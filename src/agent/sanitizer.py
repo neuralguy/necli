@@ -29,21 +29,45 @@ _PROXY_QUERY_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
-_UNCLOSED_CALL_FENCE_RE = re.compile(
-    r":::call[ \t]+[a-zA-Z_]\w*[^\n]*\n"
-    r"(?P<body>(?:(?!call:::).)*)\Z",
-    re.DOTALL,
-)
+
+def _find_unclosed_call_fence(text: str) -> re.Match | None:
+    """Линейный поиск незакрытого :::call блока без ReDoS-риска.
+
+    Старый regex `(?:(?!call:::).)*` с re.DOTALL на длинных входах мог
+    деградировать квадратично. Здесь — два линейных поиска: последний
+    открывающий маркер и есть ли после него закрывающий.
+    """
+    marker = ":::call"
+    close_marker = "call:::"
+    idx = text.rfind(marker)
+    if idx < 0:
+        return None
+    close_idx = text.find(close_marker, idx + len(marker))
+    if close_idx >= 0:
+        return None  # блок закрыт
+
+    class _FakeMatch:
+        def group(self, name=None):
+            return text[idx:]
+
+        def start(self):
+            return idx
+
+        def end(self):
+            return len(text)
+
+    return _FakeMatch()
+
 
 # Кривой fence-маркер: модель иногда пишет открытие с 1-2 двоеточиями вместо
-# трёх (`::call memory_list`) или закрытие `call::`/`:call`. Настоящий блок
+# трёх (`::call memory`) или закрытие `call::`/`:call`. Настоящий блок
 # (`:::call … call:::`) к этому моменту уже защищён плейсхолдером, поэтому
 # здесь матчатся ТОЛЬКО сломанные маркеры — их вырезаем целиком вместе с
 # json-телом, чтобы они не утекли в вывод как мусор (`⏺ Tool (no args)`).
 # Граница строки `(?<![:])` слева не даёт задеть валидный `:::call`.
 _MALFORMED_CALL_OPEN_RE = re.compile(
     r"(?m)^[ \t]*:{1,2}call[ \t]+[a-zA-Z_]\w*[^\n]*\n"
-    r"(?:[ \t]*\{.*?\}[ \t]*\n?)?"      # опц. однострочное/многострочное json-тело
+    r"(?:[ \t]*\{.*?\}[ \t]*\n?)?"  # опц. однострочное/многострочное json-тело
     r"(?:[ \t]*:{0,3}call:{0,3}[ \t]*\n?)?",  # опц. кривое закрытие (call::, :call:::)
     re.DOTALL,
 )
@@ -55,7 +79,7 @@ _MALFORMED_CALL_CLOSE_RE = re.compile(
 
 def _close_unclosed_call_fence(text: str) -> str:
     """Если в конце текста остался незакрытый :::call блок — закрыть его."""
-    m = _UNCLOSED_CALL_FENCE_RE.search(text)
+    m = _find_unclosed_call_fence(text)
     if not m:
         return text
     suffix = "\ncall:::" if not text.endswith("\n") else "call:::"
@@ -95,12 +119,18 @@ _FAKE_RESULT_PATTERNS = [
     # Фейковые строки с ✓ Created/Written/etc после tool-вызова.
     # Якорь в группе 1 — _replace вернёт его, плейсхолдер не потеряется.
     re.compile(
-        "(" + _AFTER_CALL + r")\s*\n+\s*(?:✓|✔|√)\s*(?:Created|Written|Saved|Updated|Deleted|Renamed|Copied|Moved|Создан|Записан|Удалён|Обновлён)[^\n]*",
+        "("
+        + _AFTER_CALL
+        + r")\s*\n+\s*(?:✓|✔|√)\s*(?:Created|Written|Saved|Updated|Deleted|Renamed|Copied|Moved|Создан|Записан|Удалён|Обновлён)[^\n]*",
         re.IGNORECASE,
     ),
     # Блоки "Output:" / "Result:" / "Вывод:" после tool-вызова
     re.compile(
-        "(" + _AFTER_CALL + r")\s*\n+\s*(?:Output|Result|Результат|Вывод)\s*[:\-]\s*\n.*?(?=" + _NEXT_CALL + ")",
+        "("
+        + _AFTER_CALL
+        + r")\s*\n+\s*(?:Output|Result|Результат|Вывод)\s*[:\-]\s*\n.*?(?="
+        + _NEXT_CALL
+        + ")",
         re.DOTALL | re.IGNORECASE,
     ),
     # Модель реплеит proxy/user turn после tool-call: Current date + <query> + fake output.
@@ -138,8 +168,6 @@ _ROLE_LEAK_RE = re.compile(
 )
 
 
-
-
 _CALL_BLOCK_FOR_SANITIZE_RE = re.compile(
     r":::call[ \t]+[a-zA-Z_]\w*[^\n]*\n"
     r".*?"
@@ -151,7 +179,7 @@ _CALL_BLOCK_FOR_SANITIZE_RE = re.compile(
 def _protect_call_blocks(text: str) -> tuple[str, list[str]]:
     """Вырезает :::call ... call::: блоки, заменяя плейсхолдерами.
 
-    Содержимое call-блоков — это аргументы инструментов (HTML для create_docx,
+    Содержимое call-блоков — это аргументы инструментов (JSON аргументы docx,
     код для write_file и т.п.), их нельзя пропускать через sanitizer-фильтры
     (HTML-стрип, fake-result regex), иначе HTML-теги внутри content будут
     удалены и инструмент получит сломанный ввод.
@@ -187,6 +215,7 @@ _RUNTIME_TOOL_RESULTS_SUMMARY_INLINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 def strip_fake_runtime_tool_results(text: str) -> str:
     """Удаляет runtime_tool_results-блоки, если модель сымитировала системный вывод."""
     if not text:
@@ -194,6 +223,7 @@ def strip_fake_runtime_tool_results(text: str) -> str:
     text = _RUNTIME_TOOL_RESULTS_RE.sub("", text)
     text = _RUNTIME_TOOL_RESULTS_SUMMARY_INLINE_RE.sub("", text)
     return text
+
 
 _REPLAY_START_RE = re.compile(
     r"^\s*●\s*-{3,}\s*$"
@@ -223,8 +253,10 @@ _WHOLE_REPLAY_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 def _is_call_anchor(line: str) -> bool:
     return "\x00CALL_BLOCK_" in line or line.strip() == "call:::"
+
 
 def _next_call_index(lines: list[str], start: int) -> int:
     for i in range(start, len(lines)):
@@ -232,6 +264,7 @@ def _next_call_index(lines: list[str], start: int) -> int:
         if "\x00CALL_BLOCK_" in lines[i] or stripped.startswith(":::call"):
             return i
     return len(lines)
+
 
 def _strip_replayed_transcript(text: str) -> str:
     lines = text.splitlines(keepends=True)
@@ -292,6 +325,7 @@ def _strip_replayed_transcript(text: str) -> str:
         i = k
     return "".join(out)
 
+
 def strip_fake_tool_output(text: str) -> str:
     """Совместимый helper: удаляет фейковый tool output, сохраняя реальные call-блоки."""
     if not text:
@@ -300,6 +334,7 @@ def strip_fake_tool_output(text: str) -> str:
     result = _strip_replayed_transcript(result)
 
     for pattern in _FAKE_RESULT_PATTERNS:
+
         def _replace(m):
             groups = m.groups()
             if groups and groups[0]:
@@ -308,6 +343,7 @@ def strip_fake_tool_output(text: str) -> str:
 
         result = pattern.sub(_replace, result) if pattern.groups > 0 else pattern.sub("", result)
     return _restore_call_blocks(result, call_blocks)
+
 
 def sanitize_response(text: str) -> str:
     """Удаляет фейковые tool_result и предсказанный вывод из ответа модели."""
@@ -334,7 +370,7 @@ def sanitize_response(text: str) -> str:
 
     # Защищаем содержимое корректных call-блоков от HTML-стриппинга и
     # фильтров fake-result — там HTML-теги могут быть валидным content
-    # (например для create_docx) или частью кода.
+    # (например для docx) или частью кода.
     result, _call_blocks = _protect_call_blocks(result)
 
     # Вырезаем КРИВЫЕ fence-маркеры (1-2 двоеточия вместо трёх): валидные блоки
@@ -346,9 +382,13 @@ def sanitize_response(text: str) -> str:
 
     # Удаляем HTML-теги если они попали в ответ
     # SVG блоки целиком
-    result = re.sub(r'<svg[^>]*>.*?</svg>', '', result, flags=re.DOTALL)
+    result = re.sub(r"<svg[^>]*>.*?</svg>", "", result, flags=re.DOTALL)
     # Открывающие и закрывающие теги
-    result = re.sub(r'</?(?:div|span|pre|button|code|path|a|img|br|hr|p|ul|ol|li|table|tr|td|th|thead|tbody|h[1-6])[^>]*>', '', result)
+    result = re.sub(
+        r"</?(?:div|span|pre|button|code|path|a|img|br|hr|p|ul|ol|li|table|tr|td|th|thead|tbody|h[1-6])[^>]*>",
+        "",
+        result,
+    )
 
     result = _strip_replayed_transcript(result)
 
@@ -363,7 +403,7 @@ def sanitize_response(text: str) -> str:
         result = pattern.sub(_replace, result) if pattern.groups > 0 else pattern.sub("", result)
 
     # Схлопываем пустые строки, пока тела tool-вызовов ещё защищены: формат
-    # create_file/create_docx и patch_file значим, его нельзя нормализовать.
+    # create_file и patch_file значим, его нельзя нормализовать.
     result = re.sub(r"\n{3,}", "\n\n", result)
 
     # Восстанавливаем защищённые call-блоки
@@ -371,6 +411,7 @@ def sanitize_response(text: str) -> str:
 
     # Обычные proxy-маркеры вне replay-блоков всё равно не должны попасть в ответ.
     from agent.stream_parser import _strip_proxy_markers
+
     result = _strip_proxy_markers(result)
     result = _PROXY_WRAP_RE.sub("", result)
     result = _PROXY_QUERY_TAG_RE.sub("", result)
@@ -379,6 +420,8 @@ def sanitize_response(text: str) -> str:
     if len(text) - len(final) > 50:
         logger.debug(
             "sanitize_response: removed {} chars (from {} → {})",
-            len(text) - len(final), len(text), len(final),
+            len(text) - len(final),
+            len(text),
+            len(final),
         )
     return final

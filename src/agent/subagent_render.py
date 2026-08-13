@@ -20,6 +20,7 @@ import itertools
 import logging
 import shutil
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 
 from rich.console import Group
@@ -28,11 +29,13 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
+from config.i18n import format_duration
 from config.i18n import t as tr
 from config.themes import t
 from config.ui import ui
 from tools import strip_tool_calls
 from tools.cancellation import CancellationScope
+from ui.formatting import format_tokens as _fmt_tokens
 from ui.shell import Overlay, RowGroup, get_shell, visible_width
 
 logger = logging.getLogger(__name__)
@@ -44,15 +47,11 @@ def _w() -> int:
     return term if cap <= 0 else min(cap, term)
 
 
-from ui.formatting import format_tokens as _fmt_tokens
-
-
 _TOOL_HINT_ARG = {
     "web_fetch": "urls",
     "web_search": "queries",
     "skill": "name",
-    "memory_read": "name",
-    "memory_write": "name",
+    "memory": "name",
     "poll": "question",
     "subagent": "prompt",
     "expand_tool_result": "id",
@@ -94,9 +93,16 @@ class SubagentBuffer:
     """Буфер вывода одного субагента с компактным рендерингом."""
 
     def __init__(
-        self, index: int, mode: str, prompt: str, model_label: str = "",
-        role: str = "", preset: str = "", depends_on: list | None = None,
-        phase: str = "", label: str = "",
+        self,
+        index: int,
+        mode: str,
+        prompt: str,
+        model_label: str = "",
+        role: str = "",
+        preset: str = "",
+        depends_on: list | None = None,
+        phase: str = "",
+        label: str = "",
     ):
         self.index = index
         self.mode = mode
@@ -338,8 +344,10 @@ class SubagentBuffer:
                     out.append(thought)
             for ev in events:
                 mark, style = (
-                    ("✓", t("success")) if ev.status == "done"
-                    else ("✗", t("error")) if ev.status == "error"
+                    ("✓", t("success"))
+                    if ev.status == "done"
+                    else ("✗", t("error"))
+                    if ev.status == "error"
                     else ("◯", t("magenta"))
                 )
                 label = _tool_label(ev.tool_name)
@@ -347,7 +355,11 @@ class SubagentBuffer:
                 if ev.status == "error" and ev.output.strip():
                     reason = _one_line(ev.output)
                     detail = f"{detail} — {reason}" if detail else reason
-                elapsed = f"  {ev.elapsed:.1f}s" if ev.status != "running" else ""
+                elapsed = (
+                    "  " + format_duration(ev.elapsed, decimal_seconds=True)
+                    if ev.status != "running"
+                    else ""
+                )
                 line = Text(f"  {mark} {ev.emoji} {label}", style=style)
                 detail_budget = width - visible_width(line.plain) - visible_width(elapsed) - 2
                 if detail and detail_budget >= 4:
@@ -385,8 +397,10 @@ class SubagentBuffer:
         """Левая часть шапки: глиф · SubN · роль/preset · модель · deps."""
         glyph, gstyle = self._status_glyph()
         head_style = (
-            f"bold {t('success')}" if self.status == "done"
-            else "bold red" if self.status == "error"
+            f"bold {t('success')}"
+            if self.status == "done"
+            else "bold red"
+            if self.status == "error"
             else f"bold {t('magenta')}"
         )
         txt = Text()
@@ -406,7 +420,7 @@ class SubagentBuffer:
         return txt
 
     def _timer(self) -> str:
-        return f"\u23f1 {self.elapsed:.0f}s"
+        return f"\u23f1 {format_duration(self.elapsed)}"
 
     def _emoji_trail(self, budget: int = 36) -> Text:
         """Трейл эмодзи завершённых инструментов — столько, сколько влезает в budget."""
@@ -530,7 +544,7 @@ class SubagentBuffer:
         n_tools = len(self.tool_events)
         if n_tools:
             metrics.append(f" · {n_tools} tool{'s' if n_tools != 1 else ''}", style="dim")
-        metrics.append(f" · {self.elapsed:.0f}s", style="dim")
+        metrics.append(f" · {format_duration(self.elapsed)}", style="dim")
 
         # Левая часть — только глиф, label и модель. Текущее действие здесь
         # намеренно не показываем: нижняя строка должна оставаться стабильной.
@@ -538,8 +552,10 @@ class SubagentBuffer:
         left = Text()
         left.append(f"{glyph} ", style=gstyle)
         name_style = (
-            f"bold {t('success')}" if self.status == "done"
-            else "bold red" if self.status == "error"
+            f"bold {t('success')}"
+            if self.status == "done"
+            else "bold red"
+            if self.status == "error"
             else f"bold {t('magenta')}"
         )
         left.append(name, style=name_style)
@@ -557,6 +573,7 @@ class SubagentBuffer:
         left.append_text(metrics)
         left.truncate(width, overflow="ellipsis")
         return left
+
 
 def _wrap_words(text: str, width: int) -> list[str]:
     """Простой перенос по словам. Очень длинные слова режутся жёстко."""
@@ -588,6 +605,7 @@ def _wrap_words(text: str, width: int) -> list[str]:
 def _wrap_preserve(text: str, width: int) -> list[str]:
     """Перенос журнала без схлопывания переводов строк и отступов."""
     import textwrap
+
     width = max(8, width)
     lines: list[str] = []
     for raw in (text or "").splitlines() or [""]:
@@ -741,7 +759,7 @@ class SubagentTracker:
         sh.print_static(self.render_summary())
 
     async def wait_all_done(self):
-        while not all(b.status in ("done", "error") for b in self._buffers):  # noqa: ASYNC110
+        while not all(b.status in ("done", "error") for b in self._buffers):
             await asyncio.sleep(0.2)
         await asyncio.sleep(0.3)
 
@@ -752,8 +770,7 @@ class SubagentTracker:
         emoji = str(ui.get("subagent.header_emoji", "\U0001f916"))
         total = len(self._buffers)
         done = sum(1 for b in self._buffers if b.status in ("done", "error"))
-        parts = [f"{emoji} {self._name}",
-                 tr("subagent.agents_n", done=done, total=total)]
+        parts = [f"{emoji} {self._name}", tr("subagent.agents_n", done=done, total=total)]
         phases = self._seen_phases()
         if phases:
             active = self.active_phase()
@@ -800,10 +817,12 @@ class SubagentTracker:
             row.append(self.agent_row_label(buffer), style=t("dim_text"))
             rows.append(row)
         if len(self._buffers) > len(shown):
-            rows.append(Text(
-                f"   … +{len(self._buffers) - len(shown)} agents",
-                style="dim italic",
-            ))
+            rows.append(
+                Text(
+                    f"   … +{len(self._buffers) - len(shown)} agents",
+                    style="dim italic",
+                )
+            )
         return Group(*rows)
 
     def open_table(self) -> None:
@@ -843,6 +862,8 @@ class SubagentTracker:
             logger.warning("subagent overlay failed", exc_info=True)
         finally:
             ticker.cancel()
+            with suppress(asyncio.CancelledError):
+                await ticker
 
     # ── фазы ─────────────────────────────────────────────────────────────────
 
@@ -889,14 +910,7 @@ class SubagentTracker:
 
     @staticmethod
     def _fmt_clock(secs: float) -> str:
-        s = int(secs)
-        if s < 60:
-            return f"{s}s"
-        m, s = divmod(s, 60)
-        if m < 60:
-            return f"{m}m{s:02d}s"
-        h, m = divmod(m, 60)
-        return f"{h}h{m:02d}m{s:02d}s"
+        return format_duration(secs)
 
     def render_view(
         self,
@@ -938,7 +952,10 @@ class SubagentTracker:
         frame_width = max(40, width - 4)
         left_w = max(18, int(frame_width * 0.22))
         left_panel = self._phase_panel(
-            phases, active, shown, left_w,
+            phases,
+            active,
+            shown,
+            left_w,
             cursor=(selected is not None and focus == "phases"),
             rows_budget=rows_budget,
         )
@@ -971,15 +988,24 @@ class SubagentTracker:
             parts.append(self._detail_panel(shown_bufs[sel], width, expanded))
         return Group(*parts)
 
-    def _phase_panel(self, phases: list[str], active: str, shown: str,
-                     left_w: int, cursor: bool, rows_budget: int = 0) -> Panel:
+    def _phase_panel(
+        self,
+        phases: list[str],
+        active: str,
+        shown: str,
+        left_w: int,
+        cursor: bool,
+        rows_budget: int = 0,
+    ) -> Panel:
         """Левая панель со списком фаз. Каждая фаза — ровно одна строка:
         «<маркер><номер> <имя…>   done/total» — имя усекается под ширину."""
         inner = left_w - 4  # минус рамка(2) и padding(2)
         # Фаз обычно единицы, но конвейер на двадцать стадий не должен растянуть
         # кадр выше экрана — окно то же, что у списка агентов.
         p_start, p_end = _viewport(
-            len(phases), rows_budget, phases.index(shown) if shown in phases else 0,
+            len(phases),
+            rows_budget,
+            phases.index(shown) if shown in phases else 0,
         )
         phase_lines: list[Text] = []
         for i in range(p_start, p_end):
@@ -1019,11 +1045,12 @@ class SubagentTracker:
                 row.style = Style(bgcolor=t("bg_select"))
             phase_lines.append(row)
         if p_end - p_start < len(phases):
-            phase_lines.append(Text(
-                tr("subagent.page_range", start=p_start + 1, end=p_end,
-                   total=len(phases)),
-                style="dim",
-            ))
+            phase_lines.append(
+                Text(
+                    tr("subagent.page_range", start=p_start + 1, end=p_end, total=len(phases)),
+                    style="dim",
+                )
+            )
         return Panel(
             Group(*phase_lines),
             title="Phases",
@@ -1033,8 +1060,15 @@ class SubagentTracker:
             width=left_w,
         )
 
-    def _agents_panel(self, shown: str, shown_bufs: list[SubagentBuffer], right_w: int,
-                      *, selected: int | None, rows_budget: int) -> Panel:
+    def _agents_panel(
+        self,
+        shown: str,
+        shown_bufs: list[SubagentBuffer],
+        right_w: int,
+        *,
+        selected: int | None,
+        rows_budget: int,
+    ) -> Panel:
         """Правая панель: агенты показанной фазы, окном по доступной высоте."""
         shown_done = sum(1 for b in shown_bufs if b.status in ("done", "error"))
         row_w = max(20, right_w - 4)
@@ -1052,11 +1086,12 @@ class SubagentTracker:
         if not agent_lines:
             agent_lines = [Text("(no agents)", style="dim")]
         elif end - start < len(shown_bufs):
-            agent_lines.append(Text(
-                tr("subagent.page_range", start=start + 1, end=end,
-                   total=len(shown_bufs)),
-                style="dim",
-            ))
+            agent_lines.append(
+                Text(
+                    tr("subagent.page_range", start=start + 1, end=end, total=len(shown_bufs)),
+                    style="dim",
+                )
+            )
         return Panel(
             Group(*agent_lines),
             title=f"{shown} {shown_done}/{len(shown_bufs)}",
@@ -1077,9 +1112,7 @@ class SubagentTracker:
         if expanded:
             lines.extend(_detail_tail(b, inner))
         border = (
-            "red" if b.status == "error"
-            else t("success") if b.status == "done"
-            else t("magenta")
+            "red" if b.status == "error" else t("success") if b.status == "done" else t("magenta")
         )
         return Panel(Group(*lines), border_style=border, padding=pad, width=width)
 
@@ -1154,7 +1187,7 @@ class AgentOverlay(Overlay):
             self._offset = max_offset
         else:
             self._offset = max(0, min(self._offset, max_offset))
-        visible = lines[self._offset:self._offset + self._page]
+        visible = lines[self._offset : self._offset + self._page]
         while len(visible) < self._page:
             visible.append(Text(""))
 
@@ -1167,8 +1200,10 @@ class AgentOverlay(Overlay):
             f"{self._tracker._fmt_clock(self._buffer.elapsed)}"
         )
         border = (
-            t("error") if self._buffer.status == "error"
-            else t("success") if self._buffer.status == "done"
+            t("error")
+            if self._buffer.status == "error"
+            else t("success")
+            if self._buffer.status == "done"
             else t("magenta")
         )
         return Panel(
@@ -1300,8 +1335,7 @@ class SwarmOverlay(Overlay):
         tail = "" if self._tracker.running else f" · {tr('subagent.finished')}"
         bufs = self._visible()
         can_cancel = bool(
-            bufs
-            and bufs[min(self._sel, len(bufs) - 1)].status not in ("done", "error")
+            bufs and bufs[min(self._sel, len(bufs) - 1)].status not in ("done", "error")
         )
         cancel = f" · {tr('subagent.cancel_hint')}" if can_cancel else ""
         # Подсказка печатается без переноса, поэтому на узком терминале

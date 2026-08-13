@@ -66,6 +66,7 @@ def white_fg() -> str:
     """
     return f"\x1b[{ansi_24bit(t('fg_primary'))}m"
 
+
 #: Курсор строки — тот же символ, что у поля ввода, чтобы «где я» читалось сразу.
 CURSOR = "❯"
 INDENT = 2
@@ -261,6 +262,66 @@ def key_hints(*pairs: tuple[str, str]) -> str:
     return " · ".join(f"{k} {v}".strip() for k, v in pairs if k or v)
 
 
+def input_line(
+    value: str,
+    width: int,
+    *,
+    placeholder: str = "",
+    cursor: int | None = None,
+    icon: str = "⌕",
+    indent: int = INDENT,
+    password: bool = False,
+    focused: bool = True,
+) -> str:
+    """Theme-aware input surface shared by menu search and text dialogs."""
+    shown = "•" * len(value) if password else value
+    cursor = len(shown) if cursor is None else max(0, min(cursor, len(shown)))
+    field_width = max(8, width - indent - 1)
+    prefix = f"▎ {icon} "
+    text_width = max(1, field_width - cell_width(prefix) - 1)
+    surface = bg(t("bg_code"))
+
+    def styled(text: str, role: str = "", *, bold: bool = False, dim: bool = False) -> str:
+        sgr = surface
+        if bold:
+            sgr += BOLD
+        if dim:
+            sgr += DIM
+        if role:
+            sgr += role_fg(role)
+        return sgr + text + RESET + surface
+
+    if shown and focused:
+        before, after = _text_around_cursor(shown, cursor, text_width)
+        body = styled(before, "fg_primary") + styled("▌", "accent")
+        body += styled(after, "fg_primary")
+        visible_body = cell_width(before) + 1 + cell_width(after)
+    elif shown:
+        body = styled(clip(shown, text_width), "fg_primary")
+        visible_body = cell_width(strip_ansi(body))
+    else:
+        hint = clip(placeholder, max(0, text_width - 2)) if placeholder else ""
+        prefix_cursor = "▌" if focused else " "
+        suffix = " " + hint if hint else ""
+        body = styled(prefix_cursor, "accent" if focused else "dim_alt")
+        body += styled(suffix, "dim_alt", dim=True)
+        visible_body = 1 + cell_width(suffix)
+
+    used = cell_width(prefix) + visible_body
+    fill = " " * max(0, field_width - used)
+    marker_role = "accent" if focused else "dim_alt"
+    return (
+        " " * indent
+        + surface
+        + styled("▎", marker_role, bold=focused)
+        + styled(f" {icon} ", "dim_alt")
+        + body
+        + surface
+        + fill
+        + RESET
+    )
+
+
 def more_note(n: int, *, up: bool = True, indent: int = 4) -> str:
     """Отметка «сколько строк осталось за окном» вместо скроллбара."""
     if n <= 0:
@@ -290,11 +351,24 @@ def scroll_window(total: int, selected: int, budget: int) -> tuple[int, int, int
     return start, end, start, total - end
 
 
-def row(label: str, hint: str = "", *, selected: bool = False, width: int = 0,
-        role: str = "", mark: str = "", mark_role: str = "", badge: str = "",
-        right: str = "", right_role: str = "", label_width: int = 0,
-        hint_width: int = 0, dim_label: bool = False, indent: int = INDENT,
-        gap: int = 2) -> str:
+def row(
+    label: str,
+    hint: str = "",
+    *,
+    selected: bool = False,
+    width: int = 0,
+    role: str = "",
+    mark: str = "",
+    mark_role: str = "",
+    badge: str = "",
+    right: str = "",
+    right_role: str = "",
+    label_width: int = 0,
+    hint_width: int = 0,
+    dim_label: bool = False,
+    indent: int = INDENT,
+    gap: int = 2,
+) -> str:
     """Одна строка плоского списка — общий кирпич всех виджетов нижней зоны.
 
     Раскладка: `[отступ][курсор][mark][label →label_width][badge][hint →hint_width][right]`.
@@ -306,7 +380,7 @@ def row(label: str, hint: str = "", *, selected: bool = False, width: int = 0,
     между колонками оставались на фоне терминала.
     """
     sel_bg = bg(t("bg_select")) if selected else ""
-    parts: list[tuple[str, str, bool, bool]] = []   # текст, роль, bold, dim
+    parts: list[tuple[str, str, bool, bool]] = []  # текст, роль, bold, dim
 
     lead = " " * indent + (CURSOR + " " if selected else "  ")
     parts.append((lead, "accent" if selected else "", True, False))
@@ -386,7 +460,7 @@ def _budget(shell, reserve: int = 0, fallback: int = 12) -> int:
 
 
 def title_lines(title: str, width: int = 0) -> list[str]:
-    """Заголовок виджета: приглушённый текст, многострочный — как передали."""
+    """Заголовок виджета: акцентный текст, многострочный — как передали."""
     if not title:
         return []
     out = []
@@ -394,9 +468,10 @@ def title_lines(title: str, width: int = 0) -> list[str]:
         if not line.strip():
             out.append("")
         elif "\x1b" in line:
-            out.append(f"  {line}")           # заголовок уже покрашен вызывающим
+            out.append(f"  {line}")  # заголовок уже покрашен вызывающим
         else:
-            out.append(f"  {DIM}{clip(line, width - 3) if width else line}{RESET}")
+            shown = clip(line, width - 3) if width else line
+            out.append("  " + paint(shown, "accent", bold=True))
     return out
 
 
@@ -409,8 +484,14 @@ class SelectOverlay(Overlay):
     после метки) и `separator` (пустая строка, курсор её пропускает).
     """
 
-    def __init__(self, items: list[dict], current: int = 0, title: str = "",
-                 allow_back: bool = False, allow_forward: bool = False) -> None:
+    def __init__(
+        self,
+        items: list[dict],
+        current: int = 0,
+        title: str = "",
+        allow_back: bool = False,
+        allow_forward: bool = False,
+    ) -> None:
         super().__init__()
         self.items = items
         self.selected = max(0, min(current, len(items) - 1)) if items else 0
@@ -431,8 +512,11 @@ class SelectOverlay(Overlay):
         if not (0 <= idx < len(self.items)):
             return False
         item = self.items[idx]
-        return (bool(item.get("separator")) or bool(item.get("skip"))
-                or is_divider(str(item.get("label", ""))))
+        return (
+            bool(item.get("separator"))
+            or bool(item.get("skip"))
+            or is_divider(str(item.get("label", "")))
+        )
 
     def _step(self, delta: int) -> None:
         """Сдвиг курсора мимо разделителей (по кругу, как было раньше)."""
@@ -489,27 +573,31 @@ class SelectOverlay(Overlay):
             # Пустая марка-заглушка там, где у соседей есть глиф: иначе колонка
             # меток разъезжается на две ячейки.
             mark = str(item.get("mark", "")) or (" " if marked else "")
-            lines.append(row(
-                str(item.get("label", "")),
-                str(item.get("hint", "")),
-                selected=(i == self.selected),
-                width=width,
-                role=str(item.get("role", "")),
-                mark=mark,
-                mark_role=str(item.get("mark_role", "")),
-                badge=str(item.get("badge", "")),
-                right="◄" if item.get("active", False) else "",
-                right_role="success",
-                label_width=label_w,
-                hint_width=hint_w,
-            ))
+            lines.append(
+                row(
+                    str(item.get("label", "")),
+                    str(item.get("hint", "")),
+                    selected=(i == self.selected),
+                    width=width,
+                    role=str(item.get("role", "")),
+                    mark=mark,
+                    mark_role=str(item.get("mark_role", "")),
+                    badge=str(item.get("badge", "")),
+                    right="◄" if item.get("active", False) else "",
+                    right_role="success",
+                    label_width=label_w,
+                    hint_width=hint_w,
+                )
+            )
         if below:
             lines.append(more_note(below, up=False))
         return "\n".join(lines)
 
     def hint(self) -> str:
-        return (f"↑↓ select · enter confirm{_nav_hint(self.allow_back, self.allow_forward)}"
-                " · esc cancel")
+        return (
+            f"↑↓ select · enter confirm{_nav_hint(self.allow_back, self.allow_forward)}"
+            " · esc cancel"
+        )
 
     def version(self):
         """Список меняется только при смене курсора или набора пунктов."""
@@ -555,11 +643,17 @@ class PanelOverlay(Overlay):
     (сессии, модели, темы, провайдеры) переносятся без переписывания.
     """
 
-    def __init__(self, render_fn: Callable[[int], str], hint_text: str, total: int,
-                 initial_selected: int = 0,
-                 on_key: Callable[[str, int], tuple[bool, int, int] | None] | None = None,
-                 text_input: bool = False, allow_back: bool = False,
-                 allow_forward: bool = False) -> None:
+    def __init__(
+        self,
+        render_fn: Callable[[int], str],
+        hint_text: str,
+        total: int,
+        initial_selected: int = 0,
+        on_key: Callable[[str, int], tuple[bool, int, int] | None] | None = None,
+        text_input: bool = False,
+        allow_back: bool = False,
+        allow_forward: bool = False,
+    ) -> None:
         super().__init__()
         self.render_fn = render_fn
         self.hint_text = hint_text
@@ -663,8 +757,13 @@ class TextOverlay(Overlay):
 
     wants_text = True
 
-    def __init__(self, label: str, default: str = "", password: bool = False,
-                 validate: Callable[[str], str | None] | None = None) -> None:
+    def __init__(
+        self,
+        label: str,
+        default: str = "",
+        password: bool = False,
+        validate: Callable[[str], str | None] | None = None,
+    ) -> None:
         super().__init__()
         self.label = label
         self.default = default
@@ -673,17 +772,17 @@ class TextOverlay(Overlay):
         self.error: str | None = None
 
     def render(self, width: int) -> str:
-        shown = self.text
-        if self.password:
-            # Маска обязательна: ключ API не должен появиться на экране ни разу.
-            shown = "•" * len(shown)
-        cursor = self.shell.overlay_buffer.cursor_position if self.shell else len(shown)
-        field_width = max(8, width - cell_width(self.label) - 8)
-        before, after = _text_around_cursor(shown, cursor, field_width)
-        line = (paint(f"  {CURSOR} ", "accent", bold=True)
-                + paint(self.label, "accent", bold=True) + " ")
-        line += before + paint("▌", "accent") + after
-        out = [line]
+        cursor = self.shell.overlay_buffer.cursor_position if self.shell else len(self.text)
+        out = [
+            *title_lines(self.label, width),
+            input_line(
+                self.text,
+                width,
+                cursor=cursor,
+                icon="❯",
+                password=self.password,
+            ),
+        ]
         if self.default and not self.text:
             out.append(f"    {DIM}{tr('menu.default_hint', value=self.default)}{RESET}")
         if self.error:
@@ -724,41 +823,76 @@ class TextOverlay(Overlay):
 
 
 # ──────────────────────── публичные async-обёртки ───────────────────────────
-async def select_menu(items: list[dict], current: int = 0, title: str = "",
-                      allow_back: bool = False,
-                      allow_forward: bool = False) -> int | None:
+async def select_menu(
+    items: list[dict],
+    current: int = 0,
+    title: str = "",
+    allow_back: bool = False,
+    allow_forward: bool = False,
+) -> int | None:
     """Протокол возврата тот же, что у прежней синхронной версии."""
     if not items:
         return None
     shell = get_shell()
     if shell is None:
         from ui.menu import select_menu as legacy
+
         return legacy(items, current, title, allow_back, allow_forward)
-    return await shell.run_overlay(
-        SelectOverlay(items, current, title, allow_back, allow_forward))
+    return await shell.run_overlay(SelectOverlay(items, current, title, allow_back, allow_forward))
 
 
-async def panel_menu(render_fn, hint_text: str, total: int, initial_selected: int = 0,
-                     on_key=None, text_input: bool = False, allow_back: bool = False,
-                     allow_forward: bool = False) -> int | None:
+async def panel_menu(
+    render_fn,
+    hint_text: str,
+    total: int,
+    initial_selected: int = 0,
+    on_key=None,
+    text_input: bool = False,
+    allow_back: bool = False,
+    allow_forward: bool = False,
+) -> int | None:
     shell = get_shell()
     if shell is None:
         import sys
 
         from ui.menu import _panel_menu_direct as legacy
-        return legacy(render_fn, sys.stdout, hint_text, total, initial_selected,
-                      on_key, text_input, allow_back, allow_forward)
+
+        return legacy(
+            render_fn,
+            sys.stdout,
+            hint_text,
+            total,
+            initial_selected,
+            on_key,
+            text_input,
+            allow_back,
+            allow_forward,
+        )
     return await shell.run_overlay(
-        PanelOverlay(render_fn, hint_text, total, initial_selected, on_key,
-                     text_input, allow_back, allow_forward))
+        PanelOverlay(
+            render_fn,
+            hint_text,
+            total,
+            initial_selected,
+            on_key,
+            text_input,
+            allow_back,
+            allow_forward,
+        )
+    )
 
 
-async def ask_text(label: str, default: str = "", password: bool = False,
-                   validate: Callable[[str], str | None] | None = None) -> str | None:
+async def ask_text(
+    label: str,
+    default: str = "",
+    password: bool = False,
+    validate: Callable[[str], str | None] | None = None,
+) -> str | None:
     """Свободный ввод. Возвращает строку либо None при отмене."""
     shell = get_shell()
     if shell is None:
         from rich.console import Console
+
         try:
             return Console().input(f"  {label} ").strip() or default
         except (EOFError, KeyboardInterrupt):
@@ -766,16 +900,16 @@ async def ask_text(label: str, default: str = "", password: bool = False,
     return await shell.run_overlay(TextOverlay(label, default, password, validate))
 
 
-async def confirm(question: str, yes_label: str | None = None,
-                  no_label: str | None = None, danger: bool = False) -> bool:
+async def confirm(
+    question: str, yes_label: str | None = None, no_label: str | None = None, danger: bool = False
+) -> bool:
     """Подтверждение да/нет поверх нижней зоны.
 
     Подписи по умолчанию берутся из i18n в момент вызова, а не в момент импорта:
     язык переключается на ходу (`/lang`), и захешированный в дефолте аргумента
     перевод остался бы от старого языка до перезапуска.
     """
-    items = [{"label": yes_label or tr("common.yes")},
-             {"label": no_label or tr("common.no")}]
+    items = [{"label": yes_label or tr("common.yes")}, {"label": no_label or tr("common.no")}]
     if danger:
         # Опасное действие: «да» красное, курсор стоит на «нет».
         items[0]["role"] = "error"
@@ -790,7 +924,6 @@ __all__ = [
     "DIM",
     "INDENT",
     "RESET",
-    "white_fg",
     "PanelOverlay",
     "SelectOverlay",
     "TextOverlay",
@@ -800,6 +933,7 @@ __all__ = [
     "clip",
     "confirm",
     "fg",
+    "input_line",
     "is_divider",
     "key_hints",
     "more_note",
@@ -817,4 +951,5 @@ __all__ = [
     "strip_rules",
     "title_lines",
     "two_column",
+    "white_fg",
 ]

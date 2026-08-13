@@ -6,23 +6,24 @@ import shlex
 import subprocess
 import sys
 
+from config.constants import Limits
 from logger import logger
 from tools._paths import get_working_dir
 from tools.background import start_background, wait_background_result
 from tools.models import ToolCall, ToolResult
 
-_EXECUTION_TIMEOUT = 60
+_EXECUTION_TIMEOUT = Limits.SHELL_TIMEOUT
 
 # Regex для rm -rf / (корень, не /path) — блокируем только когда / является
 # отдельным аргументом, а не началом пути.
 _RM_RF_ROOT_RE = re.compile(
-    r'\brm\b\s+.*?(?:-rf|-r\s+-f)\s+/(?:\s|$|[;&|>`\n#])',
+    r"\brm\b\s+.*?(?:-rf|-r\s+-f)\s+/(?:\s|$|[;&|>`\n#])",
     re.IGNORECASE,
 )
 
 # sudo — блокируем в любом месте команды (начало строки, после &&, ||, ;, |, и т.д.)
 _SUDO_RE = re.compile(
-    r'(?:^|[;&|`\n(])\s*sudo\b',
+    r"(?:^|[;&|`\n(])\s*sudo\b",
     re.IGNORECASE,
 )
 
@@ -40,11 +41,11 @@ _HEREDOC_RE = re.compile(
     re.DOTALL,
 )
 _CAT_REDIRECT_RE = re.compile(
-    r'cat\s+>',
+    r"cat\s+>",
 )
 # tee, пишущий в файл (с опциями -a и без), но НЕ как часть конвейера в grep и т.п.
 _TEE_REDIRECT_RE = re.compile(
-    r'(?:^|\||&&|;)\s*tee\b(?:\s+-\w+)*\s+\S',
+    r"(?:^|\||&&|;)\s*tee\b(?:\s+-\w+)*\s+\S",
 )
 
 # _working_dir, get_working_dir, set_working_dir — перенесены в tools/_paths.py
@@ -72,12 +73,16 @@ def _is_blocked(command: str) -> str | None:
     # безопасные команды вроде rm -rf /tmp
     if _RM_RF_ROOT_RE.search(command.strip()):
         return "Заблокировано: 'rm -rf /'"
-    if _SUDO_RE.search(command.strip()):
+    # Убираем содержимое закрытых кавычек, чтобы литеральное слово sudo не
+    # блокировало команду. Незакрытые кавычки остаются без изменений (fail-safe).
+    cmd_no_quotes = _strip_quoted(command.strip())
+    if _SUDO_RE.search(cmd_no_quotes):
         return "Заблокировано: sudo — запрещено. Используйте инструменты necli напрямую без sudo."
     return None
 
 
 _QUOTED_SEGMENT_RE = re.compile(r"""'[^']*'|"[^"]*\"""", re.DOTALL)
+
 
 def _strip_quoted(command: str) -> str:
     """
@@ -94,6 +99,7 @@ def _strip_quoted(command: str) -> str:
     except ValueError:
         return command
     return _QUOTED_SEGMENT_RE.sub("", command)
+
 
 def _is_file_write_via_shell(command: str) -> str | None:
     """
@@ -121,17 +127,11 @@ def _is_file_write_via_shell(command: str) -> str | None:
 
     # cat > file (without heredoc, just redirect)
     if _CAT_REDIRECT_RE.search(cmd):
-        return (
-            "REJECTED: Do not use 'cat >' to write files. "
-            "Use the create_file tool instead."
-        )
+        return "REJECTED: Do not use 'cat >' to write files. Use the create_file tool instead."
 
     # tee file (tee writes its stdin to a file even without heredoc)
     if _TEE_REDIRECT_RE.search(cmd):
-        return (
-            "REJECTED: Do not use 'tee' to write files. "
-            "Use the create_file tool instead."
-        )
+        return "REJECTED: Do not use 'tee' to write files. Use the create_file tool instead."
 
     return None
 
@@ -140,7 +140,7 @@ def _strip_shell_prefix(command: str) -> str:
     """Убирает дублированный префикс 'shell' из команды."""
     if command.startswith("shell"):
         rest = command[5:]
-        if not rest or rest[0] in (' ', '\t', '\n'):
+        if not rest or rest[0] in (" ", "\t", "\n"):
             return rest.lstrip()
     return command
 
@@ -151,47 +151,61 @@ def execute_shell(call: ToolCall) -> ToolResult:
 
     if not command:
         return ToolResult(
-            name="shell", status="error",
+            name="shell",
+            status="error",
             output="Пустая команда",
-            exit_code=-1, command="",
+            exit_code=-1,
+            command="",
         )
 
     blocked = _is_blocked(command)
     if blocked:
         return ToolResult(
-            name=call.name, status="error",
+            name=call.name,
+            status="error",
             output=blocked,
-            exit_code=-1, command=command,
+            exit_code=-1,
+            command=command,
         )
 
     # Блокируем запись файлов через shell
     file_write_hint = _is_file_write_via_shell(command)
     if file_write_hint:
         return ToolResult(
-            name=call.name, status="error",
+            name=call.name,
+            status="error",
             output=file_write_hint,
-            exit_code=-1, command=command,
+            exit_code=-1,
+            command=command,
         )
 
     # Фоновое выполнение: для тяжёлых/долгих команд. Запускаем в потоке,
     # сразу возвращаем job-id и продолжаем работу. Уведомление о завершении
     # придёт отдельным результатом в одном из следующих раундов.
     if (call.args or {}).get("background"):
-        job_id = start_background(command, get_working_dir(), _utf8_env())
+        job_id = start_background(
+            command,
+            get_working_dir(),
+            _utf8_env(),
+            timeout=Limits.BG_SHELL_TIMEOUT,
+        )
         return ToolResult(
-            name=call.name, status="ok",
+            name=call.name,
+            status="ok",
             output=(
                 f"Started in background as {job_id}. Continue with other work — "
                 f"a notification with this command's output will arrive "
                 f"automatically once it finishes."
             ),
-            exit_code=0, command=command,
+            exit_code=0,
+            command=command,
         )
 
-    # Субагент исполняет синхронные инструменты в worker thread. Его shell
-    # проводим через тот же process-group runner, что фоновые задачи, но без
-    # отдельной строки UI и без авто-доставки результата главному агенту.
+    # Отменяемый shell проводим через process-group runner, чтобы Ctrl+C
+    # останавливал всю группу дочерних процессов. Это foreground-запуск:
+    # ему нужен обычный shell-таймаут, а не часовой background-таймаут.
     from tools.cancellation import current_cancellation_scope
+
     cancel_scope = current_cancellation_scope()
     if cancel_scope is not None:
         job_id = start_background(
@@ -200,6 +214,7 @@ def execute_shell(call: ToolCall) -> ToolResult:
             _utf8_env(),
             visible=False,
             deliver_result=False,
+            timeout=_EXECUTION_TIMEOUT,
         )
         cancel_scope.bind_job(job_id)
         try:
@@ -214,9 +229,13 @@ def execute_shell(call: ToolCall) -> ToolResult:
     # вызовами — следующий запуск снова стартует с cwd=get_working_dir().
     # Это даёт агенту свободу работать в произвольных директориях
     # (`cd /any/path && cmd`), не нарушая изоляцию субагентов.
+    from logger import debug, info
+
+    debug("tool.shell.start", command=command[:100], cwd=get_working_dir())
     logger.info("shell exec: {!r} (cwd={})", command[:300], get_working_dir())
     run_kwargs = {
-        "capture_output": True, "text": True,
+        "capture_output": True,
+        "text": True,
         "timeout": _EXECUTION_TIMEOUT,
         "cwd": get_working_dir(),
         "env": _utf8_env(),
@@ -225,11 +244,11 @@ def execute_shell(call: ToolCall) -> ToolResult:
         run_kwargs["executable"] = "/bin/bash"
     try:
         result = subprocess.run(command, shell=True, **run_kwargs)
-        logger.debug(
-            "shell done: exit={} stdout_len={} stderr_len={}",
-            result.returncode,
-            len(result.stdout or ""),
-            len(result.stderr or ""),
+        info(
+            "tool.shell.end",
+            exit_code=result.returncode,
+            stdout_len=len(result.stdout or ""),
+            stderr_len=len(result.stderr or ""),
         )
 
         parts = []
@@ -251,14 +270,18 @@ def execute_shell(call: ToolCall) -> ToolResult:
     except subprocess.TimeoutExpired:
         logger.warning("shell timeout {}s: {!r}", _EXECUTION_TIMEOUT, command[:200])
         return ToolResult(
-            name=call.name, status="error",
+            name=call.name,
+            status="error",
             output=f"Timeout: {_EXECUTION_TIMEOUT}s",
-            exit_code=-1, command=command,
+            exit_code=-1,
+            command=command,
         )
     except Exception as e:
         logger.opt(exception=True).error("shell crashed: {}", e)
         return ToolResult(
-            name=call.name, status="error",
+            name=call.name,
+            status="error",
             output=f"Error: {e}",
-            exit_code=-1, command=command,
+            exit_code=-1,
+            command=command,
         )

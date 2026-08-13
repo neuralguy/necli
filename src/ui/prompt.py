@@ -91,7 +91,7 @@ def _get_clipboard_text() -> str:
             )
             if r.returncode == 0:
                 return r.stdout
-        except FileNotFoundError:  # noqa: PERF203
+        except FileNotFoundError:
             continue
         except Exception:
             continue
@@ -113,7 +113,7 @@ def _vw(s: str) -> int:
 
 
 class _ImageHighlighter(Processor):
-    _PATTERN = re.compile(r'(\[image\d+\])')
+    _PATTERN = re.compile(r"(\[image\d+\])")
 
     def apply_transformation(self, ti):
         fragments = []
@@ -161,6 +161,7 @@ class InputPrompt:
         доклеиваются сюда, в его KeyBindings, а не форком ядра.
         """
         self._shell = shell
+        shell.submission_text_transform = self.expand_submitted
         self._bind_paste_keys(shell)
         try:
             control = shell.input_window.content
@@ -335,9 +336,8 @@ class InputPrompt:
     def expand_submitted(self, text: str) -> str:
         """Раскрывает `[Pasted N chars]` в реальный текст отправленной реплики.
 
-        Раньше это делала обёртка истории prompt_toolkit в момент записи; теперь
-        буфером владеет Shell, поэтому раскрываем в главном цикле — до эха и до
-        постановки в очередь, чтобы агент получил текст, а не маркер.
+        Shell вызывает этот локальный callback до записи истории и постановки
+        реплики в очередь, поэтому и агент, и история получают полный текст.
         """
         return self._expand_for_history(text)
 
@@ -349,6 +349,7 @@ class InputPrompt:
             self.session = session
         try:
             from ui.terminal_title import set_activity_status, set_session_terminal_title
+
             set_activity_status(status)
             if self.session is not None:
                 set_session_terminal_title(self.session, status)
@@ -377,7 +378,9 @@ class InputPrompt:
 
             prefix = "─── "
             suffix = " "
-            visible_len = _vw(prefix) + _vw(before) + _vw(filled) + _vw(empty) + _vw(after) + _vw(suffix)
+            visible_len = (
+                _vw(prefix) + _vw(before) + _vw(filled) + _vw(empty) + _vw(after) + _vw(suffix)
+            )
             remaining = max(0, w - visible_len)
             tail = "─" * remaining
 
@@ -419,6 +422,7 @@ class InputPrompt:
         fragments = self._make_separator_fragments(status)
         try:
             from prompt_toolkit.output.defaults import create_output
+
             out = create_output(stdout=sys.__stdout__)
             ptk_print(FormattedText(fragments), style=_build_style(), output=out)
         except Exception:
@@ -448,10 +452,7 @@ class InputPrompt:
         fg = ansi_24bit(t("fg_primary"))
 
         # Маппинг [imageN] → путь для OSC 8 file://-гиперссылок (Ctrl+клик).
-        image_paths = {
-            f"[image{idx}]": p
-            for idx, p in enumerate(self.pending_images, start=1)
-        }
+        image_paths = {f"[image{idx}]": p for idx, p in enumerate(self.pending_images, start=1)}
 
         def _linkify(seg: str) -> str:
             # Оборачивает [imageN] в OSC 8 file://-ссылку + underline.
@@ -466,6 +467,7 @@ class InputPrompt:
                     return ph
                 uri = Path(p).resolve().as_uri()
                 return f"\033]8;;{uri}\033\\\033[4m{ph}\033[24m\033]8;;\033\\"
+
             return _ImageHighlighter._PATTERN.sub(_repl, seg)
 
         out: list[str] = []

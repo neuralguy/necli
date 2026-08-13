@@ -35,13 +35,15 @@ def render_block(block: HBlock, width: int) -> list[str]:
 
     if kind == "tip":
         lines = _wrap_text(block.content, w - 3)
-        return ["💡 " + paint(lines[0], "success")] + \
-               ["   " + paint(ln, "success") for ln in lines[1:]]
+        return ["💡 " + paint(lines[0], "success")] + [
+            "   " + paint(ln, "success") for ln in lines[1:]
+        ]
 
     if kind == "warn":
         lines = _wrap_text(block.content, w - 3)
-        return ["⚠ " + paint(lines[0], "warning")] + \
-               ["  " + paint(ln, "warning") for ln in lines[1:]]
+        return ["⚠ " + paint(lines[0], "warning")] + [
+            "  " + paint(ln, "warning") for ln in lines[1:]
+        ]
 
     if kind == "table":
         return _render_table(block.items, w)

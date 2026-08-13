@@ -79,15 +79,17 @@ def _provider_rows(providers: list, active_api: str) -> list[dict]:
         else:
             badge, style = _("api.status_no_models"), "warning"
         balance = get_provider_balance(p["id"])
-        rows.append({
-            "label": p["name"],
-            "hint": _shorten_url(p.get("base_url") or ""),
-            "models": str(models_count) if models_count else "—",
-            "balance": f"{balance:g}$" if balance else "—",
-            "badge": badge,
-            "badge_style": style,
-            "haystack": f'{p["name"]} {p.get("base_url", "")}'.casefold(),
-        })
+        rows.append(
+            {
+                "label": p["name"],
+                "hint": _shorten_url(p.get("base_url") or ""),
+                "models": str(models_count) if models_count else "—",
+                "balance": f"{balance:g}$" if balance else "—",
+                "badge": badge,
+                "badge_style": style,
+                "haystack": f"{p['name']} {p.get('base_url', '')}".casefold(),
+            }
+        )
     return rows
 
 
@@ -125,8 +127,12 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
 
     def _refilter(keep: int):
         nonlocal order, version
-        q = query.casefold()
-        order = [i for i in range(total_providers) if not q or q in rows[i]["haystack"]]
+        tokens = query.casefold().split()
+        order = [
+            i
+            for i in range(total_providers)
+            if not tokens or all(token in rows[i]["haystack"] for token in tokens)
+        ]
         version += 1
         total = len(order) + 1  # + строка «Добавить провайдера»
         return (True, min(keep, max(0, total - 1)), total)
@@ -165,17 +171,24 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
         start, end, above, below = scroll_window(total, sel, budget)
 
         lines = [
-            section_line(_("api.title"), width, bold=True, pal=pal,
-                         right=f"{sel + 1}/{total}" if total else ""),
+            section_line(
+                _("api.title"),
+                width,
+                bold=True,
+                pal=pal,
+                right=f"{sel + 1}/{total}" if total else "",
+            ),
             search_line(query, width, _("api.search_hint"), pal),
         ]
         headings = [("  " + cell(_("api.col_name"), label_w), pal.dim)]
         if hint_w:
             headings.append(("  " + cell(_("api.col_url"), hint_w), pal.dim))
-        headings.extend([
-            ("  " + cell(_("api.col_models"), models_w, "right"), pal.dim),
-            ("  " + cell(_("api.col_balance"), balance_w, "right"), pal.dim),
-        ])
+        headings.extend(
+            [
+                ("  " + cell(_("api.col_models"), models_w, "right"), pal.dim),
+                ("  " + cell(_("api.col_balance"), balance_w, "right"), pal.dim),
+            ]
+        )
         if badge_w:
             headings.append(("  " + cell(_("api.col_status"), badge_w, "right"), pal.dim))
         lines.append(row_line(headings, width, pal=pal))
@@ -188,23 +201,37 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
         for pos in range(start, end):
             if pos == len(order):
                 # Последний пункт — «Добавить провайдера».
-                lines.append(row_line(
-                    [(_("api.add_provider"), ""),
-                     ("  " + _("api.add_hint"), pal.dim)],
-                    width, selected=pos == sel, pal=pal))
+                lines.append(
+                    row_line(
+                        [
+                            ("+ " + _("api.add_provider"), pal.accent),
+                            ("  " + _("api.add_hint"), pal.dim),
+                        ],
+                        width,
+                        selected=pos == sel,
+                        pal=pal,
+                    )
+                )
                 continue
             orig = order[pos]
             r = rows[orig]
             is_active = orig < total_providers and providers[orig]["id"] == active_api
-            cells = [("● " if is_active else "  ", pal.success),
-                     (cell(r["label"], label_w), pal.success if is_active else "")]
+            cells = [
+                ("● " if is_active else "  ", pal.success),
+                (cell(r["label"], label_w), pal.success if is_active else ""),
+            ]
             if hint_w:
                 cells.append(("  " + cell(r["hint"], hint_w), pal.dim))
-            cells.append(("  " + cell(r["models"], models_w, "right"), pal.dim))
-            cells.append(("  " + cell(r["balance"], balance_w, "right"), pal.dim))
+            cells.append(("  " + cell(r["models"], models_w, "right"), pal.accent))
+            balance_style = pal.warning if r["balance"] != "—" else pal.dim
+            cells.append(("  " + cell(r["balance"], balance_w, "right"), balance_style))
             if badge_w:
-                cells.append(("  " + cell(r["badge"], badge_w, "right"),
-                              getattr(pal, r["badge_style"], pal.dim)))
+                cells.append(
+                    (
+                        "  " + cell(r["badge"], badge_w, "right"),
+                        getattr(pal, r["badge_style"], pal.dim),
+                    )
+                )
             lines.append(row_line(cells, width, selected=pos == sel, pal=pal))
         if below:
             lines.append(more_note(below, up=False))
@@ -231,9 +258,9 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
     total = len(order) + 1
     result_pos = await _run_panel(
         render_fn,
-        key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "open"),
-                  ("esc", "close")),
-        total, 0,
+        key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "open"), ("esc", "close")),
+        total,
+        0,
         on_key=on_key,
     )
     if result_pos is None:
@@ -300,8 +327,12 @@ async def _api_model_add(provider_id: str):
         return
 
     add_model_to_provider(
-        provider_id, model_id, display_name or model_id,
-        int(ctx_str), float(in_str), float(out_str),
+        provider_id,
+        model_id,
+        display_name or model_id,
+        int(ctx_str),
+        float(in_str),
+        float(out_str),
     )
 
 
@@ -323,19 +354,22 @@ async def _api_model_edit(provider_id: str, model):
         return
     ctx_str = await overlays.ask_text(
         f"{head}{_('api.field_context_window')}:",
-        default=str(model.context_window), validate=_validate_int,
+        default=str(model.context_window),
+        validate=_validate_int,
     )
     if ctx_str is None:
         return
     in_str = await overlays.ask_text(
         f"{head}{_('api.field_input_price')}:",
-        default=str(model.input_price), validate=_validate_float,
+        default=str(model.input_price),
+        validate=_validate_float,
     )
     if in_str is None:
         return
     out_str = await overlays.ask_text(
         f"{head}{_('api.field_output_price')}:",
-        default=str(model.output_price), validate=_validate_float,
+        default=str(model.output_price),
+        validate=_validate_float,
     )
     if out_str is None:
         return
@@ -363,8 +397,7 @@ async def _api_provider_edit(provider_id: str):
     name = await overlays.ask_text(f"{head}{_('api.field_name')}:", default=defn.name)
     if name is None:
         return
-    base_url = await overlays.ask_text(
-        f"{head}{_('api.field_base_url')}:", default=defn.base_url)
+    base_url = await overlays.ask_text(f"{head}{_('api.field_base_url')}:", default=defn.base_url)
     if base_url is None:
         return
     ptype = await overlays.ask_text(f"{head}{_('api.field_type')}:", default=defn.type)
@@ -376,14 +409,17 @@ async def _api_provider_edit(provider_id: str):
         name=name or defn.name,
         base_url=base_url or defn.base_url,
         provider_type=ptype or defn.type,
-        api_format=getattr(defn, 'api_format', None) or "openai",
-        models=[{
-            "id": m.id,
-            "display_name": m.display_name,
-            "context_window": m.context_window,
-            "input_price": m.input_price,
-            "output_price": m.output_price,
-        } for m in defn.models],
+        api_format=getattr(defn, "api_format", None) or "openai",
+        models=[
+            {
+                "id": m.id,
+                "display_name": m.display_name,
+                "context_window": m.context_window,
+                "input_price": m.input_price,
+                "output_price": m.output_price,
+            }
+            for m in defn.models
+        ],
         default_model=defn.default_model or "",
         default_headers=dict(getattr(defn, "default_headers", None) or {}),
         requires_auth=getattr(defn, "requires_auth", True),
@@ -406,6 +442,9 @@ def _mask_api_key(api_key: str) -> str:
 def _key_badge(item: dict) -> str:
     balance = float(item.get("balance") or 0)
     parts = [f"{balance:g}$" if balance else "без баланса"]
+    rpm = float(item.get("rpm") or 0)
+    if rpm:
+        parts.append(f"{rpm:g} rpm")
     if item.get("proxy"):
         parts.append(item["proxy"])
     return " · ".join(parts)
@@ -439,6 +478,7 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
         remove_api_credential,
         set_api_credential_balance,
         set_api_credential_name,
+        set_api_credential_rpm,
         set_main_api_credential,
         update_api_credential_proxy,
     )
@@ -457,8 +497,17 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
             }
             for item in credentials
         ]
-        items.append({"label": "Добавить ключ", "hint": "ключ и optional proxy"})
-        items.append({"label": _("common.back")})
+        items.append(
+            {
+                "icon": "+",
+                "icon_style": "accent",
+                "role": "accent",
+                "label": "Добавить ключ",
+                "hint": "ключ и optional proxy",
+                "action": True,
+            }
+        )
+        items.append({"icon": "←", "label": _("common.back"), "role": "muted"})
 
         choice = await card_menu(
             items,
@@ -486,31 +535,74 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
             continue
 
         current = credentials[choice]
+        rpm = float(current.get("rpm") or 0)
         actions = [
-            {"label": "Переименовать", "hint": current["name"] or "без имени"},
-            {"label": "Изменить proxy", "hint": current["proxy"] or "сейчас без proxy"},
-            {"label": "Сделать главным", "hint": "запросы будут начинаться с него"},
-            {"label": "Баланс", "hint": _key_badge(current)},
-            {"label": "Показать ключ полностью", "hint": "вывести ключ без маскировки"},
-            {"label": "Удалить ключ", "hint": "убрать только этот ключ"},
-            {"label": _("common.back")},
+            {
+                "icon": "✎",
+                "icon_style": "accent",
+                "action": True,
+                "label": "Переименовать",
+                "hint": current["name"] or "без имени",
+            },
+            {
+                "icon": "⇄",
+                "icon_style": "info",
+                "action": True,
+                "label": "Изменить proxy",
+                "hint": current["proxy"] or "сейчас без proxy",
+            },
+            {
+                "icon": "★",
+                "icon_style": "warning",
+                "action": True,
+                "label": "Сделать главным",
+                "hint": "запросы будут начинаться с него",
+            },
+            {
+                "icon": "$",
+                "icon_style": "success",
+                "action": True,
+                "label": "Баланс",
+                "hint": _key_badge(current),
+            },
+            {
+                "icon": "#",
+                "icon_style": "purple",
+                "action": True,
+                "label": "RPM",
+                "hint": f"{rpm:g} запросов/мин" if rpm else "без лимита",
+            },
+            {
+                "icon": "◉",
+                "icon_style": "warning",
+                "action": True,
+                "label": "Показать ключ полностью",
+                "hint": "вывести ключ без маскировки",
+            },
+            {
+                "icon": "×",
+                "icon_style": "error",
+                "role": "error",
+                "action": True,
+                "label": "Удалить ключ",
+                "hint": "убрать только этот ключ",
+            },
+            {"icon": "←", "label": _("common.back"), "role": "muted"},
         ]
         action = await card_menu(
             actions,
             title=current["name"] or _mask_api_key(current["key"]),
             status="★ главный" if current.get("main") else "",
             status_style="warning",
-            facts=[facts_line(_mask_api_key(current["key"]),
-                              _key_badge(current))],
+            facts=[facts_line(_mask_api_key(current["key"]), _key_badge(current))],
         )
-        if action is None or action == 6:
+        if action is None or action == 7:
             continue
 
         if action == 0:
             # Без default: пустой ввод здесь означает «ничего не менять»,
             # а '-' — очистить имя.
-            name = await overlays.ask_text(
-                f"Имя ({current['name'] or 'без имени'}, '-' убрать):")
+            name = await overlays.ask_text(f"Имя ({current['name'] or 'без имени'}, '-' убрать):")
             if not name:
                 continue
             set_api_credential_name(provider_id, choice, "" if name == "-" else name)
@@ -519,7 +611,8 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
 
         if action == 1:
             proxy = await overlays.ask_text(
-                f"Proxy ({current['proxy'] or 'без proxy'}, '-' убрать):")
+                f"Proxy ({current['proxy'] or 'без proxy'}, '-' убрать):"
+            )
             if not proxy:
                 continue
             update_api_credential_proxy(provider_id, choice, "" if proxy == "-" else proxy)
@@ -534,8 +627,7 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
             continue
 
         if action == 3:
-            bal = await overlays.ask_text(
-                f"Баланс ({_key_badge(current)}, '.' = 0):")
+            bal = await overlays.ask_text(f"Баланс ({_key_badge(current)}, '.' = 0):")
             if not bal:
                 continue
             try:
@@ -547,14 +639,31 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
             continue
 
         if action == 4:
-            # Ключ показываем внутри оверлея, а не печатаем в scrollback:
-            # статику стереть нельзя, и секрет остался бы в истории терминала.
-            await card_menu([{"label": _("common.back")}],
-                            title="API key", facts=[current["key"]])
+            raw = await overlays.ask_text(
+                f"RPM ({rpm:g} сейчас, 0 или '-' — без лимита):"
+                if rpm
+                else "RPM (запросов/мин, 0 или '-' — без лимита):"
+            )
+            if not raw:
+                continue
+            try:
+                value = float(raw.replace(",", "."))
+            except ValueError:
+                continue
+            if value < 0:
+                continue
+            set_api_credential_rpm(provider_id, choice, 0.0 if raw == "-" else value)
+            reload_providers()
+            _refresh_active_api_session(provider_id, active_api)
             continue
 
-        if action == 5 and await confirm_delete(
-                f"Удалить ключ {_mask_api_key(current['key'])}?"):
+        if action == 5:
+            # Ключ показываем внутри оверлея, а не печатаем в scrollback:
+            # статику стереть нельзя, и секрет остался бы в истории терминала.
+            await card_menu([{"label": _("common.back")}], title="API key", facts=[current["key"]])
+            continue
+
+        if action == 6 and await confirm_delete(f"Удалить ключ {_mask_api_key(current['key'])}?"):
             remove_api_credential(provider_id, choice)
             reload_providers()
             _refresh_active_api_session(provider_id, active_api)
@@ -579,27 +688,75 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
         has_key = bool(credentials)
         cache_enabled = _prompt_cache_enabled(defn)
         cache_status = _("api.prompt_cache_on") if cache_enabled else _("api.prompt_cache_off")
-        key_status = (f"{len(credentials)} key(s)" if has_key
-                      else f"API key: {_('common.not_set')}")
-        balance_status = f"{sum(float(c.get('balance') or 0) for c in credentials):g}$" \
-            if any(c.get("balance") for c in credentials) else "без баланса"
+        key_status = f"{len(credentials)} key(s)" if has_key else f"API key: {_('common.not_set')}"
+        balance_status = (
+            f"{sum(float(c.get('balance') or 0) for c in credentials):g}$"
+            if any(c.get("balance") for c in credentials)
+            else "без баланса"
+        )
         model_names = ", ".join(m.display_name for m in defn.models) or _("common.none")
 
         default_model = defn.default_model or (defn.models[0].id if defn.models else "")
         # Ключа api.col_model в словаре нет — t() вернул бы саму строку ключа,
         # и в подсказке светилось «api.col_model: …».
-        hint = (f"{_('menu.col_model').lower()}: {default_model}" if default_model
-                else _("api.status_no_models"))
+        hint = (
+            f"{_('menu.col_model').lower()}: {default_model}"
+            if default_model
+            else _("api.status_no_models")
+        )
         actions = [
-            {"label": _("api.switch_model") if is_active else _("api.use"), "hint": hint},
-            {"label": "Управление ключами", "hint": f"{len(credentials)} key(s) · баланс: {balance_status}"},
-            {"label": _("api.edit_provider"), "hint": _("api.edit_provider_hint")},
-            {"label": _("api.manage_models"),
-             "hint": f"{len(defn.models)} {_('api.col_models').lower()}"},
-            {"label": _("api.prompt_cache"), "hint": cache_status},
-            {"label": _("api.refresh_models"), "hint": _("api.refresh_hint")},
-            {"label": _("api.delete"), "hint": _("api.delete_permanent")},
-            {"label": _("common.back")},
+            {
+                "icon": "●",
+                "icon_style": "success",
+                "role": "success",
+                "action": True,
+                "label": _("api.switch_model") if is_active else _("api.use"),
+                "hint": hint,
+            },
+            {
+                "icon": "◆",
+                "icon_style": "warning" if not has_key else "success",
+                "action": True,
+                "label": "Управление ключами",
+                "hint": f"{len(credentials)} key(s) · баланс: {balance_status}",
+            },
+            {
+                "icon": "✎",
+                "icon_style": "accent",
+                "action": True,
+                "label": _("api.edit_provider"),
+                "hint": _("api.edit_provider_hint"),
+            },
+            {
+                "icon": "▦",
+                "icon_style": "info",
+                "action": True,
+                "label": _("api.manage_models"),
+                "hint": f"{len(defn.models)} {_('api.col_models').lower()}",
+            },
+            {
+                "icon": "◉",
+                "icon_style": "success" if cache_enabled else "muted",
+                "action": True,
+                "label": _("api.prompt_cache"),
+                "hint": cache_status,
+            },
+            {
+                "icon": "↻",
+                "icon_style": "info",
+                "action": True,
+                "label": _("api.refresh_models"),
+                "hint": _("api.refresh_hint"),
+            },
+            {
+                "icon": "×",
+                "icon_style": "error",
+                "role": "error",
+                "action": True,
+                "label": _("api.delete"),
+                "hint": _("api.delete_permanent"),
+            },
+            {"icon": "←", "label": _("common.back"), "role": "muted"},
         ]
 
         choice = await card_menu(
@@ -610,8 +767,10 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
             facts=[
                 facts_line(f"id: {pid}", f"type: {defn.type}", defn.base_url),
                 facts_line(key_status, f"баланс: {balance_status}"),
-                facts_line(f"{_('api.prompt_cache')}: {cache_status}",
-                           f"{_('api.col_models')}: {model_names}"),
+                facts_line(
+                    f"{_('api.prompt_cache')}: {cache_status}",
+                    f"{_('api.col_models')}: {model_names}",
+                ),
             ],
         )
 
@@ -684,12 +843,15 @@ async def _api_add_menu():
     base_url = await overlays.ask_text(f"{_('api.field_base_url')}:")
     if not base_url:
         return
-    pid = _re.sub(r'[^a-z0-9_-]', '', name.lower().replace(' ', '_'))
+    pid = _re.sub(r"[^a-z0-9_-]", "", name.lower().replace(" ", "_"))
     if not pid:
         pid = "custom"
     add_api_config(
-        provider_id=pid, name=name, base_url=base_url,
-        provider_type="openai_compatible", api_format="openai",
+        provider_id=pid,
+        name=name,
+        base_url=base_url,
+        provider_type="openai_compatible",
+        api_format="openai",
     )
 
 
@@ -733,14 +895,34 @@ async def _api_models_menu(provider_id: str):
             {
                 "label": m.display_name,
                 "hint": m.id,
-                "cols": [f"${m.input_price:.2f}", f"${m.output_price:.2f}",
-                         _ctx_short(m.context_window)],
+                "cols": [
+                    f"${m.input_price:.2f}",
+                    f"${m.output_price:.2f}",
+                    _ctx_short(m.context_window),
+                ],
             }
             for m in defn.models
         ]
-        items.append({"label": _("api.add_model"), "hint": _("api.add_model_hint")})
-        items.append({"label": _("api.delete_selected"),
-                      "hint": _("api.delete_selected_hint")})
+        items.append(
+            {
+                "icon": "+",
+                "icon_style": "accent",
+                "role": "accent",
+                "label": _("api.add_model"),
+                "hint": _("api.add_model_hint"),
+                "action": True,
+            }
+        )
+        items.append(
+            {
+                "icon": "×",
+                "icon_style": "error",
+                "role": "error",
+                "label": _("api.delete_selected"),
+                "hint": _("api.delete_selected_hint"),
+                "action": True,
+            }
+        )
 
         choice, checked = await card_menu(
             items,
@@ -757,28 +939,30 @@ async def _api_models_menu(provider_id: str):
 
         if choice == len(defn.models) + 1:
             # «Удалить выбранные»: сносим все отмеченные пробелом модели.
-            if checked and await confirm_delete(
-                    _("api.delete_selected_q", n=len(checked))):
+            if checked and await confirm_delete(_("api.delete_selected_q", n=len(checked))):
                 for idx in sorted(checked, reverse=True):
                     remove_model_from_provider(provider_id, defn.models[idx].id)
             continue
 
         model = defn.models[choice]
         actions = [
-            {"label": _("api.edit"), "hint": _("api.edit_hint")},
-            {"label": _("api.delete"), "hint": _("api.delete_remove")},
+            {"label": _("api.edit"), "hint": _("api.edit_hint"), "action": True},
+            {"label": _("api.delete"), "hint": _("api.delete_remove"), "action": True},
             {"label": _("common.back")},
         ]
         a = await card_menu(
             actions,
             title=model.display_name,
-            facts=[facts_line(model.id,
-                              f"${model.input_price:.2f}/${model.output_price:.2f}",
-                              _ctx_short(model.context_window))],
+            facts=[
+                facts_line(
+                    model.id,
+                    f"${model.input_price:.2f}/${model.output_price:.2f}",
+                    _ctx_short(model.context_window),
+                )
+            ],
         )
         if a == 0:
             await _api_model_edit(provider_id, model)
-        elif a == 1 and await confirm_delete(
-                _("api.delete_model_q", name=model.display_name)):
+        elif a == 1 and await confirm_delete(_("api.delete_model_q", name=model.display_name)):
             remove_model_from_provider(provider_id, model.id)
         continue

@@ -41,6 +41,7 @@ def _normalize(ch: str) -> str:
         return "up"
     return ch
 
+
 def _normalize_text(ch: str) -> str:
     if ch in ("\r", "\n"):
         return "enter"
@@ -86,7 +87,7 @@ if _IS_WIN:
             last = key
         return last
 
-    class raw_mode:  # noqa: N801
+    class raw_mode:
         def __enter__(self):
             return self
 
@@ -94,6 +95,7 @@ if _IS_WIN:
             return False
 
 else:
+
     def _read_utf8_char(fd: int) -> str:
         first = os.read(fd, 1)
         if not first:
@@ -153,7 +155,7 @@ else:
             last = key
         return last
 
-    class raw_mode:  # noqa: N801
+    class raw_mode:
         def __enter__(self):
             self._fd = sys.stdin.fileno()
             self._old = termios.tcgetattr(self._fd)

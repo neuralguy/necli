@@ -22,7 +22,7 @@ async def agents_interactive():
         presets = list_presets()
         if not presets:
             choice = await card_menu(
-                [{"label": "Create preset…"}],
+                [{"label": "Create preset...", "action": True}],
                 title="Agent presets",
                 facts=[f"No agent presets yet · {get_agents_dir()}"],
             )
@@ -43,10 +43,9 @@ async def agents_interactive():
             }
             for p in presets
         ]
-        items.append({"label": "Create preset…", "hint": str(get_agents_dir())})
+        items.append({"label": "Create preset...", "hint": str(get_agents_dir()), "action": True})
 
-        choice = await card_menu(items, title="Agent presets",
-                                 facts=[f"{len(presets)} preset(s)"])
+        choice = await card_menu(items, title="Agent presets", facts=[f"{len(presets)} preset(s)"])
         if choice is None:
             return
         if choice == len(presets):
@@ -63,9 +62,20 @@ async def _preset_detail_menu(preset):
     while True:
         body_lines = [ln for ln in preset.body[:400].splitlines() if ln.strip()][:6]
         actions = [
-            {"label": "Edit", "hint": editor_command(), "icon": "✎", "icon_style": "dim"},
-            {"label": _("api.delete"), "hint": _("api.delete_permanent"), "icon": "✗",
-             "icon_style": "error"},
+            {
+                "label": "Edit",
+                "hint": editor_command(),
+                "icon": "✎",
+                "icon_style": "dim",
+                "action": True,
+            },
+            {
+                "label": _("api.delete"),
+                "hint": _("api.delete_permanent"),
+                "icon": "✗",
+                "icon_style": "error",
+                "action": True,
+            },
             {"label": _("common.back"), "icon": " "},
         ]
         choice = await card_menu(
@@ -108,7 +118,7 @@ async def _preset_create_interactive():
         return
     desc = await overlays.ask_text("Description:")
     if desc is None:
-        return  # esc в любом поле отменяет создание, как прежний Ctrl+C
+        return
     model = await overlays.ask_text("Model (optional):")
     if model is None:
         return

@@ -4,7 +4,7 @@
 fenced-блоки :::call think ... call:::. Поведение похоже на план, но:
 - шаги последовательны, без перескоков;
 - статус автоматически: текущий шаг = последний добавленный;
-- в UI отображается одной компактной строкой "▶ N/M текст шага".
+- в UI отображается приглушённым Markdown-блоком без изменения текста.
 
 Формат блока:
 
@@ -24,6 +24,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from rich.cells import cell_len, chop_cells
 from rich.text import Text
 
 from config import settings as _settings
@@ -44,7 +45,7 @@ _MD_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})[^\n]*$")
 
 
 def _plain_thought(text: str) -> str:
-    """Remove Markdown syntax from model thoughts before displaying or storing them."""
+    """Remove Markdown syntax for the bounded live preview only."""
     lines: list[str] = []
     in_fence = False
     for line in (text or "").splitlines():
@@ -87,10 +88,6 @@ class ThoughtStep:
 @dataclass
 class ThinkLog:
     steps: list[ThoughtStep] = field(default_factory=list)
-    # High-water mark строк стрим-окна: достигнув max_lines, кадр больше не
-    # сжимается (текст может временно укорачиваться, напр. при закрытии
-    # блока мысль чистится от markdown).
-    peak_lines: int = 0
 
     def add(self, text: str) -> None:
         raw_text = text or ""
@@ -107,16 +104,17 @@ class ThinkLog:
     def current(self) -> ThoughtStep | None:
         return self.steps[-1] if self.steps else None
 
+
 _THINK_BLOCK_RE = re.compile(
-    r':{2,3}call[ \t]+think[^\n]*\n'
-    r'(?P<body>.*?)'
-    r'(?:\n|^)call:::[ \t]*(?:\n|$)',
+    r":{2,3}call[ \t]+think[^\n]*\n"
+    r"(?P<body>.*?)"
+    r"(?:\n|^)call:::[ \t]*(?:\n|$)",
     re.DOTALL | re.MULTILINE,
 )
 
 _THINK_BLOCK_OPEN_RE = re.compile(
-    r':{2,3}call[ \t]+think[^\n]*\n'
-    r'(?P<body>.*)\Z',
+    r":{2,3}call[ \t]+think[^\n]*\n"
+    r"(?P<body>.*)\Z",
     re.DOTALL,
 )
 
@@ -135,21 +133,21 @@ def _extract_partial_thought(body: str) -> str | None:
     s = body.lstrip()
     # Если это не JSON (нет ведущей фигурной скобки) — стримим тело как есть.
     if not s.startswith("{"):
-        return body.strip() or None
+        return body if body.strip() else None
 
     m = re.search(r'"(thought|text|content)"\s*:\s*"', body)
     if not m:
         # Ключ ещё не дошёл в стриме — пока показывать нечего.
         return None
 
-    _SIMPLE_ESC = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\', '/': '/'}  # noqa: N806
+    _SIMPLE_ESC = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
     i = m.end()
     out: list[str] = []
     n = len(body)
     while i < n:
         ch = body[i]
-        if ch == '\\':
-            nxt = body[i + 1] if i + 1 < n else ''
+        if ch == "\\":
+            nxt = body[i + 1] if i + 1 < n else ""
             if not nxt:
                 # Незаконченная escape-последовательность в хвосте стрима.
                 break
@@ -157,9 +155,9 @@ def _extract_partial_thought(body: str) -> str | None:
                 out.append(_SIMPLE_ESC[nxt])
                 i += 2
                 continue
-            if nxt == 'u' and i + 5 < n:
+            if nxt == "u" and i + 5 < n:
                 try:
-                    out.append(chr(int(body[i + 2:i + 6], 16)))
+                    out.append(chr(int(body[i + 2 : i + 6], 16)))
                     i += 6
                     continue
                 except ValueError:
@@ -171,8 +169,8 @@ def _extract_partial_thought(body: str) -> str | None:
             break
         out.append(ch)
         i += 1
-    text = "".join(out).strip()
-    return text or None
+    text = "".join(out)
+    return text if text.strip() else None
 
 
 def parse_partial_thought(text: str) -> str | None:
@@ -191,30 +189,30 @@ def parse_partial_thought(text: str) -> str | None:
 
 
 def _parse_one(body: str) -> str | None:
-    body = body.strip()
-    if not body:
+    raw_body = body
+    if not raw_body.strip():
         return None
     # Пробуем JSON
     try:
-        data = json.loads(body)
+        data = json.loads(raw_body)
         if isinstance(data, dict):
             t = data.get("thought") or data.get("text") or data.get("content")
             if isinstance(t, str) and t.strip():
-                return t.strip()
+                return t
     except (json.JSONDecodeError, ValueError):
         # Fallback: чиним одинарные кавычки и trailing commas
         try:
-            fixed = body.replace("'", '"')
-            fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+            fixed = raw_body.replace("'", '"')
+            fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
             data = json.loads(fixed)
             if isinstance(data, dict):
                 t = data.get("thought") or data.get("text") or data.get("content")
                 if isinstance(t, str) and t.strip():
-                    return t.strip()
+                    return t
         except (json.JSONDecodeError, ValueError):
             pass
     # Если не JSON — берём всё тело как мысль
-    return body if body else None
+    return raw_body
 
 
 def _think_duration(log: ThinkLog) -> int:
@@ -223,6 +221,86 @@ def _think_duration(log: ThinkLog) -> int:
         return 0
     span = log.steps[-1].created_at - log.steps[0].created_at
     return max(1, round(span))
+
+
+def _wrapped_lines(text: str, width: int) -> int:
+    """Число видимых строк с учётом переносов терминала."""
+    total = 0
+    for line in (text or "").splitlines() or [""]:
+        total += max(1, (len(line) + width - 1) // width)
+    return total
+
+
+def compact_thought_preview(
+    text: str,
+    prefix: str,
+    terminal_width: int,
+    available: int,
+) -> tuple[str, str | None]:
+    """Fit a collapsed thought and its expand hint on one terminal line."""
+    from config.i18n import t as _i18n
+
+    payload_width = max(0, terminal_width - 5 - cell_len("   " + prefix))
+    if cell_len(text) <= payload_width:
+        return text, None
+
+    lines = _wrapped_lines(text, available)
+    preview = ""
+    suffix = ""
+    for _ in range(10):
+        suffix = _i18n("compact.think_expand", n=lines)
+        preview_width = max(0, payload_width - cell_len(" " + suffix))
+        preview = chop_cells(text, preview_width)[0] if preview_width else ""
+        updated_lines = _wrapped_lines(text[len(preview) :], available)
+        if updated_lines == lines:
+            break
+        lines = updated_lines
+
+    suffix = _i18n("compact.think_expand", n=lines)
+    if cell_len(suffix) > payload_width:
+        suffix = chop_cells(suffix, payload_width)[0] if payload_width else ""
+        preview = ""
+    return preview, suffix
+
+
+def render_thinking_summary(
+    text: str,
+    *,
+    elapsed: float | int | None = None,
+    label: str | None = None,
+):
+    """Компактная плашка мысли без утечки её содержимого."""
+    from rich.console import Group
+
+    from config.i18n import format_duration
+    from config.i18n import t as _i18n
+
+    emoji = ui.get("symbols.thinking_emoji", "💭")
+    header = Text()
+    header.append(
+        f"{emoji} {label or _i18n('ui.thinking_stream')}",
+        style=f"bold {_theme('magenta')}",
+    )
+    if elapsed is not None:
+        header.append("  ")
+        header.append(format_duration(max(1, elapsed)), style=_theme("success"))
+
+    try:
+        import os
+
+        terminal_width = os.get_terminal_size().columns
+    except OSError:
+        terminal_width = 80
+    lines = _wrapped_lines(text.strip(), max(20, terminal_width - 6))
+    summary = Text(
+        "   " + ui.get("symbols.summary_prefix", "⎿  "),
+        style=_theme("dim_text"),
+    )
+    summary.append(
+        _i18n("compact.think_stream", n=lines),
+        style=f"italic {_theme('dim_text')}",
+    )
+    return Group(header, summary)
 
 
 def parse_think_blocks(text: str) -> list[str]:
@@ -245,6 +323,7 @@ def strip_think_blocks(text: str) -> str:
         return text
     return _THINK_BLOCK_RE.sub("", text)
 
+
 def strip_partial_think_block(text: str) -> str:
     """Убирает хвостовой незакрытый call think блок из display-текста."""
     if not text:
@@ -261,101 +340,76 @@ def strip_partial_think_block(text: str) -> str:
     return text[: tail_start + om.start()]
 
 
-def render_think_static(log: ThinkLog, streaming: bool = False):
-    """Список мыслей.
-
-    streaming=True (во время стрима) — разворачивается ПОЛНОСТЬЮ.
-    streaming=False (финал) — превью 3 строки + футер 'ctrl+o развернуть',
-    либо целиком если развёрнуто через Ctrl+O (is_expanded_preview).
-    """
+def render_think_static(
+    log: ThinkLog,
+    streaming: bool = False,
+    elapsed: float | int | None = None,
+):
+    """Скрывает активную мысль, сохраняя прежний статический рендер."""
     muted = _theme("dim_text")
 
     from agent.display import is_compact, is_expanded_preview
+    from config.i18n import format_duration
     from config.i18n import t as _i18n
+
     emoji = ui.get("symbols.thinking_emoji", "💭")
     label = _i18n("ui.thinking")
 
+    raw_text = "\n\n".join(step.raw_text or step.text for step in log.steps)
+    if streaming:
+        return render_thinking_summary(raw_text, elapsed=elapsed)
+
     if is_compact:
-        from rich.console import Group as RGroup
+        from rich.console import Group
+        from rich.table import Table
+
+        from agent.markdown import ThoughtMarkdown
+
         header = Text()
         header.append(f"{emoji} {label}", style=f"bold {_theme('magenta')}")
-
-        full_text = "\n".join(
-            ln for ln in "\n\n".join(step.text.strip() for step in log.steps).split("\n")
-            if ln.strip()
+        preview_text = "\n".join(
+            line
+            for line in "\n\n".join(step.text.strip() for step in log.steps).split("\n")
+            if line.strip()
         )
-
         prefix = ui.get("symbols.summary_prefix", "⎿  ")
-
-        # Визуальные строки с учётом переноса по ширине терминала (одна длинная
-        # мысль без \n иначе считалась бы одной строкой и не резалась).
         try:
-            import os as _os
-            term_w = _os.get_terminal_size().columns
-        except Exception:
-            term_w = 80
-        avail = max(20, term_w - 6)  # отступ "      "
+            import os
 
-        # Сохраняем оригинальные \n — каждая строка word-wrap'ится отдельно.
-        paragraphs = full_text.split("\n")
-        all_lines: list[str] = []
-        for para in paragraphs:
-            if not para.strip():
-                all_lines.append("")
-                continue
-            words = para.split(" ")
-            cur = ""
-            for w in words:
-                cand = (cur + " " + w).strip() if cur else w
-                if len(cand) <= avail:
-                    cur = cand
-                else:
-                    if cur:
-                        all_lines.append(cur)
-                    cur = w
-            if cur:
-                all_lines.append(cur)
+            terminal_width = os.get_terminal_size().columns
+        except OSError:
+            terminal_width = 80
+        available = max(20, terminal_width - 6)
 
-        if streaming:
-            # Стрим: окно растёт от 1 строки до max_lines, дальше — прокрутка
-            # хвоста. Достигнув max_lines, кадр больше не сжимается
-            # (peak_lines — high-water mark: текст может временно
-            # укорачиваться, напр. при закрытии блока мысль чистится от
-            # markdown). Лимит НАМЕРЕННО маленький (не высота терминала):
-            # живой Live — transient, и кадр близкий к высоте окна он не
-            # может стереть курсором → каждый refresh оставляет старый кадр
-            # в scrollback («спам пустых строк»).
-            max_lines = int(ui.get("limits.think_stream_lines", 6))
-            if log.peak_lines >= max_lines or len(all_lines) > max_lines:
-                vis_lines = all_lines[-max_lines:]
-                if len(vis_lines) < max_lines:
-                    vis_lines = [""] * (max_lines - len(vis_lines)) + vis_lines
-                log.peak_lines = max(log.peak_lines, max_lines)
-            else:
-                vis_lines = all_lines
-                log.peak_lines = max(log.peak_lines, len(all_lines))
-            hidden = 0
-        elif is_expanded_preview():
-            vis_lines = all_lines
-            hidden = 0
-        else:
-            # Финал: шапка с секундами размышления зелёным через пробел +
-            # одна строка «…N строк (ctrl+o развернуть)». Полный текст —
-            # по Ctrl+O.
+        if not is_expanded_preview():
             header.append(" ")
             header.append(
-                Text(_i18n("compact.think_seconds", n=_think_duration(log)), style=_theme("success"))
+                Text(
+                    format_duration(_think_duration(log)),
+                    style=_theme("success"),
+                )
+            )
+            flat = " ".join(preview_text.split())
+            preview, expand_hint = compact_thought_preview(
+                flat,
+                prefix,
+                terminal_width,
+                available,
             )
             summary = Text("   " + prefix, style=muted)
-            summary.append(_i18n("compact.think_expand", n=len(all_lines)), style="dim italic")
-            return RGroup(header, summary)
+            if expand_hint is not None:
+                summary.append(preview, style="dim italic")
+                if preview:
+                    summary.append(" ", style="dim italic")
+                summary.append(expand_hint, style="dim italic")
+            else:
+                summary.append(preview, style="dim italic")
+            return Group(header, summary)
 
-        out: list = [header]
-        for i, ln in enumerate(vis_lines):
-            pad = f"   {prefix}" if i == 0 else "      "
-            line = Text(pad, style=muted)
-            line.append(ln, style=f"italic {muted}")
-            out.append(line)
-        if hidden > 0:
-            out.append(Text("        " + _i18n("compact.think_expand", n=hidden), style="dim italic"))
-        return RGroup(*out)
+        body = ThoughtMarkdown(raw_text, style=muted)
+        lead = Text("   " + prefix, style=muted)
+        content = Table.grid(padding=0, expand=True)
+        content.add_column(width=6)
+        content.add_column(ratio=1)
+        content.add_row(lead, body)
+        return Group(header, content)

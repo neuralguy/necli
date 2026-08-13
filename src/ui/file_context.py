@@ -52,10 +52,7 @@ def _collect_dir_files(dir_path, max_files=_MAX_DIR_FILES):
     try:
         for root, dirs, filenames in os.walk(dir_path):
             # Filter ignored dirs in-place
-            dirs[:] = [
-                d for d in sorted(dirs)
-                if not _should_ignore(d, True)
-            ]
+            dirs[:] = [d for d in sorted(dirs) if not _should_ignore(d, True)]
             for fname in sorted(filenames):
                 if _should_ignore(fname, False):
                     continue
@@ -85,7 +82,7 @@ def _build_tree(dir_path, max_depth=3):
             return
         filtered = [e for e in entries if not _should_ignore(e.name, e.is_dir())]
         for i, entry in enumerate(filtered):
-            is_last = (i == len(filtered) - 1)
+            is_last = i == len(filtered) - 1
             connector = "└── " if is_last else "├── "
             if entry.is_dir():
                 result.append(f"{prefix}{connector}{entry.name}/")
@@ -102,7 +99,7 @@ class FileReference:
     """A parsed @-reference."""
 
     def __init__(self, raw, path_str, resolved_path, is_dir=False):
-        self.raw = raw          # "@src/main.py"
+        self.raw = raw  # "@src/main.py"
         self.path_str = path_str  # "src/main.py"
         self.resolved_path = resolved_path
         self.is_dir = is_dir
@@ -232,7 +229,8 @@ def expand_at_references(text, working_dir):
 
     logger.info(
         "file_context: %d refs, %d bytes injected (working_dir=%s)",
-        len(refs), len(context_block), working_dir,
+        len(refs),
+        len(context_block),
+        working_dir,
     )
     return expanded_text, context_block, refs
-

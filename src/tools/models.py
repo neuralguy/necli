@@ -3,17 +3,33 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Аргумент инструмента, который показывается в заголовке панели/титуле вызова.
+# Единый источник истины: display.py и call_parser.py импортируют отсюда.
+TOOL_TITLE_ARG: dict[str, str] = {
+    "web_fetch": "urls",
+    "web_search": "queries",
+    "skill": "name",
+    "memory": "name",
+    "poll": "question",
+    "subagent": "prompt",
+    "expand_tool_result": "id",
+    "read": "path",
+    "docx": "path",
+    "pptx": "path",
+}
+
 
 @dataclass
 class ToolCall:
     """Вызов инструмента, извлечённый из ответа модели."""
+
     command: str
     tool_name: str = "shell"
     args: dict = field(default_factory=dict)
     raw: str = ""
 
     def __repr__(self):
-        preview = self.command[:80].replace('\n', '\\n')
+        preview = self.command[:80].replace("\n", "\\n")
         return f"ToolCall({self.tool_name}, command={preview!r})"
 
     @property
@@ -21,13 +37,14 @@ class ToolCall:
         """Human-friendly name: tool_name for named tools, first command word for shell."""
         if self.tool_name != "shell":
             return self.tool_name
-        first_line = self.command.strip().split('\n')[0]
+        first_line = self.command.strip().split("\n")[0]
         return first_line.split()[0] if first_line.split() else "shell"
 
 
 @dataclass
 class ToolResult:
     """Результат выполнения инструмента."""
+
     name: str
     status: str  # "ok" | "error"
     output: str
@@ -56,4 +73,3 @@ class ToolResult:
         if self.line_starts:
             d["line_starts"] = list(self.line_starts)
         return d
-

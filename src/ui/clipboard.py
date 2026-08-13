@@ -106,7 +106,9 @@ def _grab_xclip(dest: Path) -> Path | None:
         # Проверяем есть ли изображение в буфере
         check = subprocess.run(
             ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True,
+            text=True,
+            timeout=3,
             env=env,
         )
         targets = check.stdout.lower()
@@ -124,7 +126,8 @@ def _grab_xclip(dest: Path) -> Path | None:
 
         result = subprocess.run(
             ["xclip", "-selection", "clipboard", "-t", mime, "-o"],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
             env=env,
         )
         if result.returncode != 0 or not result.stdout:
@@ -152,7 +155,9 @@ def _grab_wl_paste(dest: Path) -> Path | None:
         # Проверяем тип содержимого
         check = subprocess.run(
             ["wl-paste", "--list-types"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True,
+            text=True,
+            timeout=3,
             env=env,
         )
         types = check.stdout.lower()
@@ -168,7 +173,8 @@ def _grab_wl_paste(dest: Path) -> Path | None:
 
         result = subprocess.run(
             ["wl-paste", "--type", mime],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
             env=env,
         )
         if result.returncode != 0 or not result.stdout:
@@ -191,7 +197,8 @@ def _grab_pngpaste(dest: Path) -> Path | None:
     try:
         result = subprocess.run(
             ["pngpaste", str(dest)],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
         if result.returncode != 0:
             dest.unlink(missing_ok=True)
@@ -210,6 +217,7 @@ def _grab_pillow(dest: Path) -> Path | None:
     """Извлекает изображение через Pillow (cross-platform fallback)."""
     try:
         from PIL import ImageGrab
+
         img = ImageGrab.grabclipboard()
         if img is None:
             return None
@@ -219,6 +227,7 @@ def _grab_pillow(dest: Path) -> Path | None:
             for f in img:
                 if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")):
                     import shutil as sh
+
                     sh.copy2(f, dest)
                     return dest
             return None
@@ -246,4 +255,3 @@ def cleanup_old_images(max_age_hours: int = 24):
                 f.unlink(missing_ok=True)
     except Exception as e:
         logger.debug("clipboard cleanup failed: %s", e, exc_info=True)
-

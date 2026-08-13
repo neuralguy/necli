@@ -13,6 +13,21 @@ from session._time import MSK, format_msk
 from session.message import Message
 
 
+def _validate_session_id(session_id: str) -> str:
+    value = str(session_id or "").strip()
+    if (
+        not value
+        or value in {".", ".."}
+        or "\x00" in value
+        or "/" in value
+        or "\\" in value
+        or "\n" in value
+        or "\r" in value
+    ):
+        raise ValueError(f"Invalid session id: {session_id!r}")
+    return value
+
+
 class Session:
     def __init__(
         self,
@@ -21,7 +36,7 @@ class Session:
         site: str | None = None,
         working_dir: str | None = None,
     ):
-        self.id = session_id or self._generate_id()
+        self.id = _validate_session_id(session_id) if session_id else self._generate_id()
         self.title = title or ""
         self.site: str = site or "api"
         self.working_dir = working_dir or ""
@@ -30,6 +45,17 @@ class Session:
         self.messages: list[Message] = []
         self._cost_cache: dict | None = None
         self._compressed_stats: dict | None = None
+        # Оценка токенов системного промта последнего запроса. Сам промт в
+        # истории не хранится (пересобирается на каждый ход), поэтому его
+        # размер живёт здесь — иначе полоса контекста недосчитывала бы его.
+        self.system_prompt_tokens: int = 0
+        # Последний реальный usage.input от провайдера (включает системный
+        # промт + всю историю). Точнее любой эвристики — полоса контекста
+        # после ответа показывает именно его. 0 = провайдер ещё не ответил.
+        self.last_provider_input: int = 0
+        # Токены последнего ответа: они ещё не входили в last_provider_input,
+        # но войдут в следующий запрос (предыдущие ответы уже внутри input).
+        self._last_assistant_tokens: int = 0
         self.dir = config.SESSIONS_DIR / self.id
 
     def ensure_dir(self):
@@ -80,10 +106,14 @@ class Session:
     def _last_message_id(self) -> str:
         return self.messages[-1].id if self.messages else ""
 
-    def add_user_message(self, content: str, model: str = "", attachments: list | None = None) -> Message:
+    def add_user_message(
+        self, content: str, model: str = "", attachments: list | None = None
+    ) -> Message:
         is_first_user = not any(m.role == "user" for m in self.messages)
         msg = Message(
-            role="user", content=content, model=model,
+            role="user",
+            content=content,
+            model=model,
             parent_id=self._last_message_id(),
             attachments=attachments,
         )
@@ -95,6 +125,7 @@ class Session:
             self._rename_for_first_message(content)
         try:
             from ui.terminal_title import set_session_terminal_title
+
             set_session_terminal_title(self)
         except Exception:
             logger.debug("terminal title update failed", exc_info=True)
@@ -107,15 +138,24 @@ class Session:
         duration: float = 0.0,
         usage: dict | None = None,
         thoughts: list | None = None,
+        reasoning: str = "",
     ) -> Message:
         msg = Message(
-            role="assistant", content=content, model=model,
-            duration=duration, usage=usage,
+            role="assistant",
+            content=content,
+            model=model,
+            duration=duration,
+            usage=usage,
             parent_id=self._last_message_id(),
             thoughts=thoughts,
+            reasoning=reasoning,
         )
         if usage:
-            self._reconcile_input_tokens(int(usage.get("input") or 0))
+            inp = int(usage.get("input") or 0)
+            if inp > 0:
+                self.last_provider_input = inp
+            self._reconcile_input_tokens(inp)
+        self._last_assistant_tokens = msg.tokens
         self.messages.append(msg)
         self._cost_cache = None
         self.updated_at = time.time()
@@ -134,10 +174,21 @@ class Session:
         """
         if real_input <= 0 or not self.messages:
             return
+        # Assistant ``tokens`` are already exact output tokens and are also part
+        # of the next prompt. Keep them untouched; distribute only the remainder
+        # of the provider-reported prompt size across non-assistant messages.
+        # The old code scaled non-assistant messages to *real_input itself* and
+        # then context_tokens added assistant messages again, double-counting the
+        # whole assistant history and triggering premature context compression.
+        assistant_tokens = sum(m.tokens for m in self.messages if m.role == "assistant")
+        # Системный промт учитывается отдельно (system_prompt_tokens), поэтому
+        # его долю из реального usage вычитаем: иначе он посчитается дважды —
+        # и в явном счётчике, и раскиданным по сообщениям.
+        target_non_assistant = real_input - assistant_tokens - self.system_prompt_tokens
         heuristic_sum = sum(m.tokens for m in self.messages if m.role != "assistant")
-        if heuristic_sum <= 0:
+        if target_non_assistant <= 0 or heuristic_sum <= 0:
             return
-        ratio = real_input / heuristic_sum
+        ratio = target_non_assistant / heuristic_sum
         if abs(ratio - 1.0) < 0.02:
             return
         for m in self.messages:
@@ -153,7 +204,9 @@ class Session:
 
     def add_tool_result(self, content: str, model: str = "") -> Message:
         msg = Message(
-            role="tool_result", content=content, model=model,
+            role="tool_result",
+            content=content,
+            model=model,
             parent_id=self._last_message_id(),
         )
         self.messages.append(msg)
@@ -161,8 +214,32 @@ class Session:
         self.updated_at = time.time()
         return msg
 
+    def add_worked_message(self, content: str, model: str = "") -> Message:
+        """Сводка завершённого Working-раунда (роль "worked").
+
+        Хранится только для визуального replay истории; в контекст модели
+        (build_compress_text) и в API-историю не попадает.
+        """
+        msg = Message(role="worked", content=content, model=model)
+        self.messages.append(msg)
+        # Роль "worked" не участвует в _compute_cost — кэш не сбрасываем.
+        self.updated_at = time.time()
+        return msg
+
+    def add_tool_call_message(self, content: str, model: str = "") -> Message:
+        """Native tool_calls (роль "tool_call") — JSON-список вызовов.
+
+        Хранится отдельным сообщением (не в тексте assistant), чтобы не
+        засорять контекст модели и корректно восстанавливаться в API-историю.
+        """
+        msg = Message(role="tool_call", content=content, model=model)
+        self.messages.append(msg)
+        # Роль "tool_call" не участвует в _compute_cost — кэш не сбрасываем.
+        self.updated_at = time.time()
+        return msg
+
     _TOOL_BLOCK_RE = re.compile(
-        r':::call[ \t]+\w+[^\n]*\n.*?(?:\n|^)call:::[ \t]*(?:\n|$)',
+        r":::call[ \t]+\w+[^\n]*\n.*?(?:\n|^)call:::[ \t]*(?:\n|$)",
         re.DOTALL | re.MULTILINE,
     )
 
@@ -192,7 +269,7 @@ class Session:
         parts: list[str] = []
         messages = self.messages if upto_index is None else self.messages[:upto_index]
         for msg in messages:
-            if msg.role in ("system", "tool_result"):
+            if msg.role in ("system", "tool_result", "worked", "tool_call"):
                 continue
             content = msg.content
             if msg.role == "assistant":
@@ -208,7 +285,10 @@ class Session:
         snapshot = self.summary()
         logger.info(
             "session.compress_reset: id={} msgs={} cost=${:.4f} → {} chars compressed",
-            self.id[:16], snapshot["messages"], snapshot["total_cost"], len(compressed_text),
+            self.id[:16],
+            snapshot["messages"],
+            snapshot["total_cost"],
+            len(compressed_text),
         )
         self._compressed_stats = {
             "messages": snapshot["messages"],
@@ -216,6 +296,9 @@ class Session:
         }
         self.messages.clear()
         self._cost_cache = None
+        # Реальный контекст после сжатия меньше; следующий usage.input
+        # обновит значение — до этого показываем эвристику.
+        self.last_provider_input = 0
         meta = (
             f"[compressed] messages={snapshot['messages']}"
             f" cost=${snapshot['total_cost']:.4f}"
@@ -225,7 +308,10 @@ class Session:
         self.add_system_message(compressed_text, model=model)
 
     def compress_reset_partial(
-        self, compressed_text: str, tail_index: int, model: str = "",
+        self,
+        compressed_text: str,
+        tail_index: int,
+        model: str = "",
     ) -> int:
         """Инкрементальная компрессия: сжать messages[:tail_index] в summary,
         сохранить messages[tail_index:] дословно.
@@ -247,7 +333,10 @@ class Session:
         compressed_cost = self._cost_of_messages(head)
         logger.info(
             "session.compress_reset_partial: id={} head={} tail={} → {} chars",
-            self.id[:16], len(head), len(tail), len(compressed_text),
+            self.id[:16],
+            len(head),
+            len(tail),
+            len(compressed_text),
         )
         prev = self._compressed_stats or {"messages": 0, "total_cost": 0.0}
         self._compressed_stats = {
@@ -261,6 +350,8 @@ class Session:
             *tail,
         ]
         self._cost_cache = None
+        # См. compress_reset: после сжатия реальный контекст меньше.
+        self.last_provider_input = 0
         self.updated_at = time.time()
         return compressed_msgs
 
@@ -303,7 +394,14 @@ class Session:
 
     @property
     def context_tokens(self) -> int:
-        return self.raw_input_tokens + self.output_tokens
+        # После ответа есть точный usage.input провайдера — он включает
+        # системный промт и всю историю (в т.ч. предыдущие ответы), поэтому
+        # полагаемся на него; добавляем только токены последнего ответа,
+        # которые войдут в следующий запрос. До первого ответа — эвристика:
+        # история + оценка системного промта.
+        if self.last_provider_input > 0:
+            return self.last_provider_input + self._last_assistant_tokens
+        return self.raw_input_tokens + self.output_tokens + self.system_prompt_tokens
 
     def _compute_cost(self) -> dict:
         if self._cost_cache is not None:
@@ -318,8 +416,10 @@ class Session:
             elif msg.role == "assistant":
                 if model not in by_model:
                     by_model[model] = {
-                        "input_tokens": 0, "output_tokens": 0,
-                        "input_cost": 0.0, "output_cost": 0.0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "input_cost": 0.0,
+                        "output_cost": 0.0,
                         "total_cost": 0.0,
                     }
                 price_in, price_out = app_models.get_pricing(model)
@@ -338,6 +438,8 @@ class Session:
                 by_model[model]["output_tokens"] += output_tokens
                 by_model[model]["input_cost"] += all_input * price_in / 1_000_000
                 by_model[model]["output_cost"] += output_tokens * price_out / 1_000_000
+                # Ответ ассистента входит в историю следующего API-запроса.
+                input_buffer.append((msg.tokens, model))
 
         for model in by_model:
             s = by_model[model]
@@ -370,7 +472,7 @@ class Session:
                     output_tokens = msg.tokens
                 total += all_input * price_in / 1_000_000
                 total += output_tokens * price_out / 1_000_000
-                input_buffer = []
+                input_buffer.append(msg.tokens)
         return total
 
     @property
@@ -415,4 +517,3 @@ class Session:
             },
             "compressed_stats": self._compressed_stats,
         }
-

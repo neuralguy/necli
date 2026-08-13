@@ -19,6 +19,7 @@ class CancellationScope:
             cancelled = self.event.is_set()
         if cancelled:
             from tools.background import cancel_background
+
             cancel_background(job_id)
 
     def clear_job(self, job_id: str) -> None:
@@ -32,6 +33,7 @@ class CancellationScope:
             job_id = self._job_id
         if job_id:
             from tools.background import cancel_background
+
             cancel_background(job_id)
 
 

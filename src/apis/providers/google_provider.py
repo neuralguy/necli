@@ -74,16 +74,19 @@ class GoogleGeminiProvider(BaseProvider):
                             try:
                                 header, b64 = url.split(",", 1)
                                 media = header.split(";")[0].replace("data:", "") or "image/png"
-                                parts.append({
-                                    "inline_data": {"mime_type": media, "data": b64},
-                                })
+                                parts.append(
+                                    {
+                                        "inline_data": {"mime_type": media, "data": b64},
+                                    }
+                                )
                             except ValueError:
                                 continue
             return parts
         return [{"text": str(content)}] if content else []
 
     def _convert_messages_gemini(
-        self, messages: list[BaseMessage],
+        self,
+        messages: list[BaseMessage],
     ) -> tuple[dict | None, list[dict[str, Any]]]:
         """Возвращает (system_instruction, contents)."""
         system_parts: list[str] = []
@@ -109,32 +112,40 @@ class GoogleGeminiProvider(BaseProvider):
                 elif isinstance(content, list):
                     parts.extend(self._content_to_parts(content))
                 for tc in msg.tool_calls or []:
-                    parts.append({
-                        "functionCall": {
-                            "name": tc.get("name") or "",
-                            "args": tc.get("args") or {},
-                        },
-                    })
+                    parts.append(
+                        {
+                            "functionCall": {
+                                "name": tc.get("name") or "",
+                                "args": tc.get("args") or {},
+                            },
+                        }
+                    )
                 if parts:
                     contents.append({"role": "model", "parts": parts})
                 continue
 
             if isinstance(msg, ToolMessage):
                 try:
-                    response_obj: Any = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                    response_obj: Any = (
+                        json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                    )
                 except json.JSONDecodeError:
                     response_obj = {"result": msg.content}
                 if not isinstance(response_obj, dict):
                     response_obj = {"result": response_obj}
-                contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": msg.name or "tool",
-                            "response": response_obj,
-                        },
-                    }],
-                })
+                contents.append(
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "functionResponse": {
+                                    "name": msg.name or "tool",
+                                    "response": response_obj,
+                                },
+                            }
+                        ],
+                    }
+                )
                 continue
 
             # fallback
@@ -234,11 +245,12 @@ class GoogleGeminiProvider(BaseProvider):
             except _RetryableStreamError as e:
                 last_error = e
                 if e.status_code == 429 and not yielded_any:
-                    if rate_limit_rotations < self._credential_count() - 1:
-                        rate_limit_rotations += 1
-                        self._rotate_api_credential(f"HTTP {e.status_code}")
-                        continue
-                    raise self._all_credentials_failed_error(e.status_code, last_error) from e
+                    rate_limit_rotations = await self._handle_rate_limit(
+                        e.status_code,
+                        last_error,
+                        rate_limit_rotations,
+                    )
+                    continue
                 if attempt < self.max_retries - 1:
                     delay = self._calc_backoff(attempt)
                     logger.warning(
@@ -291,10 +303,20 @@ class GoogleGeminiProvider(BaseProvider):
         url = self._endpoint(stream=True)
         tc_index = 0  # счётчик function calls в стриме
 
-        client_kwargs.setdefault("limits", httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0))
-        async with httpx.AsyncClient(**client_kwargs) as client, client.stream(
-            "POST", url, json=body, headers=self._get_headers(),
-        ) as resp:
+        await self._throttle_rpm()
+        client_kwargs.setdefault(
+            "limits",
+            httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0),
+        )
+        async with (
+            httpx.AsyncClient(**client_kwargs) as client,
+            client.stream(
+                "POST",
+                url,
+                json=body,
+                headers=self._get_headers(),
+            ) as resp,
+        ):
             if resp.status_code in self._RETRYABLE_STATUS_CODES:
                 error_text = (await resp.aread()).decode("utf-8", errors="ignore")
                 raise _RetryableStreamError(
@@ -315,7 +337,7 @@ class GoogleGeminiProvider(BaseProvider):
                     line = line.strip()
                     if not line or not line.startswith("data:"):
                         continue
-                    data_str = line[len("data:"):].strip()
+                    data_str = line[len("data:") :].strip()
                     if not data_str:
                         continue
                     try:
@@ -340,12 +362,14 @@ class GoogleGeminiProvider(BaseProvider):
                                 args_obj = fc.get("args") or {}
                                 yield AIMessageChunk(
                                     content="",
-                                    tool_call_chunks=[{
-                                        "index": tc_index,
-                                        "id": f"call_gemini_{tc_index}",
-                                        "name": name,
-                                        "args": json.dumps(args_obj) if args_obj else "{}",
-                                    }],
+                                    tool_call_chunks=[
+                                        {
+                                            "index": tc_index,
+                                            "id": f"call_gemini_{tc_index}",
+                                            "name": name,
+                                            "args": json.dumps(args_obj) if args_obj else "{}",
+                                        }
+                                    ],
                                 )
                                 tc_index += 1
 
@@ -365,9 +389,12 @@ class GoogleGeminiProvider(BaseProvider):
         rate_limit_rotations = 0
 
         while attempt < self.max_retries:
+            await self._throttle_rpm()
             headers = self._get_headers()
             proxy = self._get_proxy() or None
-            client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(dynamic_timeout, connect=30.0)}
+            client_kwargs: dict[str, Any] = {
+                "timeout": httpx.Timeout(dynamic_timeout, connect=30.0)
+            }
             if proxy:
                 client_kwargs["proxy"] = proxy
 
@@ -390,18 +417,15 @@ class GoogleGeminiProvider(BaseProvider):
                             continue
                         break
                 if resp.status_code == 429:
-                    last_error = ValueError(
-                        f"{name} API Error {resp.status_code}: {resp.text}"
+                    last_error = ValueError(f"{name} API Error {resp.status_code}: {resp.text}")
+                    rate_limit_rotations = await self._handle_rate_limit(
+                        resp.status_code,
+                        last_error,
+                        rate_limit_rotations,
                     )
-                    if rate_limit_rotations < self._credential_count() - 1:
-                        rate_limit_rotations += 1
-                        self._rotate_api_credential(f"HTTP {resp.status_code}")
-                        continue
-                    raise self._all_credentials_failed_error(resp.status_code, last_error)
+                    continue
                 if resp.status_code in self._RETRYABLE_STATUS_CODES:
-                    last_error = ValueError(
-                        f"{name} API Error {resp.status_code}: {resp.text}"
-                    )
+                    last_error = ValueError(f"{name} API Error {resp.status_code}: {resp.text}")
                     delay = self._calc_backoff(attempt)
                     logger.warning(
                         f"{name} HTTP {resp.status_code} | "
@@ -432,9 +456,7 @@ class GoogleGeminiProvider(BaseProvider):
                 if attempt < self.max_retries:
                     await asyncio.sleep(delay)
 
-        raise ValueError(
-            f"{name} API Error after {self.max_retries} attempts: {last_error}"
-        )
+        raise ValueError(f"{name} API Error after {self.max_retries} attempts: {last_error}")
 
     def _parse_gemini_response(self, data: dict[str, Any]) -> AIMessage:
         candidates = data.get("candidates") or []
@@ -453,12 +475,14 @@ class GoogleGeminiProvider(BaseProvider):
                     text_parts.append(part.get("text") or "")
                 elif "functionCall" in part:
                     fc = part.get("functionCall") or {}
-                    tool_calls.append({
-                        "id": f"call_gemini_{i}",
-                        "name": fc.get("name") or "",
-                        "args": fc.get("args") or {},
-                        "type": "tool_call",
-                    })
+                    tool_calls.append(
+                        {
+                            "id": f"call_gemini_{i}",
+                            "name": fc.get("name") or "",
+                            "args": fc.get("args") or {},
+                            "type": "tool_call",
+                        }
+                    )
 
         usage_metadata = self._convert_usage_gemini(data.get("usageMetadata") or {})
         return AIMessage(
@@ -480,8 +504,7 @@ def create_google_provider(
     api_key = get_api_key(definition.id)
     if not api_key and definition.requires_auth:
         raise ValueError(
-            f"API key not set for provider '{definition.id}'. "
-            "Use /api → provider → Set key."
+            f"API key not set for provider '{definition.id}'. Use /api → provider → Set key."
         )
 
     model_info = definition.get_model_info(model_id)
@@ -498,9 +521,12 @@ def create_google_provider(
     provider._provider_id = definition.id
     provider._proxy = definition.proxy
     provider._api_credentials = get_api_credentials(definition.id)
-    provider._base_url = (definition.base_url or "https://generativelanguage.googleapis.com").rstrip("/")
+    provider._base_url = (
+        definition.base_url or "https://generativelanguage.googleapis.com"
+    ).rstrip("/")
 
     logger.debug(f"Created Google provider: {definition.name} / {actual_model}")
     return provider
+
 
 __all__ = ["GoogleGeminiProvider", "create_google_provider"]

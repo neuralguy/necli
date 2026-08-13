@@ -34,6 +34,7 @@ def use_working_dir(path: str):
         with use_working_dir("/tmp/sub-1"):
             ... # tools видят /tmp/sub-1
     """
+
     class _Ctx:
         def __init__(self, p):
             self._p = p
@@ -67,12 +68,12 @@ def resolve_path(path: str, *, extensions: tuple[str, ...] | None = None) -> Pat
         return candidate
 
     allowed_extensions = (
-        {extension.lower() for extension in extensions}
-        if extensions is not None else None
+        {extension.lower() for extension in extensions} if extensions is not None else None
     )
     try:
         matches = [
-            child for child in candidate.parent.iterdir()
+            child
+            for child in candidate.parent.iterdir()
             if child.is_file()
             and child.name.startswith(f"{candidate.name}.")
             and (allowed_extensions is None or child.suffix.lower() in allowed_extensions)
@@ -98,7 +99,7 @@ def clean_path(val) -> str:
     if not isinstance(val, str):
         val = str(val)
     val = val.strip()
-    if len(val) >= 2:  # noqa: SIM102
+    if len(val) >= 2:
         if (val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'"):
             val = val[1:-1]
     return val

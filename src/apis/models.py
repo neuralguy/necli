@@ -8,21 +8,23 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class ApiModelInfo:
     """Описание одной модели у провайдера."""
-    id: str               # model id для API (e.g. "gpt-4o")
-    display_name: str     # имя для UI (e.g. "GPT-4o")
+
+    id: str  # model id для API (e.g. "gpt-4o")
+    display_name: str  # имя для UI (e.g. "GPT-4o")
     context_window: int = 128_000
-    input_price: float = 0.0   # per 1M tokens
+    input_price: float = 0.0  # per 1M tokens
     output_price: float = 0.0  # per 1M tokens
 
 
 @dataclass
 class ApiProviderDefinition:
     """Полное описание API-провайдера из JSON."""
+
     id: str
     name: str
-    type: str                    # "openai_compatible" | "anthropic" | "google" | "custom"
-    base_url: str                # e.g. "https://api.openai.com/v1"
-    api_format: str = "openai"   # "openai" | "anthropic" | "google" | "custom"
+    type: str  # "openai_compatible" | "anthropic" | "google" | "custom"
+    base_url: str  # e.g. "https://api.openai.com/v1"
+    api_format: str = "openai"  # "openai" | "anthropic" | "google" | "custom"
     models: list[ApiModelInfo] = field(default_factory=list)
     default_model: str = ""
     default_headers: dict[str, str] = field(default_factory=dict)

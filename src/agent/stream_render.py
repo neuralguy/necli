@@ -14,6 +14,8 @@ from agent.display import (
     TOOL_DISPLAY,
 )
 from agent.markdown import ResponseMarkdown
+from agent.think import compact_thought_preview, render_thinking_summary
+from config.i18n import format_duration
 from config.i18n import t as _i18n
 from config.themes import t
 from config.ui import ui
@@ -21,10 +23,7 @@ from config.ui import ui
 THINKING_FRAMES = SPINNER_FRAMES
 
 
-
-_TABLE_SEPARATOR_RE = re.compile(
-    r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+(?:\s*:?-{3,}:?\s*)?\|?\s*$"
-)
+_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+(?:\s*:?-{3,}:?\s*)?\|?\s*$")
 
 
 def _starts_table(text: str) -> bool:
@@ -43,6 +42,7 @@ def _is_markdown_block(first_line: str, rest: str) -> bool:
 def _inline_md(text: str) -> str:
     """Convert inline markdown (`code`, **bold**, *italic*) to rich markup."""
     from rich.markup import escape as _esc
+
     out = _esc(text)
     out = re.sub(r"\*\*([^*\n]+?)\*\*", r"[bold]\1[/bold]", out)
     out = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"[italic]\1[/italic]", out)
@@ -52,10 +52,13 @@ def _inline_md(text: str) -> str:
 
 def _build_markdown(display_text: str, streaming: bool = True):
     from ui.formatting import escape_md_underscores
+
     suffix = "\u258c" if streaming else ""
     display_text = escape_md_underscores(display_text)
     try:
-        return ResponseMarkdown(display_text + suffix, code_theme="monokai", inline_code_theme="monokai")
+        return ResponseMarkdown(
+            display_text + suffix, code_theme="monokai", inline_code_theme="monokai"
+        )
     except Exception:
         return Text(display_text + suffix)
 
@@ -79,7 +82,7 @@ def render_streaming_response(text: str, message_num: int = 0, streaming: bool =
     lines = text.split("\n")
     total = len(lines)
     max_lines = _stream_max_lines()
-    if total > max_lines:  # noqa: SIM108
+    if total > max_lines:
         # Для live-стрима показываем только хвост БЕЗ префикса
         # "... N lines above ..." — он сам занимает строку и при stop()
         # остаётся видимым обрывком над финальной полной панелью.
@@ -89,6 +92,7 @@ def render_streaming_response(text: str, message_num: int = 0, streaming: bool =
         display_text = text
 
     from ui.formatting import latex_to_unicode
+
     display_text = latex_to_unicode(display_text)
 
     md = _build_markdown(display_text, streaming=streaming)
@@ -96,7 +100,7 @@ def render_streaming_response(text: str, message_num: int = 0, streaming: bool =
     stripped = display_text.lstrip("\n").rstrip()
     first_nl = stripped.find("\n")
     first_line = stripped if first_nl < 0 else stripped[:first_nl]
-    rest = "" if first_nl < 0 else stripped[first_nl + 1:].lstrip("\n")
+    rest = "" if first_nl < 0 else stripped[first_nl + 1 :].lstrip("\n")
     if streaming:
         first_line = first_line.rstrip("\u258c").rstrip()
     header = Text()
@@ -122,10 +126,7 @@ def _compact_stream_block(text):
     if total <= max_visible:
         return text
     skipped = total - max_visible
-    return (
-        _i18n("stream.lines_above", n=skipped) + "\n\n"
-        + "\n".join(lines[-max_visible:])
-    )
+    return _i18n("stream.lines_above", n=skipped) + "\n\n" + "\n".join(lines[-max_visible:])
 
 
 def _extract_path_from_body(body):
@@ -142,10 +143,11 @@ _PATCH_SECTION_RE = re.compile(
 def _lang_from_path(path: str | None) -> str:
     if not path:
         return "text"
-    ext_m = re.search(r'\.(\w+)$', path)
+    ext_m = re.search(r"\.(\w+)$", path)
     if not ext_m:
         return "text"
     from agent.syntax import _EXT_LEXER_MAP
+
     return _EXT_LEXER_MAP.get(ext_m.group(1).lower(), "text")
 
 
@@ -155,7 +157,7 @@ def _partial_json_arguments(body: str) -> list[tuple[str, str]]:
     for match in re.finditer(r'"([^"\\]+)"\s*:\s*(?:"((?:\\.|[^"\\])*)"|([^,}\]\s"]+))', body):
         key, quoted, bare = match.groups()
         value = quoted if quoted is not None else bare
-        values.append((key, value.replace(r"\n", "\n").replace(r"\t", "\t").replace(r'\"', '"')))
+        values.append((key, value.replace(r"\n", "\n").replace(r"\t", "\t").replace(r"\"", '"')))
     if values:
         return values
 
@@ -166,7 +168,10 @@ def _partial_json_arguments(body: str) -> list[tuple[str, str]]:
 
 
 def _render_partial_arguments(
-    body: str, tool_name: str, spinner_frame: str, elapsed_seconds: float,
+    body: str,
+    tool_name: str,
+    spinner_frame: str,
+    elapsed_seconds: float,
 ):
     """Render generic calls as readable argument rows while JSON is still streaming."""
     display_name, color = TOOL_DISPLAY.get(tool_name, ("Tool", "yellow"))
@@ -174,7 +179,10 @@ def _render_partial_arguments(
     header.append(f"{spinner_frame or '●'} ", style=f"bold {color}")
     header.append(display_name, style=f"bold {color}")
     if elapsed_seconds > 0:
-        header.append(f"  {elapsed_seconds:.1f}s", style="dim")
+        header.append(
+            "  " + format_duration(elapsed_seconds, decimal_seconds=True),
+            style="dim",
+        )
 
     rows = [header]
     args = _partial_json_arguments(body)
@@ -228,7 +236,7 @@ def _decode_json_body_for_display(body, tool_name, attrs_header: str = ""):
 
     - shell: as-is, lang=bash
     - patch_file: FIND/REPLACE → diff-подобный текст
-    - write_file/create_file/create_docx: вытаскиваем content (JSON или из attrs)
+    - write_file/create_file: вытаскиваем content (JSON или из attrs)
     - JSON-инструменты: декодируем строки внутри как plain text
     """
     if tool_name == "shell":
@@ -245,24 +253,33 @@ def _decode_json_body_for_display(body, tool_name, attrs_header: str = ""):
     if tool_name == "patch_file":
         return _format_patch_body_for_stream(body, attrs_header)
 
-    if tool_name in ("create_file", "create_docx"):
+    if tool_name == "create_file":
         if attrs_header and "path=" in attrs_header:
             return body, file_path, _lang_from_path(file_path)
         m = re.search(r'"content"\s*:\s*"', body)
         if m:
-            raw = body[m.end():]
-            decoded = raw.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
+            raw = body[m.end() :]
+            decoded = (
+                raw.replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace('\\"', '"')
+                .replace("\\\\", "\\")
+            )
             return decoded, file_path, _lang_from_path(file_path)
 
     stripped = body.lstrip()
     if stripped.startswith(("{", "[")):
-        decoded = body.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
+        decoded = (
+            body.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"').replace("\\\\", "\\")
+        )
         return decoded, file_path, "text"
     return body, file_path, "text"
 
 
-def _PARTIAL_LANG_BYPASS_THRESHOLD() -> int:  # noqa: N802
+def _PARTIAL_LANG_BYPASS_THRESHOLD() -> int:
     return int(ui.get("limits.partial_lang_bypass_threshold", 50_000))
+
+
 _PARTIAL_SYNTAX_CACHE: dict = {}
 _PARTIAL_SYNTAX_CACHE_MAX = 4
 
@@ -277,8 +294,13 @@ def _build_partial_syntax(code: str, lang: str, cache_token):
     if cached is not None:
         return cached
     syn = Syntax(
-        code, lang, theme="monokai", line_numbers=False,
-        padding=(0, 0), background_color="default", word_wrap=True,
+        code,
+        lang,
+        theme="monokai",
+        line_numbers=False,
+        padding=(0, 0),
+        background_color="default",
+        word_wrap=True,
     )
     if len(_PARTIAL_SYNTAX_CACHE) >= _PARTIAL_SYNTAX_CACHE_MAX:
         _PARTIAL_SYNTAX_CACHE.pop(next(iter(_PARTIAL_SYNTAX_CACHE)))
@@ -287,8 +309,11 @@ def _build_partial_syntax(code: str, lang: str, cache_token):
 
 
 def _tool_header(
-    display_name: str, color: str, file_path: str | None,
-    elapsed_seconds: float, spinner_frame: str,
+    display_name: str,
+    color: str,
+    file_path: str | None,
+    elapsed_seconds: float,
+    spinner_frame: str,
 ) -> Text:
     """Общий заголовок для компактного превью: спиннер + имя + (путь) + время."""
     header = Text()
@@ -300,15 +325,21 @@ def _tool_header(
         header.append(file_path, style=f"bold {color}")
         header.append(")", style=f"bold {color}")
     if elapsed_seconds > 0:
-        header.append(f"  {elapsed_seconds:.1f}s", style="dim")
+        header.append(
+            "  " + format_duration(elapsed_seconds, decimal_seconds=True),
+            style="dim",
+        )
     return header
 
 
 def _render_compact_write_preview(
-    tool_name: str, file_path: str | None, display_text: str,
-    elapsed_seconds: float, spinner_frame: str,
+    tool_name: str,
+    file_path: str | None,
+    display_text: str,
+    elapsed_seconds: float,
+    spinner_frame: str,
 ):
-    """Compact-стрим для write_file/create_file/create_docx — формат как в финале.
+    """Compact-стрим для write_file/create_file — формат как в финале.
 
     ✨ Create(path)  N.Ns
         ... N lines
@@ -318,6 +349,7 @@ def _render_compact_write_preview(
     """
     from agent.display import COMPACT_PREVIEW_LINES
     from agent.syntax import _EXT_LEXER_MAP
+
     cpl = COMPACT_PREVIEW_LINES() if callable(COMPACT_PREVIEW_LINES) else COMPACT_PREVIEW_LINES
 
     display_name, color = TOOL_DISPLAY.get(tool_name, ("Tool", t("warning")))
@@ -348,8 +380,13 @@ def _render_compact_write_preview(
         num = Text(f"  {str(i).rjust(num_w)} ", style="dim")
         try:
             code = Syntax(
-                ln or " ", lexer, theme="monokai", line_numbers=False,
-                padding=(0, 0), background_color="default", word_wrap=False,
+                ln or " ",
+                lexer,
+                theme="monokai",
+                line_numbers=False,
+                padding=(0, 0),
+                background_color="default",
+                word_wrap=False,
             ).highlight(ln or " ")
             if code.plain.endswith("\n"):
                 code.right_crop(1)
@@ -361,8 +398,11 @@ def _render_compact_write_preview(
 
 
 def _render_compact_patch_preview(
-    file_path: str | None, body: str, attrs_header: str,
-    elapsed_seconds: float, spinner_frame: str,
+    file_path: str | None,
+    body: str,
+    attrs_header: str,
+    elapsed_seconds: float,
+    spinner_frame: str,
 ):
     """Compact-стрим для patch_file — финальный формат diff'а с минусами/плюсами."""
     import tools as _tools
@@ -413,7 +453,11 @@ def _render_compact_patch_preview(
         return Group(header)
 
     fake_result = _tools.ToolResult(
-        name="patch_file", status="ok", output="", exit_code=0, command="patch_file",
+        name="patch_file",
+        status="ok",
+        output="",
+        exit_code=0,
+        command="patch_file",
     )
     preview = _compact_patch_preview(args, fake_result)
     return Group(header, *preview)
@@ -473,7 +517,10 @@ def _render_subagent_partial_preview(body: str, elapsed_seconds: float, spinner_
     else:
         header.append(" · preparing…", style="dim")
     if elapsed_seconds > 0:
-        header.append(f" · {elapsed_seconds:.1f}s", style="dim")
+        header.append(
+            " · " + format_duration(elapsed_seconds, decimal_seconds=True),
+            style="dim",
+        )
 
     rows: list[Text] = [header]
     if not tasks:
@@ -484,7 +531,9 @@ def _render_subagent_partial_preview(body: str, elapsed_seconds: float, spinner_
             role = _shorten_subagent_text(task.get("role") or task.get("preset") or "agent", 18)
             mode = _shorten_subagent_text(task.get("mode") or "agent", 10)
             model = _shorten_subagent_text(task.get("model") or "", 18)
-            label = _shorten_subagent_text(task.get("label") or task.get("phase") or task.get("prompt"), 52)
+            label = _shorten_subagent_text(
+                task.get("label") or task.get("phase") or task.get("prompt"), 52
+            )
             deps = task.get("depends_on")
             dep_text = ""
             if isinstance(deps, list) and deps:
@@ -500,17 +549,24 @@ def _render_subagent_partial_preview(body: str, elapsed_seconds: float, spinner_
                 row.append(f"  — {label}", style=t("dim_text"))
             rows.append(row)
         if total > max_rows:
-            rows.append(Text(f"      … +{total - max_rows} agents", style=f"italic {t('dim_text')}"))
+            rows.append(
+                Text(f"      … +{total - max_rows} agents", style=f"italic {t('dim_text')}")
+            )
 
     return Panel(
         Group(*rows),
         border_style=title_color,
         padding=(0, 1),
-        width=max(40, min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns)),
+        width=max(
+            40,
+            min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns),
+        ),
     )
 
 
-def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elapsed_seconds: float = 0.0):
+def render_partial_tool(
+    body, tool_name, spinner_frame="", attrs_header="", elapsed_seconds: float = 0.0
+):
     """Панель partial tool — показывает decoded content с dynamic tail compact.
 
     Performance: для гигантских content (>50K chars) подсветка отключается;
@@ -526,16 +582,24 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
 
     display_text, file_path, lang = _decode_json_body_for_display(body, tool_name, attrs_header)
 
-    # Стрим для write/create/create_docx — тот же формат, что и в финале
-    if tool_name in ("create_file", "create_docx"):
+    # Стрим для write/create — тот же формат, что и в финале
+    if tool_name == "create_file":
         return _render_compact_write_preview(
-            tool_name, file_path, display_text, elapsed_seconds, spinner_frame,
+            tool_name,
+            file_path,
+            display_text,
+            elapsed_seconds,
+            spinner_frame,
         )
 
     # Стрим для patch_file — тот же diff-формат, что и в финале
     if tool_name == "patch_file":
         return _render_compact_patch_preview(
-            file_path, body, attrs_header, elapsed_seconds, spinner_frame,
+            file_path,
+            body,
+            attrs_header,
+            elapsed_seconds,
+            spinner_frame,
         )
 
     # JSON-инструменты получают те же читабельные argument rows в fenced и
@@ -577,82 +641,76 @@ def render_partial_tool(body, tool_name, spinner_frame="", attrs_header="", elap
         header.append(path_info, style="dim")
     if line_info:
         header.append(line_info, style="dim")
-    return Group(header, Text(ui.get("symbols.compact_separator_prefix", "└─"), style="dim"), syntax)
+    return Group(
+        header, Text(ui.get("symbols.compact_separator_prefix", "└─"), style="dim"), syntax
+    )
 
 
 def render_reasoning_panel(text: str, streaming: bool = False, elapsed: float | None = None):
-    """Панель с реальными мыслями ИИ (reasoning_content) — формат think-блока с пометкой raw."""
+    """Скрывает активный reasoning, сохраняя прежний статический рендер."""
+    from rich.table import Table
+
     from agent.display import is_compact, is_expanded_preview
+    from agent.markdown import ThoughtMarkdown
     from ui.formatting import latex_to_unicode
 
     muted = t("dim_text")
     emoji = ui.get("symbols.thinking_emoji", "💭")
     label = _i18n("ui.thinking") + " (raw)"
 
-    full = latex_to_unicode(text.strip())
-    if not full:
+    raw = text
+    if not raw.strip():
         return Text("")
+
+    full = latex_to_unicode(raw.strip())
+    if streaming:
+        return render_thinking_summary(full, elapsed=elapsed)
 
     if is_compact:
         header = Text()
         header.append(f"{emoji} {label}", style=f"bold {t('magenta')}")
         prefix = ui.get("symbols.summary_prefix", "⎿  ")
-
         try:
-            import os as _os
-            term_w = _os.get_terminal_size().columns
-        except Exception:
-            term_w = 80
-        avail = max(20, term_w - 6)
+            import os
 
-        if streaming:
-            full = full + "\u258c"
+            terminal_width = os.get_terminal_size().columns
+        except OSError:
+            terminal_width = 80
+        available = max(20, terminal_width - 6)
 
-        words = full.replace("\n", " ").split(" ")
-        all_lines: list[str] = []
-        cur = ""
-        for w in words:
-            cand = (cur + " " + w).strip() if cur else w
-            if len(cand) <= avail:
-                cur = cand
-            else:
-                if cur:
-                    all_lines.append(cur)
-                cur = w
-        if cur:
-            all_lines.append(cur)
-
-        if streaming:
-            # Стрим: окно растёт от 1 строки до max_lines, дальше — прокрутка
-            # хвоста фиксированной высоты.
-            max_lines = int(ui.get("limits.think_stream_lines", 6))
-            vis_lines = all_lines[-max_lines:] if len(all_lines) > max_lines else all_lines
-            hidden = 0
-        elif is_expanded_preview():
-            vis_lines = all_lines
-            hidden = 0
-        else:
-            # Финал: шапка с секундами размышления зелёным через пробел +
-            # одна строка «…N строк (ctrl+o развернуть)», полный текст —
-            # по Ctrl+O.
+        if not is_expanded_preview():
             if elapsed is not None:
                 header.append(" ")
                 header.append(
-                    Text(_i18n("compact.think_seconds", n=max(1, round(elapsed))), style=t("success"))
+                    Text(
+                        format_duration(max(1, elapsed)),
+                        style=t("success"),
+                    )
                 )
+            flat = " ".join(full.split())
+            preview, expand_hint = compact_thought_preview(
+                flat,
+                prefix,
+                terminal_width,
+                available,
+            )
             summary = Text("   " + prefix, style=muted)
-            summary.append(_i18n("compact.think_expand", n=len(all_lines)), style="dim italic")
+            if expand_hint is not None:
+                summary.append(preview, style="dim italic")
+                if preview:
+                    summary.append(" ", style="dim italic")
+                summary.append(expand_hint, style="dim italic")
+            else:
+                summary.append(preview, style="dim italic")
             return Group(header, summary)
 
-        out: list = [header]
-        for i, ln in enumerate(vis_lines):
-            pad = f"   {prefix}" if i == 0 else "      "
-            line = Text(pad, style=muted)
-            line.append(ln, style=f"italic {muted}")
-            out.append(line)
-        if hidden > 0:
-            out.append(Text("        " + _i18n("compact.think_expand", n=hidden), style="dim italic"))
-        return Group(*out)
+        body = ThoughtMarkdown(raw, style=muted)
+        lead = Text("   " + prefix, style=muted)
+        content = Table.grid(padding=0, expand=True)
+        content.add_column(width=6)
+        content.add_column(ratio=1)
+        content.add_row(lead, body)
+        return Group(header, content)
 
 
 def render_live_group(
@@ -664,9 +722,10 @@ def render_live_group(
     model: str,
     message_num: int = 0,
     reasoning_text: str = "",
-    reasoning_done: bool = False,
+    reasoning_elapsed: float | None = None,
     think_log=None,
     partial_thought: str | None = None,
+    think_elapsed: float | None = None,
     response_streaming: bool = True,
     partial_elapsed: float = 0.0,
 ) -> Group:
@@ -674,33 +733,53 @@ def render_live_group(
 
     if think_log is not None:
         if partial_thought:
-            # Во время стрима показываем полноценную розовую рамку thinking
-            # со стримящейся мыслью внутри (а не компактную одну строку),
-            # чтобы пользователь видел полный текст рассуждения сразу.
             from agent.think import ThinkLog, ThoughtStep, render_think_static
-            tmp_log = ThinkLog(steps=[*list(think_log.steps), ThoughtStep(text=partial_thought + "▌")])
-            # high-water mark переносится между кадрами, иначе окно сжималось
-            # бы на каждом новом чанке.
-            tmp_log.peak_lines = think_log.peak_lines
-            parts.append(render_think_static(tmp_log, streaming=True))
-            think_log.peak_lines = max(think_log.peak_lines, tmp_log.peak_lines)
+
+            tmp_log = ThinkLog(
+                steps=[
+                    *list(think_log.steps),
+                    ThoughtStep(text=partial_thought, raw_text=partial_thought),
+                ]
+            )
+            parts.append(
+                render_think_static(
+                    tmp_log,
+                    streaming=True,
+                    elapsed=think_elapsed,
+                )
+            )
         elif think_log.total > 0:
             from agent.think import render_think_static
-            parts.append(render_think_static(think_log, streaming=True))
+
+            parts.append(
+                render_think_static(
+                    think_log,
+                    streaming=True,
+                    elapsed=think_elapsed,
+                )
+            )
 
     if reasoning_text and reasoning_text.strip():
         if parts:
             parts.append(Text(""))
-        parts.append(render_reasoning_panel(reasoning_text, streaming=not reasoning_done))
+        parts.append(
+            render_reasoning_panel(
+                reasoning_text,
+                streaming=True,
+                elapsed=reasoning_elapsed,
+            )
+        )
 
     if current_text and current_text.strip():
         if parts:
             parts.append(Text(""))
-        parts.append(render_streaming_response(
-            current_text,
-            message_num=message_num,
-            streaming=response_streaming,
-        ))
+        parts.append(
+            render_streaming_response(
+                current_text,
+                message_num=message_num,
+                streaming=response_streaming,
+            )
+        )
 
     if has_partial and partial_tool == "think":
         # think уже отображается выше через render_think_static с partial-текстом
@@ -712,13 +791,3 @@ def render_live_group(
     del spinner_frame, writing_frame
 
     return Group(*parts)
-
-
-def make_interrupt_indicator(dots: int = 1) -> Text:
-    txt = Text()
-    marker = ui.get("symbols.interrupt_marker", "■ ")
-    base_text = ui.get("indicators.interrupt_text", "Waiting for response")
-    txt.append(f"  {marker}", style=f"bold {t('warning')}")
-    txt.append(f"{base_text}{'.' * dots}", style=f"dim {t('warning')}")
-    txt.append(f"  {ui.get('indicators.interrupt_hint', '(Ctrl+C = stop)')}", style="dim")
-    return txt

@@ -27,9 +27,11 @@ def build_repeat_tool_notice(
     if tool_name != last_tool_name:
         return "", tool_name
     return (
-        "[repeat-tool notice]\n"
-        f"You called `{tool_name}` in two consecutive tool rounds. "
-        "Before calling it again, check whether the previous result already "
-        "answers the task, or explain why repeating the same tool is necessary.",
+        (
+            "[repeat-tool notice]\n"
+            f"You called `{tool_name}` in two consecutive tool rounds. "
+            "Before calling it again, check whether the previous result already "
+            "answers the task, or explain why repeating the same tool is necessary."
+        ),
         tool_name,
     )

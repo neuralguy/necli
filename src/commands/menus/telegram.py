@@ -38,6 +38,7 @@ async def telegram_interactive():
         enabled = config.get_telegram_enabled()
 
         from apis.telegram import get_bridge
+
         running = get_bridge().is_running
 
         show_thinking = config.get_telegram_show_thinking()
@@ -46,26 +47,50 @@ async def telegram_interactive():
         approve = config.get_telegram_approve()
 
         items = [
-            {"label": _("tg.set_token"), "hint": _("tg.set_token_hint"),
-             "badge": _mask_token(token), "badge_style": "dim"},
-            {"label": _("tg.set_chat"), "hint": _("tg.set_chat_hint"),
-             "badge": chat_id or "—", "badge_style": "dim"},
+            {
+                "label": _("tg.set_token"),
+                "hint": _("tg.set_token_hint"),
+                "badge": _mask_token(token),
+                "badge_style": "dim",
+            },
+            {
+                "label": _("tg.set_chat"),
+                "hint": _("tg.set_chat_hint"),
+                "badge": chat_id or "—",
+                "badge_style": "dim",
+            },
             {"label": _("tg.discover"), "hint": _("tg.discover_hint")},
             {"label": _("tg.test_send"), "hint": _("tg.test_send_hint")},
-            {"label": _("tg.disable") if enabled else _("tg.enable"),
-             "hint": _("tg.enable_hint"),
-             "icon": "●" if enabled else "○",
-             "icon_style": "success" if enabled else "muted"},
-            {"label": _("tg.show_thinking"), "hint": _("tg.show_thinking_hint"),
-             "badge": _flag(show_thinking),
-             "badge_style": "success" if show_thinking else "dim"},
-            {"label": _("tg.tool_io"), "hint": _("tg.tool_io_hint"),
-             "badge": _flag(tool_io), "badge_style": "success" if tool_io else "dim"},
-            {"label": _("tg.assistant_header"), "hint": _("tg.assistant_header_hint"),
-             "badge": _flag(assistant_header),
-             "badge_style": "success" if assistant_header else "dim"},
-            {"label": _("tg.approve"), "hint": _("tg.approve_hint"),
-             "badge": _flag(approve), "badge_style": "success" if approve else "dim"},
+            {
+                "label": _("tg.disable") if enabled else _("tg.enable"),
+                "hint": _("tg.enable_hint"),
+                "icon": "●" if enabled else "○",
+                "icon_style": "success" if enabled else "muted",
+            },
+            {
+                "label": _("tg.show_thinking"),
+                "hint": _("tg.show_thinking_hint"),
+                "badge": _flag(show_thinking),
+                "badge_style": "success" if show_thinking else "dim",
+            },
+            {
+                "label": _("tg.tool_io"),
+                "hint": _("tg.tool_io_hint"),
+                "badge": _flag(tool_io),
+                "badge_style": "success" if tool_io else "dim",
+            },
+            {
+                "label": _("tg.assistant_header"),
+                "hint": _("tg.assistant_header_hint"),
+                "badge": _flag(assistant_header),
+                "badge_style": "success" if assistant_header else "dim",
+            },
+            {
+                "label": _("tg.approve"),
+                "hint": _("tg.approve_hint"),
+                "badge": _flag(approve),
+                "badge_style": "success" if approve else "dim",
+            },
             {"label": _("common.back")},
         ]
         choice = await card_menu(
@@ -73,12 +98,14 @@ async def telegram_interactive():
             title=_("tg.title"),
             status=_("tg.on") if enabled else _("tg.off"),
             status_style="success" if enabled else "muted",
-            facts=[facts_line(
-                _("tg.header"),
-                _("tg.bot_running") if running else _("tg.bot_stopped"),
-                f"{_('tg.token_label')} {_mask_token(token)}",
-                f"{_('tg.chat_id_label')} {chat_id or '—'}",
-            )],
+            facts=[
+                facts_line(
+                    _("tg.header"),
+                    _("tg.bot_running") if running else _("tg.bot_stopped"),
+                    f"{_('tg.token_label')} {_mask_token(token)}",
+                    f"{_('tg.chat_id_label')} {chat_id or '—'}",
+                )
+            ],
         )
         if choice is None or choice == 9:
             return toggled
@@ -92,8 +119,7 @@ async def telegram_interactive():
             continue
 
         if choice == 1:
-            new_chat = await overlays.ask_text(
-                f"{_('tg.field_chat')} ({_('tg.field_chat_hint')}):")
+            new_chat = await overlays.ask_text(f"{_('tg.field_chat')} ({_('tg.field_chat_hint')}):")
             if new_chat:
                 config.set_telegram_chat_id(new_chat)
             continue
@@ -170,11 +196,12 @@ async def _discover_chat_id(token: str) -> None:
         return
 
     # Найденные чаты — выбираем из списка, а не переписываем id руками.
-    items = [{"label": str(cid), "hint": title, "badge": ctype, "badge_style": "dim"}
-             for cid, (ctype, title) in seen.items()]
+    items = [
+        {"label": str(cid), "hint": title, "badge": ctype, "badge_style": "dim"}
+        for cid, (ctype, title) in seen.items()
+    ]
     items.append({"label": _("common.cancel")})
-    pick = await card_menu(items, title=_("tg.discovered"),
-                           facts=[_("tg.save_chat_hint")])
+    pick = await card_menu(items, title=_("tg.discovered"), facts=[_("tg.save_chat_hint")])
     if pick is not None and pick < len(seen):
         chosen = list(seen.keys())[pick]
         config.set_telegram_chat_id(str(chosen))
@@ -182,6 +209,7 @@ async def _discover_chat_id(token: str) -> None:
 
 async def _test_send(token: str, chat_id: str) -> None:
     from apis.telegram import get_bridge
+
     bridge = get_bridge()
     # chat_id парсим один раз ДО отправки, чтобы ValueError от некорректного
     # ввода перехватывался единообразно (раньше парсинг во fallback-ветке мог

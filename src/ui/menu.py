@@ -33,16 +33,17 @@ from ui.overlays import (
     RESET,
     cell_width,
     clip,
+    input_line,
     key_hints,
     more_note,
     pad,
-    white_fg,
     paint,
     role_fg,
     row,
     scroll_window,
     section,
     two_column,
+    white_fg,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,10 +57,12 @@ logger = logging.getLogger(__name__)
 # корутиной — вызовы через `run_ui_sync` заменяются на прямой await, и всё это
 # уходит целиком.
 
+
 def _shell_loop():
     """Event loop, в котором крутится Application, либо None."""
     try:
         from ui.shell import get_shell
+
         shell = get_shell()
     except Exception:
         return None
@@ -103,6 +106,7 @@ def _run_detached(coro):
     Уйдёт вместе с этой функцией, как только `_execute_single` станет корутиной.
     """
     from ui.shell import Shell
+
     shell = Shell.instance()
     app = getattr(shell, "app", None) if shell is not None else None
     logger.info("виджет вызван из loop'а — рисуем синхронно, минуя Application")
@@ -145,6 +149,7 @@ def run_ui_sync(coro):
     # приложения), оверлеи ждали бы клавиш от несуществующего Application,
     # поэтому на время прогона снимаем singleton.
     from ui.shell import Shell
+
     stale = Shell.instance()
     if stale is not None:
         Shell.set_instance(None)
@@ -202,8 +207,7 @@ class Palette:
     нельзя — но и звать `role_fg` на каждую ячейку списка незачем.
     """
 
-    __slots__ = ("accent", "bold", "dim", "error", "muted", "reset",
-                 "success", "warning", "white")
+    __slots__ = ("accent", "bold", "dim", "error", "muted", "reset", "success", "warning", "white")
 
     def __init__(self) -> None:
         self.reset = RESET
@@ -217,8 +221,16 @@ class Palette:
         self.muted = role_fg("muted")
 
 
-def row_line(cells, width: int, *, selected: bool = False, active: bool = False,
-             mark: str = "", mark_role: str = "", pal: Palette | None = None) -> str:
+def row_line(
+    cells,
+    width: int,
+    *,
+    selected: bool = False,
+    active: bool = False,
+    mark: str = "",
+    mark_role: str = "",
+    pal: Palette | None = None,
+) -> str:
     """Строка списка с колонками поверх `overlays.row`.
 
     `overlays.row` умеет метку, подсказку и правый значок, но не произвольные
@@ -227,14 +239,18 @@ def row_line(cells, width: int, *, selected: bool = False, active: bool = False,
     """
     return row(
         columns(cells, plain=selected),
-        selected=selected, width=width,
-        mark=mark, mark_role=mark_role,
-        right="◄" if active else "", right_role="success",
+        selected=selected,
+        width=width,
+        mark=mark,
+        mark_role=mark_role,
+        right="◄" if active else "",
+        right_role="success",
     )
 
 
-def section_line(text: str, width: int, *, right: str = "",
-                 pal: Palette | None = None, bold: bool = False) -> str:
+def section_line(
+    text: str, width: int, *, right: str = "", pal: Palette | None = None, bold: bool = False
+) -> str:
     """Заголовок секции/шапки внутри виджета — приглушённый, без рамок.
 
     Правая приписка (счётчик, подпись) исчезает целиком, если на узком экране
@@ -246,18 +262,26 @@ def section_line(text: str, width: int, *, right: str = "",
     left = clip(text, max(4, room - (cell_width(right) + 2 if right else 0)))
     if not bold:
         return section(left, right=right, width=width)
-    return two_column(paint(left, "accent", bold=True),
-                      f"{DIM}{right}{RESET}" if right else "", width=width)
+    return two_column(
+        paint(left, "accent", bold=True), f"{DIM}{right}{RESET}" if right else "", width=width
+    )
 
 
-def search_line(query: str, width: int, placeholder: str = "",
-                pal: Palette | None = None) -> str:
-    """Строка поиска панельных меню: `/ запрос▌` либо приглушённая подсказка."""
-    room = max(4, width - ROW_INDENT - 3)
-    if query:
-        return ("  " + paint("/", "accent") + " " + BOLD + white_fg()
-                + clip(query, room) + RESET + paint("▌", "accent"))
-    return f"  {DIM}/ {clip(placeholder or 'type to search', room)}{RESET}"
+def search_line(
+    query: str,
+    width: int,
+    placeholder: str = "",
+    pal: Palette | None = None,
+    *,
+    focused: bool = True,
+) -> str:
+    """Строка поиска в том же визуальном языке, что и ask_text."""
+    return input_line(
+        query,
+        width,
+        placeholder=placeholder or "type to search",
+        focused=focused,
+    )
 
 
 def overlay_rows(reserve: int = 0) -> int:
@@ -268,6 +292,7 @@ def overlay_rows(reserve: int = 0) -> int:
     """
     try:
         from ui.shell import get_shell
+
         shell = get_shell()
         if shell is not None:
             return max(1, shell.overlay_budget() - reserve)
@@ -285,6 +310,7 @@ def render_width(default: int = 100) -> int:
     """
     try:
         from ui.shell import get_shell
+
         shell = get_shell()
         app = getattr(shell, "app", None) if shell is not None else None
         if app is not None:
@@ -299,10 +325,10 @@ def render_width(default: int = 100) -> int:
 
 def clear_lines(n: int):
     """Очищает n строк вверх."""
-    sys.stdout.write('\r\x1b[2K')
+    sys.stdout.write("\r\x1b[2K")
     for _ in range(n - 1):
-        sys.stdout.write('\x1b[A')
-        sys.stdout.write('\x1b[2K')
+        sys.stdout.write("\x1b[A")
+        sys.stdout.write("\x1b[2K")
     sys.stdout.flush()
 
 
@@ -329,14 +355,14 @@ def _move_up_and_overwrite(stream, new_content: str, prev_lines: int) -> int:
     ровно на столько же строк.
     """
     term_width = Console().size.width
-    stream.write('\x1b[?25l')  # скрыть курсор
-    stream.write('\r')  # начало текущей строки
+    stream.write("\x1b[?25l")  # скрыть курсор
+    stream.write("\r")  # начало текущей строки
     # Подняться на prev_lines - 1 физических строк
     for _ in range(max(0, prev_lines - 1)):
-        stream.write('\x1b[A')
+        stream.write("\x1b[A")
 
     # Разбиваем на логические строки и пишем каждую с очисткой остатка.
-    lines = new_content.split('\n')
+    lines = new_content.split("\n")
     # Последний элемент может быть пустым (контент заканчивается \n).
     logical = lines if lines[-1] else lines[:-1]
 
@@ -344,37 +370,37 @@ def _move_up_and_overwrite(stream, new_content: str, prev_lines: int) -> int:
     new_lines = sum(_physical_rows(ln, term_width) for ln in logical) or 1
 
     for i, line in enumerate(logical):
-        stream.write('\r')  # начало строки
+        stream.write("\r")  # начало строки
         stream.write(line)
-        stream.write('\x1b[K')  # очистить от курсора до конца строки
+        stream.write("\x1b[K")  # очистить от курсора до конца строки
         if i < len(logical) - 1:
             # Спускаемся на число физических строк, которое заняла записанная
             # строка (а не на одну): при переносе терминал уже сдвинул курсор
             # на rows-1 строк автоматически, поэтому добиваем недостающее.
             rows = _physical_rows(line, term_width)
-            stream.write('\x1b[B')
+            stream.write("\x1b[B")
             for _ in range(rows - 1):
-                stream.write('\x1b[B')
+                stream.write("\x1b[B")
 
     # Если старый контент был длиннее — очистить лишние физические строки
     extra = max(0, prev_lines - new_lines)
     for _ in range(extra):
-        stream.write('\x1b[B\r\x1b[2K')
+        stream.write("\x1b[B\r\x1b[2K")
     # Вернуться назад на extra строк
     for _ in range(extra):
-        stream.write('\x1b[A')
+        stream.write("\x1b[A")
 
-    stream.write('\x1b[?25h')  # показать курсор
+    stream.write("\x1b[?25h")  # показать курсор
     stream.flush()
     return new_lines
 
 
 def _clear_stream_lines(stream, n: int):
     """Очищает n строк вверх в указанном потоке."""
-    stream.write('\r\x1b[2K')
+    stream.write("\r\x1b[2K")
     for _ in range(n - 1):
-        stream.write('\x1b[A')
-        stream.write('\x1b[2K')
+        stream.write("\x1b[A")
+        stream.write("\x1b[2K")
     stream.flush()
 
 
@@ -392,8 +418,9 @@ def _normalize_panel_key(key: str) -> str:
     return key
 
 
-async def _run_panel(render_fn, hint_text: str, total: int, initial_selected: int,
-                     on_key=None) -> int | None:
+async def _run_panel(
+    render_fn, hint_text: str, total: int, initial_selected: int, on_key=None
+) -> int | None:
     """Показать панельный виджет с поиском по вводу.
 
     Есть Shell → оверлей в нижней зоне. Нет Shell → прежний прямой вывод в
@@ -404,14 +431,25 @@ async def _run_panel(render_fn, hint_text: str, total: int, initial_selected: in
     переиначит q/j/k в команды навигации вместо букв запроса.
     """
     from ui.shell import get_shell
+
     if get_shell() is None:
         return _panel_menu_direct(
-            render_fn, sys.stderr, hint_text, total, initial_selected,
-            on_key=on_key, text_input=True,
+            render_fn,
+            sys.stderr,
+            hint_text,
+            total,
+            initial_selected,
+            on_key=on_key,
+            text_input=True,
         )
     from ui import overlays
+
     return await overlays.panel_menu(
-        render_fn, hint_text, total, initial_selected, on_key=on_key,
+        render_fn,
+        hint_text,
+        total,
+        initial_selected,
+        on_key=on_key,
     )
 
 
@@ -440,24 +478,24 @@ def select_menu(
     selected = current
     total = len(items)
 
-    RESET = '\x1b[0m'  # noqa: N806
-    DIM = '\x1b[2m'  # noqa: N806
+    RESET = "\x1b[0m"
+    DIM = "\x1b[2m"
 
     def _hex_to_ansi_fg(h: str) -> str:
-        h = h.lstrip('#')
+        h = h.lstrip("#")
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        return f'\x1b[38;2;{r};{g};{b}m'
+        return f"\x1b[38;2;{r};{g};{b}m"
 
     def _hex_to_ansi_bg(h: str) -> str:
-        h = h.lstrip('#')
+        h = h.lstrip("#")
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        return f'\x1b[48;2;{r};{g};{b}m'
+        return f"\x1b[48;2;{r};{g};{b}m"
 
-    BOLD_BLUE = '\x1b[1m' + _hex_to_ansi_fg(t('accent'))  # noqa: N806
-    GREEN = _hex_to_ansi_fg(t('success'))  # noqa: N806
-    BOLD = '\x1b[1m'  # noqa: N806
-    WHITE = _hex_to_ansi_fg(t('fg_primary'))  # noqa: N806
-    BG_SELECT = _hex_to_ansi_bg(t('bg_select'))  # noqa: N806
+    BOLD_BLUE = "\x1b[1m" + _hex_to_ansi_fg(t("accent"))
+    GREEN = _hex_to_ansi_fg(t("success"))
+    BOLD = "\x1b[1m"
+    WHITE = _hex_to_ansi_fg(t("fg_primary"))
+    BG_SELECT = _hex_to_ansi_bg(t("bg_select"))
 
     def _render():
         lines = []
@@ -494,38 +532,38 @@ def select_menu(
     def _build_content():
         parts = []
         if title:
-            if '\x1b' in title:
+            if "\x1b" in title:
                 parts.append(f"  {title}")
             else:
                 parts.append(f"  {DIM}{title}{RESET}")
         parts.extend(_render())
         parts.append(hint_line)
-        return '\n'.join(parts)
+        return "\n".join(parts)
 
     # Первая отрисовка
     content = _build_content()
     sys.stdout.write(content)
     sys.stdout.flush()
-    rendered_count = content.count('\n') + 1
+    rendered_count = content.count("\n") + 1
 
     try:
         with raw_mode():
             while True:
                 key = _drain_keys()
-                if key == 'up':
+                if key == "up":
                     selected = (selected - 1) % total
-                elif key == 'down':
+                elif key == "down":
                     selected = (selected + 1) % total
-                elif key == 'enter':
+                elif key == "enter":
                     clear_lines(rendered_count)
                     return selected
-                elif key in ('ctrl-c', 'escape'):
+                elif key in ("ctrl-c", "escape"):
                     clear_lines(rendered_count)
                     return None
-                elif key == 'left' and allow_back:
+                elif key == "left" and allow_back:
                     clear_lines(rendered_count)
                     return -(selected + 2)
-                elif key == 'right' and allow_forward:
+                elif key == "right" and allow_forward:
                     clear_lines(rendered_count)
                     return selected
                 else:
@@ -541,7 +579,6 @@ def select_menu(
     except Exception:
         clear_lines(rendered_count)
         return None
-
 
 
 def _tokens_short(n: int) -> str:
@@ -592,13 +629,15 @@ async def select_session_menu(
     static: list[tuple[str, str, str, str, str]] = []
     for s in sessions:
         folder = str(s.get("working_dir", "")).rstrip("/").rsplit("/", 1)[-1]
-        static.append((
-            str(s.get("title", "") or tr("menu.untitled_session")),
-            _short_ago(s.get("updated_at", 0)),
-            f"{s.get('messages', 0)} msg",
-            _tokens_short(int(s.get("tokens", 0) or 0)),
-            folder,
-        ))
+        static.append(
+            (
+                str(s.get("title", "") or tr("menu.untitled_session")),
+                _short_ago(s.get("updated_at", 0)),
+                f"{s.get('messages', 0)} msg",
+                _tokens_short(int(s.get("tokens", 0) or 0)),
+                folder,
+            )
+        )
     haystacks = [
         " ".join(str(s.get(k, "")) for k in ("title", "id", "site", "last_model")).casefold()
         for s in sessions
@@ -622,8 +661,8 @@ async def select_session_menu(
             initial_selected = pos
             break
 
-    version = 0                 # растёт при смене запроса или пинов
-    layout_cache: dict = {}     # ширины колонок: (ширина, версия) → tuple
+    version = 0  # растёт при смене запроса или пинов
+    layout_cache: dict = {}  # ширины колонок: (ширина, версия) → tuple
 
     def _layout(width: int) -> tuple[int, int, int, int, int]:
         """Ширины колонок под текущую ширину экрана.
@@ -645,7 +684,7 @@ async def select_session_menu(
         dir_w = min(dir_w, 16)
         # Узкий терминал: сначала уходит папка, потом токены, потом счётчик
         # сообщений. Заголовок не сокращаем никогда — без него список слепой.
-        free = width - ROW_INDENT - 1 - 3       # 3 — колонка состояния (пин/активна)
+        free = width - ROW_INDENT - 1 - 3  # 3 — колонка состояния (пин/активна)
         for drop in range(4):
             widths = [when_w, msgs_w, tok_w, dir_w]
             for d in range(drop):
@@ -665,8 +704,13 @@ async def select_session_menu(
         start, end, above, below = scroll_window(total, sel, budget)
 
         lines = [
-            section_line(tr("menu.sessions_title"), width, bold=True, pal=pal,
-                         right=f"{sel + 1}/{total}" if total else ""),
+            section_line(
+                tr("menu.sessions_title"),
+                width,
+                bold=True,
+                pal=pal,
+                right=f"{sel + 1}/{total}" if total else "",
+            ),
             search_line(query, width, "type to search by title, id or model", pal),
         ]
         if total == 0:
@@ -734,9 +778,15 @@ async def select_session_menu(
         render_fn,
         # Подсказка живёт под рамкой одной строкой: на узком терминале длинный
         # текст обрезался бы посреди слова, поэтому формат компактный.
-        key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "open"),
-                  ("^p", "pin"), ("esc", "close")),
-        total, initial_selected,
+        key_hints(
+            ("type", "to search"),
+            ("↑↓", "move"),
+            ("enter", "open"),
+            ("^p", "pin"),
+            ("esc", "close"),
+        ),
+        total,
+        initial_selected,
         on_key=on_key,
     )
     if result_pos is None or not order:
@@ -749,8 +799,12 @@ async def select_api_model_menu(
     current_id: str = "",
     provider_name: str = "",
     group_labels: list[str] | None = None,
+    title: str = "",
 ) -> int | None:
-    """Меню выбора API-модели с поиском по названию и ID.
+    """Меню выбора API-модели с поиском по названию, ID и провайдеру.
+
+    Запрос разбивается на токены по пробелам; модель проходит фильтр, если
+    каждый токен входит подстрокой в display_name, id или имя провайдера.
 
     group_labels: если задан (параллельно api_models), секции формируются по
     этим меткам (напр. провайдерам) с сохранением исходного порядка. Иначе —
@@ -771,11 +825,22 @@ async def select_api_model_menu(
     else:
         groups = [model_group(m.display_name or m.id) for m in api_models]
     static = [
-        (m.display_name, f"${m.input_price:.2f}", f"${m.output_price:.2f}",
-         _format_context_limit(m.context_window), m.id)
+        (
+            m.display_name,
+            f"${m.input_price:.2f}",
+            f"${m.output_price:.2f}",
+            _format_context_limit(m.context_window),
+            m.id,
+        )
         for m in api_models
     ]
-    haystacks = [f"{m.display_name} {m.id}".casefold() for m in api_models]
+    if group_labels is not None:
+        haystacks = [
+            f"{m.display_name} {m.id} {group_labels[i]}".casefold()
+            for i, m in enumerate(api_models)
+        ]
+    else:
+        haystacks = [f"{m.display_name} {m.id}".casefold() for m in api_models]
     if group_labels is not None:
         base_order = list(range(len(api_models)))
     else:
@@ -786,17 +851,18 @@ async def select_api_model_menu(
 
     query = ""
     order: list[int] = []
-    flat: list[int] = []        # >= 0 — индекс модели, -1 — заголовок группы
+    flat: list[int] = []  # >= 0 — индекс модели, -1 — заголовок группы
     flat_group: list[str] = []  # текст заголовка для строк-групп
     row_of_pos: list[int] = []  # позиция модели в order → строка в flat
     total = 0
-    version = 0                 # растёт при смене запроса: сбрасывает кэши
+    version = 0  # растёт при смене запроса: сбрасывает кэши
 
     def _rebuild() -> None:
         """Пересчёт фильтра и плоского списка строк — только при смене запроса."""
         nonlocal order, flat, flat_group, row_of_pos, total, version
         q = query.casefold()
-        order = [i for i in base_order if not q or q in haystacks[i]]
+        tokens = q.split()
+        order = [i for i in base_order if not tokens or all(t in haystacks[i] for t in tokens)]
         flat, flat_group, row_of_pos = [], [], []
         prev = None
         for i in order:
@@ -864,12 +930,14 @@ async def select_api_model_menu(
         sel_row = row_of_pos[sel] if 0 <= sel < len(row_of_pos) else 0
         start, end, above, below = scroll_window(len(flat), sel_row, budget)
 
-        title = tr("menu.models_for", name=provider_name) if provider_name \
-            else tr("menu.model_title")
+        menu_title = title or (
+            tr("menu.models_for", name=provider_name) if provider_name else tr("menu.model_title")
+        )
         head = [
-            section_line(title, width, bold=True, pal=pal,
-                         right=f"{sel + 1}/{total}" if total else ""),
-            search_line(query, width, "type to search by name or id", pal),
+            section_line(
+                menu_title, width, bold=True, pal=pal, right=f"{sel + 1}/{total}" if total else ""
+            ),
+            search_line(query, width, "type to search by name, id or provider", pal),
         ]
         if not order:
             head.append(f"  {pal.dim}{tr('common.no_data')}{pal.reset}")
@@ -892,16 +960,22 @@ async def select_api_model_menu(
         for ridx in range(start, end):
             orig = flat[ridx]
             if orig < 0:
-                lines.append(row_line(
-                    [(clip(flat_group[ridx].upper(), name_w), pal.bold + pal.accent)],
-                    width, pal=pal))
+                lines.append(
+                    row_line(
+                        [(clip(flat_group[ridx].upper(), name_w), pal.bold + pal.accent)],
+                        width,
+                        pal=pal,
+                    )
+                )
                 continue
             name, price_in, price_out, ctx, mid = static[orig]
             is_current = mid == current_id
             # Колонка состояния фиксированной ширины: иначе активная модель
             # съезжала бы вправо относительно соседних строк.
-            cells = [("● " if is_current else "  ", pal.success),
-                     (cell(name, name_w - 2), pal.success if is_current else "")]
+            cells = [
+                ("● " if is_current else "  ", pal.success),
+                (cell(name, name_w - 2), pal.success if is_current else ""),
+            ]
             if in_w:
                 cells.append(("  " + cell(price_in, in_w, "right"), pal.dim))
             if out_w:
@@ -941,9 +1015,9 @@ async def select_api_model_menu(
 
     result_pos = await _run_panel(
         render_fn,
-        key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "select"),
-                  ("esc", "close")),
-        total, initial_selected,
+        key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "select"), ("esc", "close")),
+        total,
+        initial_selected,
         on_key=on_key,
     )
     if result_pos is None or not order:
@@ -969,8 +1043,8 @@ def _panel_menu_direct(
         Callback для кастомных клавиш. Возвращает (handled, new_selected, new_total)
         если клавиша обработана, иначе None.
     """
-    DIM = '\x1b[2m'  # noqa: N806
-    RESET = '\x1b[0m'  # noqa: N806
+    DIM = "\x1b[2m"
+    RESET = "\x1b[0m"
     if allow_back and allow_forward:
         nav_suffix = " · ←→ steps"
     elif allow_back:
@@ -985,42 +1059,42 @@ def _panel_menu_direct(
 
     # Первая отрисовка
     panel_str = render_fn(selected)
-    stream.write('\x1b[?25l')  # скрыть курсор
+    stream.write("\x1b[?25l")  # скрыть курсор
     stream.write(panel_str)
     stream.write(hint_line)
     stream.flush()
-    rendered_count = panel_str.count('\n') + 1  # panel lines + hint_line
+    rendered_count = panel_str.count("\n") + 1  # panel lines + hint_line
 
     try:
         with raw_mode():
             while True:
                 key = _drain_text_keys() if text_input else _drain_keys()
-                if key == 'up':
+                if key == "up":
                     if total > 0:
                         selected = (selected - 1) % total
-                elif key == 'down':
+                elif key == "down":
                     if total > 0:
                         selected = (selected + 1) % total
-                elif key == 'enter':
+                elif key == "enter":
                     if total <= 0:
                         continue
                     _clear_stream_lines(stream, rendered_count)
-                    stream.write('\x1b[?25h')
+                    stream.write("\x1b[?25h")
                     stream.flush()
                     return selected
-                elif key == 'ctrl-c':
+                elif key == "ctrl-c":
                     _clear_stream_lines(stream, rendered_count)
-                    stream.write('\x1b[?25h')
+                    stream.write("\x1b[?25h")
                     stream.flush()
                     return None
-                elif key == 'left' and allow_back:
+                elif key == "left" and allow_back:
                     _clear_stream_lines(stream, rendered_count)
-                    stream.write('\x1b[?25h')
+                    stream.write("\x1b[?25h")
                     stream.flush()
                     return -(selected + 2)
-                elif key == 'right' and allow_forward:
+                elif key == "right" and allow_forward:
                     _clear_stream_lines(stream, rendered_count)
-                    stream.write('\x1b[?25h')
+                    stream.write("\x1b[?25h")
                     stream.flush()
                     return selected
                 else:
@@ -1031,14 +1105,14 @@ def _panel_menu_direct(
                             selected = min(selected, max(0, total - 1))
                             if not _handled:
                                 _clear_stream_lines(stream, rendered_count)
-                                stream.write('\x1b[?25h')
+                                stream.write("\x1b[?25h")
                                 stream.flush()
                                 return None
                         else:
                             continue
-                    elif key == 'escape':
+                    elif key == "escape":
                         _clear_stream_lines(stream, rendered_count)
-                        stream.write('\x1b[?25h')
+                        stream.write("\x1b[?25h")
                         stream.flush()
                         return None
                     else:
@@ -1049,6 +1123,6 @@ def _panel_menu_direct(
                 rendered_count = _move_up_and_overwrite(stream, new_content, rendered_count)
     except Exception:
         _clear_stream_lines(stream, rendered_count)
-        stream.write('\x1b[?25h')
+        stream.write("\x1b[?25h")
         stream.flush()
         return None

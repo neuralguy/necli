@@ -37,10 +37,12 @@ Slash-команды
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from commands.registry import IMMEDIATE_SLASH, is_immediate
 from config.i18n import t as tr
 
 logger = logging.getLogger(__name__)
@@ -48,27 +50,20 @@ logger = logging.getLogger(__name__)
 KIND_USER = "user"
 KIND_SLASH = "slash"
 
-#: Команды, открывающие интерактивный виджет и не пишущие в scrollback.
-#: Их можно выполнять сразу, параллельно работающему агенту: виджет забирает
-#: нижнюю зону, стрим продолжает идти выше.
-IMMEDIATE_SLASH: frozenset[str] = frozenset({
-    "/agents", "/api", "/autoprune", "/help", "/lang", "/lsp", "/mcp",
-    "/models", "/params", "/permissions", "/proxy", "/skills",
-    "/stats", "/themes", "/tg",
-})
+#: Команды, открывающие интерактивный виджет, описаны в registry.
+#: IMMEDIATE_SLASH оставлен экспортом этого модуля для обратной совместимости.
 
 
 def is_immediate_slash(text: str) -> bool:
     """True — команду можно выполнить сразу, не ставя в очередь."""
-    head = (text or "").strip().split(" ", 1)[0].lower()
-    return head in IMMEDIATE_SLASH
+    parts = (text or "").strip().split(None, 1)
+    return bool(parts) and is_immediate(parts[0].lower())
 
 
 @dataclass
 class QueueItem:
     kind: str
     text: str
-
 
 
 class AgentQueue:
@@ -216,13 +211,15 @@ class AgentQueue:
         self._wake.set()
         if self._worker_task is not None:
             self._worker_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._worker_task
-            except (asyncio.CancelledError, Exception):
-                pass
 
 
 __all__ = [
-    "IMMEDIATE_SLASH", "KIND_SLASH", "KIND_USER",
-    "AgentQueue", "QueueItem", "is_immediate_slash",
+    "IMMEDIATE_SLASH",
+    "KIND_SLASH",
+    "KIND_USER",
+    "AgentQueue",
+    "QueueItem",
+    "is_immediate_slash",
 ]

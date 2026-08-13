@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from rich.console import Group
 from rich.text import Text
 
+from config.i18n import format_duration
 from config.i18n import t as tr
 from config.themes import t
 from ui.formatting import format_tokens as _fmt_tokens
@@ -45,13 +46,14 @@ def _finished_header(
     header = Text()
     header.append(icon, style=f"bold {color}")
     header.append(label, style=f"bold {color}")
-    header.append(" " + tr("working.seconds", n=round(elapsed)), style="dim")
+    header.append(" " + format_duration(elapsed), style="dim")
     return header
 
 
 def _usage_parts(usage: dict | None) -> tuple[int, int]:
     """Вернуть (input, output) из canonical и provider-specific usage."""
     usage = usage or {}
+
     def _first(*keys: str) -> int:
         for key in keys:
             try:
@@ -83,7 +85,7 @@ def _darken(color: str, factor: float) -> str | None:
     if len(raw) != 6:
         return None
     try:
-        channels = [int(raw[index:index + 2], 16) for index in (0, 2, 4)]
+        channels = [int(raw[index : index + 2], 16) for index in (0, 2, 4)]
     except ValueError:
         return None
     factor = max(0.0, min(1.0, factor))
@@ -96,12 +98,19 @@ class WorkingRound:
     ctx: object
     model: str = ""
     index: int = 1
+    session: object = None
     started_at: float = field(default_factory=time.monotonic)
     finished_at: float | None = None
     token_estimate: int = 0
     estimated_output_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    ai_requests: int = 0
+    # Один message_num = один реальный запрос к модели. Streaming tool calls
+    # внутри того же ответа не должны ни увеличивать ai_requests, ни повторно
+    # начислять usage. Наборы живут только в рамках текущего пользовательского хода.
+    _started_stream_indexes: set[int] = field(default_factory=set, repr=False)
+    _usage_accounted_stream_indexes: set[int] = field(default_factory=set, repr=False)
     current: str = ""
     declared_calls: int = 0
     calls: list[str] = field(default_factory=list)
@@ -116,13 +125,29 @@ class WorkingRound:
             shell.set_dynamic(_WORKING_ZONE, self.render)
 
     def begin_stream(self, model: str = "", index: int = 1) -> None:
-        """Начать очередной внутренний ответ, не закрывая пользовательский ход."""
+        """Начать очередной реальный ответ модели, не закрывая пользовательский ход.
+
+        ``index`` — это message_num из agent loop. Один и тот же index может
+        повторно пройти через UI lifecycle во время streaming tool execution,
+        но это всё ещё ОДИН API-запрос. Поэтому счётчик запросов и перенос
+        token_estimate выполняются только один раз на index.
+        """
         if not self.active:
             return
         self.model = model or self.model
         self.index = index
-        # set_usage() переносит оценку завершившегося стрима в общий счётчик.
-        # Защитимся и от провайдера без usage: не теряем уже набежавшую оценку.
+
+        stream_index = int(index)
+        if stream_index in self._started_stream_indexes:
+            # Повторное подключение к тому же SSE-ответу (например из-за
+            # lifecycle раннего tool execution) — не новый запрос к модели.
+            self.invalidate()
+            return
+        self._started_stream_indexes.add(stream_index)
+        self.ai_requests += 1
+
+        # Новый реальный API-stream: переносим оценку output предыдущего стрима.
+        # Streaming tools внутри текущего stream сюда повторно не попадут.
         if self.token_estimate:
             self.estimated_output_tokens += self.token_estimate
             self.token_estimate = 0
@@ -148,7 +173,26 @@ class WorkingRound:
         self.current = current_call or tr("working.responding")
         self.invalidate()
 
-    def set_usage(self, usage: dict | None) -> None:
+    def set_usage(
+        self,
+        usage: dict | None,
+        *,
+        stream_index: int | None = None,
+    ) -> None:
+        """Кумулятивно учесть usage, но не более одного раза на AI-stream.
+
+        В native streaming один assistant response может содержать много tool
+        calls, которые исполняются ещё до EOF. Они не являются отдельными
+        запросами к модели и не должны повторно добавлять input/output usage.
+        Реальный следующий запрос имеет новый ``message_num``/``stream_index``
+        и поэтому штатно прибавится к кумулятивным счётчикам.
+        """
+        if stream_index is not None:
+            key = int(stream_index)
+            if key in self._usage_accounted_stream_indexes:
+                return
+            self._usage_accounted_stream_indexes.add(key)
+
         inp, out = _usage_parts(usage)
         if inp or out:
             self.input_tokens += inp
@@ -201,7 +245,7 @@ class WorkingRound:
         position = ((time.monotonic() - self.started_at) / 0.275) % cycle - 3
         for i, char in enumerate(label):
             strength = max(0.0, 1.0 - abs(i - position) / 2.1)
-            shade = _darken(accent, 1.0 - 0.56 * strength)
+            shade = _darken(accent, 1.0 - 0.75 * strength)
             if shade is not None:
                 result.append(char, style=f"bold {shade}")
             else:
@@ -232,17 +276,20 @@ class WorkingRound:
             else:
                 header = Text()
                 header.append_text(self._shimmer())
-                header.append(" " + tr("working.seconds", n=round(self.elapsed)), style="dim")
+                header.append(" " + format_duration(self.elapsed), style="dim")
 
         output_tokens = self.output_tokens + self.estimated_output_tokens + self.token_estimate
         output_prefix = "~" if self.estimated_output_tokens or self.token_estimate else ""
         details = Text("   ⎿  ", style=t("dim_text"))
-        details.append(tr("working.calls", n=self.call_count), style=t("fg_primary"))
+        details.append(f"{self.ai_requests} ⟳", style=t("fg_primary"))
+        details.append(" · ", style="dim")
+        details.append(f"{self.call_count} 🛠", style=t("fg_primary"))
         details.append(" · ", style="dim")
         details.append(f"↑{_fmt_tokens(self.input_tokens)}", style=t("fg_primary"))
         details.append(" ", style="dim")
         details.append(
-            f"↓{output_prefix}{_fmt_tokens(output_tokens)}", style=t("fg_primary"),
+            f"↓{output_prefix}{_fmt_tokens(output_tokens)}",
+            style=t("fg_primary"),
         )
         return Group(header, details)
 
@@ -268,44 +315,83 @@ class WorkingRound:
                 output_tokens = (
                     self.output_tokens + self.estimated_output_tokens + self.token_estimate
                 )
-                store.add("working", {
-                    "elapsed": self.elapsed,
-                    "calls": self.call_count,
-                    "input_tokens": self.input_tokens,
-                    "output_tokens": output_tokens,
-                    "output_estimated": bool(
-                        self.estimated_output_tokens or self.token_estimate
-                    ),
-                    # Старые версии replay по-прежнему читают общее поле tokens.
-                    "tokens": self.input_tokens + output_tokens,
-                    "current": self.current,
-                    "outcome": self.outcome,
-                })
+                store.add(
+                    "working",
+                    {
+                        "elapsed": self.elapsed,
+                        "ai_requests": self.ai_requests,
+                        "calls": self.call_count,
+                        "input_tokens": self.input_tokens,
+                        "output_tokens": output_tokens,
+                        "output_estimated": bool(
+                            self.estimated_output_tokens or self.token_estimate
+                        ),
+                        # Старые версии replay по-прежнему читают общее поле tokens.
+                        "tokens": self.input_tokens + output_tokens,
+                        "current": self.current,
+                        "outcome": self.outcome,
+                    },
+                )
         except Exception:
             pass
+        # Персистим сводку в сессию, чтобы блок "✓ Worked" был виден и в
+        # перезагруженной истории (print_session_history рендерит роль "worked").
+        if self.session is not None:
+            try:
+                import json as _json
+
+                self.session.add_worked_message(
+                    _json.dumps(
+                        {
+                            "elapsed": self.elapsed,
+                            "ai_requests": self.ai_requests,
+                            "calls": self.call_count,
+                            "input_tokens": self.input_tokens,
+                            "output_tokens": (
+                                self.output_tokens
+                                + self.estimated_output_tokens
+                                + self.token_estimate
+                            ),
+                            "output_estimated": bool(
+                                self.estimated_output_tokens or self.token_estimate
+                            ),
+                            "outcome": self.outcome,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            except Exception:
+                pass
 
 
-def begin_working_round(ctx, model: str = "", index: int = 1) -> WorkingRound:
+def begin_working_round(
+    ctx, model: str = "", index: int = 1, session: object = None
+) -> WorkingRound:
     previous = getattr(ctx, "working_round", None)
     if previous is not None:
         previous.finish()
-    current = WorkingRound(ctx=ctx, model=model or "", index=index)
+    current = WorkingRound(ctx=ctx, model=model or "", index=index, session=session)
     ctx.working_round = current
     current.start()
     return current
 
 
-def continue_working_round(ctx, model: str = "", index: int = 1) -> WorkingRound:
+def continue_working_round(
+    ctx, model: str = "", index: int = 1, session: object = None
+) -> WorkingRound:
     """Подключить очередной API-стрим к текущему пользовательскому ходу."""
     current = getattr(ctx, "working_round", None)
     if current is None or not current.active:
-        current = begin_working_round(ctx, model, index)
+        current = begin_working_round(ctx, model, index, session=session)
     current.begin_stream(model, index)
     return current
 
 
 def finish_working_round(
-    ctx, *, force: bool = False, outcome: str | None = None,
+    ctx,
+    *,
+    force: bool = False,
+    outcome: str | None = None,
 ) -> None:
     if ctx is None:
         return
@@ -315,6 +401,7 @@ def finish_working_round(
     if not force:
         try:
             from tools.background import has_running_work
+
             if has_running_work():
                 return
         except Exception:
@@ -326,6 +413,7 @@ def finish_working_round(
 def current_working_round():
     try:
         from agent.loop import get_current_ctx
+
         ctx = get_current_ctx()
     except Exception:
         return None

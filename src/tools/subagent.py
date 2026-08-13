@@ -54,8 +54,7 @@ def execute_subagent(call: ToolCall) -> ToolResult:
             name="subagent",
             status="error",
             output=(
-                "No valid subagent tasks provided. Use prompt, tasks[], "
-                "items+stages, or phases[]."
+                "No valid subagent tasks provided. Use prompt, tasks[], items+stages, or phases[]."
             ),
             exit_code=1,
             command=call.command,
@@ -82,6 +81,7 @@ def execute_subagent(call: ToolCall) -> ToolResult:
 
     if loop and loop.is_running():
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(_run_in_new_loop, orchestrator, tasks)
             # Без жёсткого таймаута: при сотнях задач в волнах фиксированные
@@ -93,7 +93,9 @@ def execute_subagent(call: ToolCall) -> ToolResult:
     else:
         results = asyncio.run(orchestrator.run(tasks))
 
-    output = f"Subagent run {summary}\n\n" + format_subagent_results(results, run_dir=orchestrator.run_dir)
+    output = f"Subagent run {summary}\n\n" + format_subagent_results(
+        results, run_dir=orchestrator.run_dir
+    )
     has_errors = any(r.error for r in results)
 
     return ToolResult(

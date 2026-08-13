@@ -25,4 +25,3 @@ __all__ = [
     "strip_tool_calls",
     "truncate_after_last_tool_call",
 ]
-

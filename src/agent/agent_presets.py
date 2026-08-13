@@ -17,19 +17,18 @@ Frontmatter-поля:
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from config.paths import BASE_DIR
+from _frontmatter import parse_frontmatter as _parse_frontmatter
+from config._atomic import atomic_write_text
+from config.paths import BASE_DIR, safe_child_path
 
 logger = logging.getLogger(__name__)
 
 AGENTS_DIR = BASE_DIR / "agents"
 PRESET_FILENAME = "AGENT.md"
-
-from _frontmatter import parse_frontmatter as _parse_frontmatter
 
 
 @dataclass
@@ -49,9 +48,6 @@ class AgentPreset:
 
 def get_agents_dir() -> Path:
     return AGENTS_DIR
-
-
-
 
 
 def _load_body(preset_path: Path) -> str:
@@ -107,8 +103,8 @@ def load_preset(name: str) -> AgentPreset | None:
     for p in discover_presets():
         if p.name == key:
             return p
-    preset_dir = AGENTS_DIR / key
-    if preset_dir.exists():
+    preset_dir = safe_child_path(AGENTS_DIR, key)
+    if preset_dir is not None and preset_dir.is_dir():
         return _load_preset_info(preset_dir)
     return None
 
@@ -120,14 +116,18 @@ def create_preset(
     model: str | None = None,
 ) -> AgentPreset:
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    preset_dir = AGENTS_DIR / name
+    preset_dir = safe_child_path(AGENTS_DIR, name)
+    if preset_dir is None:
+        raise ValueError(f"Invalid agent preset name: {name!r}")
     preset_dir.mkdir(parents=True, exist_ok=True)
     md = preset_dir / PRESET_FILENAME
-    fm = [f"name: {name}", f"description: {description}"]
+    safe_description = " ".join(str(description).splitlines()).strip()
+    fm = [f"name: {preset_dir.name}", f"description: {safe_description}"]
     if model:
-        fm.append(f"model: {model}")
+        safe_model = " ".join(str(model).splitlines()).strip()
+        fm.append(f"model: {safe_model}")
     text = "---\n" + "\n".join(fm) + "\n---\n\n" + body.rstrip() + "\n"
-    md.write_text(text, encoding="utf-8")
+    atomic_write_text(md, text)
     logger.info("agent_preset create: %s", name)
     return _load_preset_info(preset_dir)  # type: ignore[return-value]
 

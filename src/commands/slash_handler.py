@@ -1,5 +1,4 @@
 import asyncio
-import subprocess
 from contextlib import contextmanager
 
 from rich.console import Console
@@ -18,7 +17,6 @@ from config.themes import t
 from logger import logger
 from session import Session
 from skills import reset_active_skills
-from tools._paths import set_working_dir as _set_wd
 
 console = Console()
 
@@ -33,12 +31,14 @@ def _busy(label: str):
     тикера. Без Shell (headless) остаётся прежний путь.
     """
     from ui.shell import get_shell
+
     shell = get_shell()
     if shell is None:
         with console.status(f"[bold {t('info')}]{label}[/bold {t('info')}]", spinner="dots"):
             yield
         return
     from rich.spinner import Spinner
+
     spinner = Spinner("dots", text=label, style=f"bold {t('info')}")
 
     def _busy_provider():
@@ -56,10 +56,6 @@ def _busy(label: str):
 async def handle_slash_result(act: SlashResult, state: InteractiveState) -> bool:
     if act.switch_session:
         await _handle_switch_session(act, state)
-        return True
-
-    if act.change_dir:
-        _handle_change_dir(act, state)
         return True
 
     if act.do_compress:
@@ -102,6 +98,7 @@ async def handle_slash_result(act: SlashResult, state: InteractiveState) -> bool
 async def _handle_tg_toggle(enable: bool, state: InteractiveState) -> None:
     """Запускает/останавливает Telegram-бридж на лету (без перезапуска CLI)."""
     from apis.telegram import get_bridge
+
     bridge = get_bridge()
 
     if enable:
@@ -114,10 +111,11 @@ async def _handle_tg_toggle(enable: bool, state: InteractiveState) -> None:
         try:
             ok = (await bridge.start(token, int(chat_id)))[0]
         except Exception as e:
-            logger.error("tg toggle start failed: %s", e, exc_info=True)
+            logger.error("tg toggle start failed: {}", e, exc_info=True)
             return
         if ok:
             from agent.tg_menu import _build_reply_keyboard, register_tg_menu
+
             register_tg_menu(state)
             bridge.send(
                 f"🟢 <b>necli-api</b> bridge enabled\n"
@@ -132,7 +130,7 @@ async def _handle_tg_toggle(enable: bool, state: InteractiveState) -> None:
             bridge.send("🔴 <b>necli-api</b> bridge disabled")
             await bridge.stop()
         except Exception as e:
-            logger.error("tg toggle stop failed: %s", e, exc_info=True)
+            logger.error("tg toggle stop failed: {}", e, exc_info=True)
 
 
 async def _handle_switch_session(act: SlashResult, state: InteractiveState) -> None:
@@ -147,52 +145,30 @@ async def _handle_switch_session(act: SlashResult, state: InteractiveState) -> N
     state.session = new_session
 
     from apis.agent_adapter import restore_api_session_history
+
     restore_api_session_history(state.session)
     state.pending_context = None
     state.msg_num = state.session.message_count
     try:
         from agent.render_replay import print_session_history
+
         print_session_history(state.session, max_messages=20)
     except Exception:
         logger.debug("print_session_history failed", exc_info=True)
 
 
-def _handle_change_dir(act: SlashResult, state: InteractiveState) -> None:
-    new_dir = act.change_dir
-    state.workdir = new_dir
-    _set_wd(new_dir)
-    state.prompt_input.set_working_dir(new_dir)
-
-    _cd_parts = []
-    try:
-        _tree_r = subprocess.run(
-            ["tree", "-L", "2", "--dirsfirst", "-I",
-             "__pycache__|node_modules|.venv|venv|.mypy_cache|.pytest_cache|.ruff_cache|dist|build|.egg-info|.tox|.nox|.cache|.idea|.vscode|.git"],
-            capture_output=True, text=True,
-            timeout=10, cwd=new_dir,
-        )
-        if _tree_r.returncode == 0 and _tree_r.stdout.strip():
-            _cd_parts.append(f"$ tree -L 2\n{_tree_r.stdout.strip()}")
-    except Exception as e:
-        logger.debug("cd tree snapshot failed: {}", e)
-
-    _cd_context = (
-        f"User changed working directory to: {new_dir}\n\n"
-        + "\n\n".join(_cd_parts)
-    )
-    state.pending_context = [{"role": "system", "content": _cd_context}]
-
-
 async def _handle_compress(state: InteractiveState) -> None:
     logger.info(
         "compress: session={} msg_count={}",
-        state.session.id[:16], state.session.message_count,
+        state.session.id[:16],
+        state.session.message_count,
     )
     history_text = state.session.build_compress_text()
     if not history_text.strip():
         return
 
     from system_prompt import COMPRESS_PROMPT
+
     compress_prompt = COMPRESS_PROMPT + history_text
 
     from apis.agent_adapter import (
@@ -200,8 +176,9 @@ async def _handle_compress(state: InteractiveState) -> None:
         api_new_chat,
         get_api_session,
     )
+
     try:
-        with _busy(tr('sh.compressing')):
+        with _busy(tr("sh.compressing")):
             compressed = await api_compress_history(compress_prompt)
 
         compressed = compressed.strip()
@@ -212,6 +189,7 @@ async def _handle_compress(state: InteractiveState) -> None:
         storage.save(state.session)
 
         from tools.file_ops.read import clear_read_cache
+
         clear_read_cache()
 
         await api_new_chat()
@@ -228,54 +206,17 @@ async def _handle_compress(state: InteractiveState) -> None:
 _KEEP_RECENT_ROUNDS = 4
 
 
-async def _handle_compress_incremental(state: InteractiveState) -> bool:
-    """Каскадная авто-компрессия: сжать только СТАРУЮ часть истории, последние
-    _KEEP_RECENT_ROUNDS раундов оставить дословно.
-
-    Возвращает True если что-то сжали. Если раундов мало (нечего сжимать
-    инкрементально) — возвращает False, вызывающий код делает полный compress.
-    """
-    sess = state.session
-    tail_index = sess.tail_split_index(_KEEP_RECENT_ROUNDS)
-    if tail_index <= 0:
-        return False
-
-    history_text = sess.build_compress_text(upto_index=tail_index)
-    if not history_text.strip():
-        return False
-
-    from system_prompt import COMPRESS_PROMPT
-    compress_prompt = COMPRESS_PROMPT + history_text
-
-    from apis.agent_adapter import (
-        api_compress_history,
-        api_new_chat,
-        restore_api_session_history,
-    )
-    with _busy(tr('sh.compressing')):
-        compressed = await api_compress_history(compress_prompt)
-    compressed = compressed.strip()
-    if not compressed:
-        return False
-
-    n = sess.compress_reset_partial(compressed, tail_index, model=state.cur_model)
-    storage.save(sess)
-
-    from tools.file_ops.read import clear_read_cache
-    clear_read_cache()
-
-    # Пересобрать API-сессию из обновлённой necli-истории (summary + хвост).
-    await api_new_chat()
-    restore_api_session_history(sess)
-
-    state.pending_context = None
-    state.msg_num = sess.message_count
-    logger.info("incremental compress: {} rounds compressed, tail kept", n)
-    return True
-
-
-
 _BG_COMMIT_TASKS: set = set()
+
+
+async def stop_background_commit_tasks() -> None:
+    """Cancel and join all /commit agents owned by the interactive session."""
+    tasks = list(_BG_COMMIT_TASKS)
+    _BG_COMMIT_TASKS.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _handle_commit(act: SlashResult, state: InteractiveState) -> None:
@@ -288,7 +229,7 @@ def _handle_commit(act: SlashResult, state: InteractiveState) -> None:
 
     workdir = state.workdir
     hint = act.commit_hint or ""
-    logger.info("commit-agent dispatch: api=%s model=%s wd=%s", api_id, model_id, workdir)
+    logger.info("commit-agent dispatch: api={} model={} wd={}", api_id, model_id, workdir)
 
     from agent.commit_agent import run_commit_agent
 
@@ -305,9 +246,9 @@ def _handle_commit(act: SlashResult, state: InteractiveState) -> None:
         except asyncio.CancelledError:
             return
         except Exception as e:
-            logger.error("commit-agent failed: %s", e, exc_info=True)
+            logger.error("commit-agent failed: {}", e, exc_info=True)
             return
-        logger.info("commit-agent done: %s", text.replace("\n", " ")[:200])
+        logger.info("commit-agent done: {}", text.replace("\n", " ")[:200])
 
     task.add_done_callback(_done)
 
@@ -317,11 +258,14 @@ async def _handle_new_chat(state: InteractiveState) -> None:
     old_sid = state.session.id if state.session else None
     state.save_session()
     from apis.agent_adapter import api_new_chat
+
     await api_new_chat()
     reset_active_skills()
     from config.permissions import reset_session as reset_permissions_session
+
     reset_permissions_session()
     from tools.file_ops.read import clear_read_cache
+
     if old_sid:
         clear_read_cache(old_sid)
     state.session = Session(working_dir=state.workdir)
@@ -330,6 +274,7 @@ async def _handle_new_chat(state: InteractiveState) -> None:
     state.prompt_input.clear_images()
     try:
         from ui.terminal_title import set_session_terminal_title
+
         set_session_terminal_title(state.session)
     except Exception:
         logger.debug("new chat terminal title update failed", exc_info=True)
@@ -361,11 +306,13 @@ async def _handle_branch(state: InteractiveState) -> None:
     state.pending_context = None
     try:
         from ui.terminal_title import set_session_terminal_title
+
         set_session_terminal_title(state.session)
     except Exception:
         logger.debug("branch terminal title update failed", exc_info=True)
 
     from apis.agent_adapter import api_new_chat, restore_api_session_history
+
     await api_new_chat()
     restore_api_session_history(new_session)
 
@@ -396,10 +343,10 @@ async def _handle_toggle_tool_format(state: InteractiveState) -> None:
     config.set_value("tool_format_force_native", new_val)
 
     from apis.agent_adapter import get_api_session, restore_api_session_history
+
     if get_api_session() is not None:
         restore_api_session_history(state.session)
         state.pending_context = None
-
 
 
 async def _handle_reflect(state: InteractiveState) -> None:
@@ -410,8 +357,12 @@ async def _handle_reflect(state: InteractiveState) -> None:
 
     try:
         coro = gsagent.run_agent_interactive(
-            REFLECT_PROMPT, model=state.cur_model, working_dir=state.workdir,
-            is_continuation=(state.msg_num > 1), session=state.session, mode=state.mode_state["mode"],
+            REFLECT_PROMPT,
+            model=state.cur_model,
+            working_dir=state.workdir,
+            is_continuation=(state.msg_num > 1),
+            session=state.session,
+            mode=state.mode_state["mode"],
         )
         state.last_elapsed, _ = await _run_with_interrupt(coro, state.session)
     except Exception:
@@ -423,10 +374,12 @@ async def _handle_reflect(state: InteractiveState) -> None:
 async def _handle_switch_api(act: SlashResult, state: InteractiveState) -> None:
     logger.info("switch_api: → {!r} model={!r}", act.switch_api, act.switch_api_model)
     from apis.agent_adapter import create_api_session, restore_api_session_history
+
     if act.switch_api == "":
         return
     create_api_session(act.switch_api, act.switch_api_model or "")
     from apis.registry import get_definition
+
     _defn = get_definition(act.switch_api)
     if _defn and act.switch_api_model:
         _minfo = _defn.get_model_info(act.switch_api_model)

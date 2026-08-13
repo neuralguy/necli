@@ -1,80 +1,91 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "necli-api"
-version = "0.19.0"
-description = "Terminal client for AI chat (API-only, no browser)"
+name = "necli"
+version = "1.0.0"
+description = "API-first terminal AI agent with interactive and headless modes."
 readme = "README.md"
-license = "Apache-2.0"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "neuralguy" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
-    "rich",
-    "prompt-toolkit",
-    "click",
-    "tiktoken",
-    "httpx[socks]>=0.27",
-    "Pillow",
-    "python-docx",
-    "openpyxl",
-    "pylatexenc",
+    "click>=8.1",
+    "ddgs>=9.0",
+    "httpx>=0.27",
     "loguru>=0.7",
-    "ddgs",
-    "trafilatura",
-    "pymupdf>=1.24",
-    "pdfplumber>=0.11",
-    "aiogram>=3.28.2",
-    "mcp>=1.0",
+    "openpyxl>=3.1",
+    "Pillow>=10.0",
+    "prompt-toolkit>=3.0.47",
+    "pylatexenc>=2.10",
+    "rich>=13.7",
+    "tiktoken>=0.7",
+    "trafilatura>=1.12",
+    "wcwidth>=0.2.13",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
-    "vulture>=2.16",
-    "pyinstaller>=6.0",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
     "ruff>=0.8",
 ]
+
+[project.scripts]
+necli = "main:cli"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["_frontmatter", "logger", "main", "models", "planner", "system_prompt"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = [
+    "agent*",
+    "apis*",
+    "commands*",
+    "config*",
+    "docx_engine*",
+    "hooks*",
+    "memory*",
+    "pptx_engine*",
+    "session*",
+    "skills*",
+    "tools*",
+    "ui*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"
 
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-src = ["src"]
-extend-exclude = ["docs"]
+extend-exclude = [".data"]
 
 [tool.ruff.lint]
-select = [
-    "E",    # pycodestyle errors
-    "W",    # pycodestyle warnings
-    "F",    # pyflakes
-    "I",    # isort
-    "N",    # pep8-naming
-    "UP",   # pyupgrade
-    "B",    # flake8-bugbear
-    "C4",   # flake8-comprehensions
-    "SIM",  # flake8-simplify
-    "RUF",  # ruff-specific
-    "PIE",  # flake8-pie
-    "PERF", # perflint
-    "ASYNC",# flake8-async
-    "LOG",  # flake8-logging
-    "TID",  # flake8-tidy-imports
-]
-ignore = [
-    "E501",   # line length handled by formatter
-    "B008",   # function call in default arg (used by click/aiogram)
-    "SIM105", # contextlib.suppress over try/except/pass
-    "RUF001", # ambiguous unicode (Cyrillic strings are intentional)
-    "RUF002",
-    "RUF003",
-]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "RUF", "ISC"]
+ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
-"scripts/**" = ["N", "PTH"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["src"]
-
-[tool.ruff.lint.flake8-tidy-imports]
-ban-relative-imports = "parents"
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-line-ending = "lf"
-skip-magic-trailing-comma = false
+"tests/**/*.py" = ["B011", "RUF012"]
+"tests/conftest.py" = ["E402"]
+"src/docx_engine/__init__.py" = ["E402"]
+"src/skills/manager.py" = ["E402"]
+"src/ui/shell.py" = ["E402"]

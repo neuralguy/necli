@@ -14,7 +14,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     if not m:
         return {}, text
     raw_yaml = m.group(1)
-    body = text[m.end():]
+    body = text[m.end() :]
     meta: dict[str, str] = {}
     for line in raw_yaml.splitlines():
         if ":" in line:

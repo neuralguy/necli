@@ -77,6 +77,7 @@ def _tool_display(call: tools.ToolCall) -> tuple[str, str, str]:
     """(emoji, label, color_role) для инструмента — как в основном UI."""
     try:
         from config.ui import ui
+
         meta = ui.tool(call.tool_name)
         emoji = (meta.get("emoji") or "").strip()
         label = (meta.get("label") or "").strip() or call.tool_name
@@ -207,36 +208,18 @@ _DANGER_CMD = re.compile(
 )
 
 #: Каталоги, запись в которые ломает не проект, а машину.
-_SYSTEM_DIRS = ("/etc", "/usr", "/bin", "/sbin", "/boot", "/lib", "/var/lib",
-                "/System", "/Library", "/Windows")
-
-
-def _short_path(path: str, limit: int = 42) -> str:
-    """Путь в человеческом виде: домашний каталог — тильдой, длинный — хвостом."""
-    p = str(path or "")
-    home = os.path.expanduser("~")
-    if home and p.startswith(home):
-        p = "~" + p[len(home):]
-    if len(p) > limit:
-        p = "…" + p[-(limit - 1):]
-    return p
-
-
-def _display_path(path: str, limit: int = 58) -> str:
-    """Путь так, как его читает человек: внутри проекта — от корня проекта.
-
-    Абсолютный путь оставляем ровно тогда, когда он ведёт НАРУЖУ рабочего
-    каталога: в этом случае «куда именно» и есть главная новость.
-    """
-    p = str(path or "")
-    try:
-        full = os.path.realpath(os.path.expanduser(p))
-        cwd = os.path.realpath(os.getcwd())
-        if full.startswith(cwd + os.sep):
-            return "./" + full[len(cwd) + 1:]
-    except OSError:
-        pass
-    return _short_path(p, limit)
+_SYSTEM_DIRS = (
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/boot",
+    "/lib",
+    "/var/lib",
+    "/System",
+    "/Library",
+    "/Windows",
+)
 
 
 def _arg_paths(args: dict) -> list[str]:
@@ -253,10 +236,20 @@ def _is_destructive(call: tools.ToolCall) -> bool:
     if name == "shell":
         cmd = str(args.get("command") or call.command or "")
         return bool(_DANGER_CMD.search(cmd))
-    if name in ("create_file", "patch_file", "docx_writer", "create_docx"):
-        cwd = os.path.realpath(os.getcwd())
+    is_file_write = name in ("create_file", "patch_file") or (
+        name in ("docx", "pptx")
+        and str(args.get("action") or "").lower() in ("create", "edit", "render")
+    )
+    if is_file_write:
+        from tools._paths import get_working_dir, resolve_path
+
+        cwd = os.path.realpath(get_working_dir())
         for raw in _arg_paths(args):
-            full = os.path.realpath(os.path.expanduser(raw))
+            try:
+                full = os.path.realpath(str(resolve_path(raw)))
+            except Exception:
+                # If resolution itself is suspicious/broken, fail closed.
+                return True
             if any(full == d or full.startswith(d + os.sep) for d in _SYSTEM_DIRS):
                 return True
             # Запись мимо рабочего каталога — почти всегда не то, чего ждали.
@@ -267,29 +260,35 @@ def _is_destructive(call: tools.ToolCall) -> bool:
     return False
 
 
-# ───────────────────────────── превью вызова ────────────────────────────────
-def _pv(text: str, width: int, role: str = "", *, dim: bool = False,
-        prefix: str = "", prefix_role: str = "") -> str:
-    """Строка превью: отступ, приглушённый префикс, содержимое, обрезка по ширине."""
-    head = "    " + (paint(prefix, prefix_role, dim=not prefix_role) if prefix else "")
-    body = clip(" ".join(str(text).split()), max(8, width - 5 - cell_width(prefix)))
-    return head + paint(body, role, dim=dim)
-
-
 # ────────────────────────── семь пунктов решения ────────────────────────────
 def _options() -> list[dict]:
     """Пять пунктов. ПОРЯДОК ФИКСИРОВАН: на индексы завязан маппинг решений."""
     return [
-        {"label": _t("perm.allow_once"), "hint": _t("perm.allow_once_hint"),
-         "role": "success", "reach": 1},
-        {"label": _t("perm.allow_session"), "hint": _t("perm.allow_session_hint"),
-         "role": "success", "reach": 2},
-        {"label": _t("perm.allow_process"), "hint": _t("perm.allow_process_hint"),
-         "role": "success", "reach": 3},
-        {"label": _t("perm.allow_forever"), "hint": _t("perm.allow_forever_hint"),
-         "role": "success", "reach": 4},
-        {"label": _t("perm.deny_once"), "hint": "",
-         "role": "error", "reach": 0},
+        {
+            "label": _t("perm.allow_once"),
+            "hint": _t("perm.allow_once_hint"),
+            "role": "success",
+            "reach": 1,
+        },
+        {
+            "label": _t("perm.allow_session"),
+            "hint": _t("perm.allow_session_hint"),
+            "role": "success",
+            "reach": 2,
+        },
+        {
+            "label": _t("perm.allow_process"),
+            "hint": _t("perm.allow_process_hint"),
+            "role": "success",
+            "reach": 3,
+        },
+        {
+            "label": _t("perm.allow_forever"),
+            "hint": _t("perm.allow_forever_hint"),
+            "role": "success",
+            "reach": 4,
+        },
+        {"label": _t("perm.deny_once"), "hint": "", "role": "error", "reach": 0},
     ]
 
 
@@ -305,8 +304,7 @@ def _reach_meter(level: int, role: str) -> str:
     и переживут перезапуск.
     """
     filled_role = "warning" if level >= _REACH_STEPS else role
-    return (paint("●" * level, filled_role)
-            + paint("○" * (_REACH_STEPS - level), "muted"))
+    return paint("●" * level, filled_role) + paint("○" * (_REACH_STEPS - level), "muted")
 
 
 class PermissionOverlay(Overlay):
@@ -318,8 +316,7 @@ class PermissionOverlay(Overlay):
 
     top_margin_rows = 1
 
-    def __init__(self, call: tools.ToolCall, emoji: str, label: str,
-                 color_role: str) -> None:
+    def __init__(self, call: tools.ToolCall, emoji: str, label: str, color_role: str) -> None:
         super().__init__()
         self.call = call
         self.emoji = emoji
@@ -348,7 +345,7 @@ class PermissionOverlay(Overlay):
     # ── список пунктов ──
     def _option_rows(self, width: int, budget: int) -> list[str]:
         n = len(self.options)
-        gap = budget >= n + 1          # пустая строка между «разрешить»/«запретить»
+        gap = budget >= n + 1  # пустая строка между «разрешить»/«запретить»
         if gap:
             start, end, above, below = 0, n, 0, 0
         else:
@@ -361,12 +358,18 @@ class PermissionOverlay(Overlay):
                 out.append(spacer())
             opt = self.options[i]
             reach = int(opt["reach"])
-            out.append(row(
-                opt["label"], opt["hint"],
-                selected=(i == self.selected), width=width, role=opt["role"],
-                mark=str(i + 1), badge=_reach_meter(reach, opt["role"]) if reach else "",
-                label_width=self._label_w,
-            ))
+            out.append(
+                row(
+                    opt["label"],
+                    opt["hint"],
+                    selected=(i == self.selected),
+                    width=width,
+                    role=opt["role"],
+                    mark=str(i + 1),
+                    badge=_reach_meter(reach, opt["role"]) if reach else "",
+                    label_width=self._label_w,
+                )
+            )
         if below:
             out.append(more_note(below, up=False))
         return out
@@ -416,11 +419,13 @@ def _ask_telegram(call: tools.ToolCall, label: str, preview: str) -> bool | None
     """
     try:
         import config as _cfg
+
         if not (_cfg.get_telegram_enabled() and _cfg.get_telegram_approve()):
             return None
         import html as _html
 
         from apis.telegram import get_bridge
+
         bridge = get_bridge()
         if not bridge.is_running:
             return None
@@ -432,6 +437,7 @@ def _ask_telegram(call: tools.ToolCall, label: str, preview: str) -> bool | None
         allowed = bool(bridge.request_approval(q))
     except Exception:
         import logging as _lg
+
         _lg.getLogger(__name__).debug("tg approval failed, falling back", exc_info=True)
         return None
     if not _is_headless():
@@ -444,16 +450,17 @@ def _ask_telegram(call: tools.ToolCall, label: str, preview: str) -> bool | None
     return allowed
 
 
-async def _ask_choice(call: tools.ToolCall, emoji: str, label: str,
-                      color_role: str, preview: str) -> int | None:
+async def _ask_choice(
+    call: tools.ToolCall, emoji: str, label: str, color_role: str, preview: str
+) -> int | None:
     """Показать виджет и вернуть индекс пункта (или None)."""
     shell = get_shell()
     if shell is None:
         # Application не поднят (ранний старт) или снят на время вызова из
         # самого loop'а — рисуем прежним синхронным меню, оно ничего не ждёт.
         from ui import overlays
-        items = [{"label": _color(o["label"], o["role"]), "hint": o["hint"]}
-                 for o in _options()]
+
+        items = [{"label": _color(o["label"], o["role"]), "hint": o["hint"]} for o in _options()]
         return await overlays.select_menu(
             items,
             current=_GROUP_BREAK if _is_destructive(call) else 0,
@@ -462,8 +469,9 @@ async def _ask_choice(call: tools.ToolCall, emoji: str, label: str,
     return await shell.run_overlay(PermissionOverlay(call, emoji, label, color_role))
 
 
-async def _ask_menu(call: tools.ToolCall, emoji: str, label: str,
-                    color_role: str, preview: str) -> bool:
+async def _ask_menu(
+    call: tools.ToolCall, emoji: str, label: str, color_role: str, preview: str
+) -> bool:
     """Пять пунктов и маппинг выбора на решение."""
     choice = await _ask_choice(call, emoji, label, color_role, preview)
 
@@ -486,9 +494,7 @@ async def _ask_menu(call: tools.ToolCall, emoji: str, label: str,
 
 def _deny_headless(call: tools.ToolCall) -> bool:
     print_static(
-        f"  [{t('error')}]"
-        f"{_t('perm.headless_denied', tool=call.tool_name)}"
-        f"[/{t('error')}]"
+        f"  [{t('error')}]{_t('perm.headless_denied', tool=call.tool_name)}[/{t('error')}]"
     )
     return False
 
@@ -504,6 +510,7 @@ async def confirm_tool_call(call: tools.ToolCall) -> bool:
     preview = _smart_preview(call)
 
     import asyncio as _aio
+
     # to_thread: ждать ответа в чате до 5 минут прямо на loop'е нельзя —
     # замёрзли бы и ввод, и отрисовка ответа агента.
     decision = await _aio.to_thread(_ask_telegram, call, label, preview)
@@ -539,11 +546,13 @@ def confirm_tool_call_sync(call: tools.ToolCall) -> bool:
         return _deny_headless(call)
 
     from ui.menu import run_ui_sync
+
     try:
         return bool(run_ui_sync(_ask_menu(call, emoji, label, color_role, preview)))
     except Exception:
         # Это гейт разрешений: сломанный виджет должен запрещать, а не валить ход
         # агента и не пропускать вызов без спроса.
         import logging as _lg
+
         _lg.getLogger(__name__).warning("permission menu failed → deny", exc_info=True)
         return False

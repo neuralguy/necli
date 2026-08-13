@@ -5,6 +5,7 @@ macOS: pbcopy
 Windows: clip.exe
 """
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -61,6 +62,16 @@ def copy_to_clipboard(text: str) -> str | None:
                 except Exception as e:
                     last_err = f"{name}: write failed: {e}"
                     logger.warning("clipboard.copy failed via {}: {}", name, e)
+                    with contextlib.suppress(Exception):
+                        if proc.stdin is not None:
+                            proc.stdin.close()
+                    with contextlib.suppress(Exception):
+                        proc.terminate()
+                    with contextlib.suppress(Exception):
+                        proc.wait(timeout=1)
+                    if proc.poll() is None:
+                        with contextlib.suppress(Exception):
+                            proc.kill()
                     continue
                 logger.info("clipboard.copy: {} ok detached ({} bytes)", name, len(data))
                 return None

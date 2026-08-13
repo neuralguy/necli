@@ -26,28 +26,25 @@ logger = logging.getLogger(__name__)
 # и эти карты (автосинхронизации нет).
 _MODEL_ENCODING_MAP: dict[str, str] = {
     # OpenAI GPT-5 family — все на o200k_base
-    "GPT-5.4":           "o200k_base",
-    "GPT-5.4 Mini":      "o200k_base",
-    "GPT-5.4 Nano":      "o200k_base",
-    "GPT-5.4 Pro":       "o200k_base",
-    "GPT-5.2 Pro":       "o200k_base",
-    "GPT-5.5":           "o200k_base",
-    "o3-pro":            "o200k_base",
-
+    "GPT-5.4": "o200k_base",
+    "GPT-5.4 Mini": "o200k_base",
+    "GPT-5.4 Nano": "o200k_base",
+    "GPT-5.4 Pro": "o200k_base",
+    "GPT-5.2 Pro": "o200k_base",
+    "GPT-5.5": "o200k_base",
+    "o3-pro": "o200k_base",
     # Anthropic Claude — cl100k_base как ближайшее приближение.
     # Claude использует собственный BPE, но cl100k_base даёт ~95% точность
     # на английском и ~90% на кириллице.
-    "Claude Opus 4.6":   "cl100k_base",
-    "Claude Opus 4.7":   "cl100k_base",
+    "Claude Opus 4.6": "cl100k_base",
+    "Claude Opus 4.7": "cl100k_base",
     "Claude Sonnet 4.6": "cl100k_base",
-    "Claude Haiku 4.5":  "cl100k_base",
-
+    "Claude Haiku 4.5": "cl100k_base",
     # Gemini — SentencePiece, обрабатывается через _is_gemini_model()
     # Записи здесь не нужны, но добавим для явности маппинга
-
     # Grok — использует BPE, o200k_base как приближение
     "Grok 4.20 Reasoning": "o200k_base",
-    "Grok 4.20":            "o200k_base",
+    "Grok 4.20": "o200k_base",
 }
 
 
@@ -61,6 +58,7 @@ def _get_encoding(encoding_name: str):
     """Загружает и кеширует tiktoken encoding."""
     try:
         import tiktoken
+
         return tiktoken.get_encoding(encoding_name)
     except Exception as e:
         logger.warning("tiktoken encoding %s недоступен: %s", encoding_name, e)
@@ -137,13 +135,7 @@ def _normalize_model_id(model: str) -> str:
     """Убирает пробелы/дефисы/подчёркивания/точки и приводит к lower."""
     if not model:
         return ""
-    return (
-        model.lower()
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("_", "")
-        .replace(".", "")
-    )
+    return model.lower().replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
 
 
 # Алиасы провайдерских id → канонический display name из _MODEL_ENCODING_MAP.
@@ -151,10 +143,10 @@ def _normalize_model_id(model: str) -> str:
 # а энкодинг и множитель привязаны к display name 'Claude Opus 4.7'.
 # Ключи — нормализованные через _normalize_model_id формы.
 _MODEL_ALIAS_MAP: dict[str, str] = {
-    "claudeopus47":    "Claude Opus 4.7",
-    "claudeopus46":    "Claude Opus 4.6",
-    "claudesonnet46":  "Claude Sonnet 4.6",
-    "claudehaiku45":   "Claude Haiku 4.5",
+    "claudeopus47": "Claude Opus 4.7",
+    "claudeopus46": "Claude Opus 4.6",
+    "claudesonnet46": "Claude Sonnet 4.6",
+    "claudehaiku45": "Claude Haiku 4.5",
 }
 
 
@@ -230,4 +222,3 @@ def count_tokens(text: str, model: str = "") -> int:
     if result is None:
         result = _fallback_estimate(text)
     return _apply_multiplier(model, result)
-

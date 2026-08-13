@@ -98,14 +98,16 @@ def _deserialize_tool_result(d: dict) -> tools.ToolResult:
     img = d.get("image_path")
     if img:
         try:
-            from pathlib import Path as _P  # noqa: N814
+            from pathlib import Path as _P
+
             r.image_path = _P(img)
         except Exception:
             logger.debug("render_store: image_path deserialize failed", exc_info=True)
     imgs = d.get("image_paths")
     if imgs:
         try:
-            from pathlib import Path as _P  # noqa: N814
+            from pathlib import Path as _P
+
             r.image_paths = [_P(p) for p in imgs]
         except Exception:
             logger.debug("render_store: image_paths deserialize failed", exc_info=True)
@@ -130,26 +132,38 @@ class RenderStore:
     def add_user(self, text: str, status: str = "") -> RenderItem:
         return self.add("user", {"text": text or "", "status": status or ""})
 
-    def add_assistant_block(self, text: str, subtitle: str = "", message_num: int = 0) -> RenderItem:
-        return self.add("assistant", {
-            "text": text or "",
-            "subtitle": subtitle or "",
-            "message_num": int(message_num or 0),
-        })
+    def add_assistant_block(
+        self, text: str, subtitle: str = "", message_num: int = 0
+    ) -> RenderItem:
+        return self.add(
+            "assistant",
+            {
+                "text": text or "",
+                "subtitle": subtitle or "",
+                "message_num": int(message_num or 0),
+            },
+        )
 
-    def add_tool(self, call: tools.ToolCall, result: tools.ToolResult | None,
-                 subtitle: str = "") -> RenderItem:
-        return self.add("tool", {
-            "call": _serialize_tool_call(call) if call else None,
-            "result": _serialize_tool_result(result) if result else None,
-            "subtitle": subtitle or "",
-        })
+    def add_tool(
+        self, call: tools.ToolCall, result: tools.ToolResult | None, subtitle: str = ""
+    ) -> RenderItem:
+        return self.add(
+            "tool",
+            {
+                "call": _serialize_tool_call(call) if call else None,
+                "result": _serialize_tool_result(result) if result else None,
+                "subtitle": subtitle or "",
+            },
+        )
 
     def add_command_only(self, call: tools.ToolCall, subtitle: str = "") -> RenderItem:
-        return self.add("command_only", {
-            "call": _serialize_tool_call(call) if call else None,
-            "subtitle": subtitle or "",
-        })
+        return self.add(
+            "command_only",
+            {
+                "call": _serialize_tool_call(call) if call else None,
+                "subtitle": subtitle or "",
+            },
+        )
 
     def add_plan(
         self,
@@ -187,7 +201,7 @@ class RenderStore:
         store = cls()
         if not isinstance(d, dict):
             return store
-        for raw in (d.get("items") or []):
+        for raw in d.get("items") or []:
             if isinstance(raw, dict):
                 store.items.append(RenderItem.from_dict(raw))
         return store

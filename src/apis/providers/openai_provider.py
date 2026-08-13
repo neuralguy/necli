@@ -24,8 +24,7 @@ def create_openai_provider(
     api_key = get_api_key(definition.id)
     if not api_key and definition.requires_auth:
         raise ValueError(
-            f"API key not set for provider '{definition.id}'. "
-            "Use /api → provider → Set key."
+            f"API key not set for provider '{definition.id}'. Use /api → provider → Set key."
         )
 
     provider = create_custom_provider(definition, model_id, **kwargs)

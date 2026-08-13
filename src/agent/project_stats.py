@@ -2,6 +2,8 @@
 
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,19 +12,92 @@ from logger import logger
 
 # Расширения, которые считаем «кодом» для подсчёта строк
 _CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte",
-    ".java", ".kt", ".go", ".rs", ".c", ".cpp", ".h", ".hpp",
-    ".rb", ".php", ".sh", ".bash", ".zsh", ".fish",
-    ".css", ".scss", ".less", ".html", ".xml", ".svg",
-    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
-    ".sql", ".graphql", ".proto", ".md", ".rst", ".txt",
-    ".lua", ".r", ".jl", ".ex", ".exs", ".erl", ".hs",
-    ".swift", ".m", ".mm", ".cs", ".fs", ".scala",
-    ".tf", ".hcl", ".nix", ".dhall",
-    ".dockerfile", ".mk", ".cmake",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".vue",
+    ".svelte",
+    ".java",
+    ".kt",
+    ".go",
+    ".rs",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".rb",
+    ".php",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".fish",
+    ".css",
+    ".scss",
+    ".less",
+    ".html",
+    ".xml",
+    ".svg",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".sql",
+    ".graphql",
+    ".proto",
+    ".md",
+    ".rst",
+    ".txt",
+    ".lua",
+    ".r",
+    ".jl",
+    ".ex",
+    ".exs",
+    ".erl",
+    ".hs",
+    ".swift",
+    ".m",
+    ".mm",
+    ".cs",
+    ".fs",
+    ".scala",
+    ".tf",
+    ".hcl",
+    ".nix",
+    ".dhall",
+    ".dockerfile",
+    ".mk",
+    ".cmake",
 }
 
 # IGNORE_DIRS — теперь канонический набор из config (через is_ignored_dir).
+
+# Полный count_project_stats читает КАЖДЫЙ текстовый файл целиком. Эта
+# статистика используется только как информационная строка в tool-results,
+# поэтому пересчитывать весь проект на каждом internal agent round бессмысленно.
+_STATS_CACHE_TTL_SEC = 30.0
+_STATS_CACHE_MAX_ENTRIES = 64
+_STATS_CACHE: dict[str, tuple[float, tuple[int, int]]] = {}
+_STATS_CACHE_LOCK = threading.Lock()
+
+
+def _cached_project_stats(working_dir: str) -> tuple[int, int]:
+    key = os.path.abspath(working_dir)
+    now = time.monotonic()
+    with _STATS_CACHE_LOCK:
+        cached = _STATS_CACHE.get(key)
+        if cached is not None and (now - cached[0]) < _STATS_CACHE_TTL_SEC:
+            return cached[1]
+    value = count_project_stats(working_dir)
+    with _STATS_CACHE_LOCK:
+        _STATS_CACHE[key] = (time.monotonic(), value)
+        while len(_STATS_CACHE) > _STATS_CACHE_MAX_ENTRIES:
+            oldest = min(_STATS_CACHE, key=lambda k: _STATS_CACHE[k][0])
+            _STATS_CACHE.pop(oldest, None)
+    return value
 
 
 def count_project_stats(working_dir: str) -> tuple[int, int]:
@@ -31,34 +106,46 @@ def count_project_stats(working_dir: str) -> tuple[int, int]:
     Returns:
         (file_count, total_lines)
     """
-    root = Path(working_dir)
-    if not root.is_dir():
-        return 0, 0
+    from logger import debug, log_span
 
-    file_count = 0
-    total_lines = 0
+    with log_span("project.stats", working_dir=working_dir):
+        root = Path(working_dir)
+        if not root.is_dir():
+            return 0, 0
 
-    for dirpath, dirnames, filenames in os.walk(root):
-        # Фильтруем игнорируемые директории in-place
-        dirnames[:] = [d for d in dirnames if not is_ignored_dir(d)]
+        file_count = 0
+        total_lines = 0
 
-        for fname in filenames:
-            fpath = Path(dirpath) / fname
-            suffix = fpath.suffix.lower()
-            # Файлы без расширения, но с известным именем
-            if suffix not in _CODE_EXTENSIONS:  # noqa: SIM102
-                if fname.lower() not in ("makefile", "dockerfile", "rakefile", "gemfile", "procfile"):
+        for dirpath, dirnames, filenames in os.walk(root):
+            # Фильтруем игнорируемые директории in-place
+            dirnames[:] = [d for d in dirnames if not is_ignored_dir(d)]
+
+            for fname in filenames:
+                fpath = Path(dirpath) / fname
+                suffix = fpath.suffix.lower()
+                # Файлы без расширения, но с известным именем
+                if suffix not in _CODE_EXTENSIONS:
+                    if fname.lower() not in (
+                        "makefile",
+                        "dockerfile",
+                        "rakefile",
+                        "gemfile",
+                        "procfile",
+                    ):
+                        continue
+
+                try:
+                    content = fpath.read_text(encoding="utf-8", errors="ignore")
+                    lines = content.count("\n") + (
+                        1 if content and not content.endswith("\n") else 0
+                    )
+                    file_count += 1
+                    total_lines += lines
+                except (OSError, PermissionError):
                     continue
 
-            try:
-                content = fpath.read_text(encoding="utf-8", errors="ignore")
-                lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
-                file_count += 1
-                total_lines += lines
-            except (OSError, PermissionError):
-                continue
-
-    return file_count, total_lines
+        debug("project.stats.complete", file_count=file_count, total_lines=total_lines)
+        return file_count, total_lines
 
 
 @dataclass
@@ -80,7 +167,9 @@ class StepTracker:
                 self.files_changed.add(new_path)
             logger.debug(
                 "StepTracker: {} touched={} files_total={}",
-                tool_name, path or new_path, len(self.files_changed),
+                tool_name,
+                path or new_path,
+                len(self.files_changed),
             )
 
         if tool_name == "patch_file":
@@ -88,8 +177,6 @@ class StepTracker:
 
         elif tool_name == "create_file":
             self._parse_create_stats(result_output)
-
-
 
     def _parse_patch_stats(self, output: str):
         """Парсит summary patch_file: '✓ path updated (3 changed, +5 added, -2 removed)'."""
@@ -148,7 +235,7 @@ def build_stats_line(working_dir: str, tracker: StepTracker) -> str:
 
     Формат: [Project: 12 files, 6,340 lines | This step: 2 files changed, +380 -15]
     """
-    file_count, total_lines = count_project_stats(working_dir)
+    file_count, total_lines = _cached_project_stats(working_dir)
     parts = [format_project_stats(file_count, total_lines)]
     step = tracker.format_step_stats()
     if step:

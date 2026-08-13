@@ -2,10 +2,14 @@
 
 import logging
 import os
+import time
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from planner import Plan
 from system_prompt import build_tool_results
+
+if TYPE_CHECKING:
+    from planner import Plan
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +24,11 @@ _HISTORY_TRUNCATE_TAIL = 500
 def truncate_history_content(content: str) -> str:
     """Урезает длинное сообщение истории: первые 1000 + ...(truncated)... + последние 500."""
     if len(content) > _HISTORY_TRUNCATE_LIMIT:
-        return content[:_HISTORY_TRUNCATE_HEAD] + "\n...(truncated)...\n" + content[-_HISTORY_TRUNCATE_TAIL:]
+        return (
+            content[:_HISTORY_TRUNCATE_HEAD]
+            + "\n...(truncated)...\n"
+            + content[-_HISTORY_TRUNCATE_TAIL:]
+        )
     return content
 
 
@@ -34,6 +42,7 @@ def _truncate(text: str, max_len: int | None = None) -> str:
     if max_len < 160 or len(text) <= max_len:
         return text
     from agent.result_cache import store as _store_full
+
     rid = _store_full(text)
     half = max_len // 2 - 80
     head = text[:half]
@@ -71,7 +80,7 @@ async def gather_dir_context(working_dir: str) -> str:
     напоминание о его наличии, если файл есть.
     """
     agents_path = os.path.join(working_dir, "AGENTS.md")
-    if os.path.isfile(agents_path):  # noqa: ASYNC240
+    if os.path.isfile(agents_path):
         return (
             "Note: AGENTS.md exists in the working dir (project-specific rules, "
             "pitfalls, conventions). Read it via read when a task touches "
@@ -119,16 +128,37 @@ async def build_first_message(
     (отсюда). Теперь тело первого сообщения — только контекст директории, план,
     история и собственно текст пользователя.
     """
+    from logger import log_span
+
+    with log_span("context.build", message_type="first_message"):
+        return await _build_first_message_impl(
+            user_text,
+            working_dir,
+            history=history,
+            plan=plan,
+            session_dir=session_dir,
+        )
+
+
+async def _build_first_message_impl(
+    user_text: str,
+    working_dir: str,
+    history: list[dict] | None = None,
+    plan: "Plan | None" = None,
+    session_dir: str | None = None,
+) -> str:
     dir_context = await gather_dir_context(working_dir)
     parts: list[str] = []
     if dir_context:
         parts.append(dir_context)
     if plan and plan.steps and not plan.is_complete:
         from system_prompt import ACTIVE_PLAN_NOTICE
+
         parts.append("\n" + ACTIVE_PLAN_NOTICE.format(plan=plan.render_for_context()))
     if session_dir:
         try:
             from session.notes import format_session_notes_block
+
             notes = format_session_notes_block(session_dir)
             if notes:
                 parts.append("\n" + notes)
@@ -136,6 +166,7 @@ async def build_first_message(
             logger.debug("session notes load failed", exc_info=True)
     if history:
         from system_prompt import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
+
         parts.append("\n" + CONVERSATION_CONTEXT_HEADER)
         for msg in history:
             role = msg["role"].upper()
@@ -143,6 +174,7 @@ async def build_first_message(
             parts.append(f"{role}:\n{cnt}")
         parts.append(CONVERSATION_CONTEXT_FOOTER)
     from skills import consume_pending_messages
+
     skill_msgs = consume_pending_messages()
     if skill_msgs:
         parts.append("\n" + "\n\n".join(skill_msgs))
@@ -193,6 +225,8 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
     Возвращает "" если добавок нет.
     """
     parts: list[str] = []
+    _extras_started = time.monotonic()
+    _timings: dict[str, float] = {}
 
     if plan and plan.steps:
         parts.append(plan.render_for_context())
@@ -200,8 +234,11 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
     # Проверка TypeScript на изменённых файлах раунда.
     if working_dir and step_tracker and step_tracker.files_changed:
         try:
+            _t = time.monotonic()
             from tools.file_ops.project_check import run_project_check
+
             check_block = run_project_check(working_dir, set(step_tracker.files_changed))
+            _timings["project_check"] = time.monotonic() - _t
             if check_block:
                 parts.append(check_block)
         except Exception as e:
@@ -210,11 +247,13 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
     # Внешние изменения файлов (не от агента) с прошлого раунда
     if ctx is not None and working_dir:
         try:
+            _t = time.monotonic()
             from agent.fs_watcher import (
                 diff_snapshots,
                 format_changes_block,
                 take_snapshot_throttled,
             )
+
             new_snap = take_snapshot_throttled(working_dir)
             old_snap = ctx.last_fs_snapshot
             if old_snap is not None:
@@ -225,17 +264,31 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
                     if block:
                         parts.append(block)
             ctx.last_fs_snapshot = new_snap
+            _timings["fs_snapshot"] = time.monotonic() - _t
         except Exception as e:
             logger.debug("fs_watcher failed: %s", e)
 
-    # Статистика проекта и шага
-    if working_dir:
+    # Статистика проекта и шага не нужна в headless run: она увеличивает
+    # контекст и не влияет на выполнение инструментов.
+    if working_dir and not (ctx and ctx.suppress_project_stats):
+        _t = time.monotonic()
         from agent.project_stats import StepTracker, build_stats_line
+
         tracker = step_tracker or StepTracker()
         stats_line = build_stats_line(working_dir, tracker)
+        _timings["project_stats"] = time.monotonic() - _t
         if stats_line:
             parts.append(f"[{stats_line}]")
 
+    _total = time.monotonic() - _extras_started
+    if _total >= 0.25:
+        logger.warning(
+            "slow result extras: total=%.3fs project_check=%.3fs fs=%.3fs stats=%.3fs",
+            _total,
+            _timings.get("project_check", 0.0),
+            _timings.get("fs_snapshot", 0.0),
+            _timings.get("project_stats", 0.0),
+        )
     return "\n\n".join(parts)
 
 
@@ -252,10 +305,5 @@ def _build_result_message(results, plan=None, working_dir=None, step_tracker=Non
 
 def build_continue_message() -> str:
     from system_prompt import CONTINUE_MESSAGE
+
     return CONTINUE_MESSAGE
-
-
-
-
-
-
