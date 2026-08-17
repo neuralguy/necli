@@ -12,9 +12,16 @@ from rich.text import Text
 from agent.display import (
     SPINNER_FRAMES,
     TOOL_DISPLAY,
+    is_block_expanded,
 )
 from agent.markdown import ResponseMarkdown
-from agent.think import compact_thought_preview, render_thinking_summary
+from agent.think import (
+    append_expand_hint,
+    collapsed_thought_text,
+    compact_thought_preview,
+    render_thinking_summary,
+)
+from config.display import is_block_full
 from config.i18n import format_duration
 from config.i18n import t as _i18n
 from config.themes import t
@@ -34,7 +41,7 @@ def _starts_table(text: str) -> bool:
 
 def _is_markdown_block(first_line: str, rest: str) -> bool:
     return bool(
-        re.match(r"^(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|~~~)", first_line)
+        re.match(r"^\s*(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|~~~)", first_line)
         or _starts_table(first_line + ("\n" + rest if rest else ""))
     )
 
@@ -350,8 +357,7 @@ def _render_compact_write_preview(
     from agent.display import COMPACT_PREVIEW_LINES
     from agent.syntax import _EXT_LEXER_MAP
 
-    cpl = COMPACT_PREVIEW_LINES() if callable(COMPACT_PREVIEW_LINES) else COMPACT_PREVIEW_LINES
-
+    cpl = None if is_block_expanded(tool_name) else (COMPACT_PREVIEW_LINES() if callable(COMPACT_PREVIEW_LINES) else COMPACT_PREVIEW_LINES)
     display_name, color = TOOL_DISPLAY.get(tool_name, ("Tool", t("warning")))
     raw_lines = display_text.split("\n")
     if raw_lines and raw_lines[-1] == "":
@@ -369,7 +375,7 @@ def _render_compact_write_preview(
     lexer = _EXT_LEXER_MAP.get(ext_m.group(1).lower(), "text") if ext_m else "text"
 
     tail_n = cpl
-    tail_lines = raw_lines[-tail_n:] if total > tail_n else raw_lines
+    tail_lines = raw_lines[-tail_n:] if cpl is not None and total > tail_n else raw_lines
     start_idx = total - len(tail_lines) + 1
     num_w = len(str(total))
 
@@ -397,6 +403,70 @@ def _render_compact_write_preview(
     return Group(*parts)
 
 
+def _patch_preview_args_from_body(body: str, file_path: str | None) -> dict | None:
+    """Extract patch arguments from fenced sections or native JSON.
+
+    Native tool calls used to render only the Patch(...) header because this
+    preview understood only --- FIND/REPLACE --- markers.
+    """
+    matches = list(_PATCH_SECTION_RE.finditer(body))
+    if matches:
+        sections: list[tuple[str, str]] = []
+        for i, match in enumerate(matches):
+            kind = match.group(1)
+            start = match.end()
+            if start < len(body) and body[start] == "\n":
+                start += 1
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+            sections.append((kind, body[start:end].rstrip("\n")))
+
+        args: dict = {"path": file_path or ""}
+        pairs: list[dict[str, str]] = []
+        pending_find = None
+        for kind, content in sections:
+            if kind == "INSERT":
+                args["insert"] = content
+                return args
+            if kind == "FIND":
+                pending_find = content
+            elif kind == "REPLACE" and pending_find is not None:
+                pairs.append({"find": pending_find, "replace": content})
+                pending_find = None
+        if pending_find is not None:
+            pairs.append({"find": pending_find, "replace": ""})
+        if len(pairs) == 1:
+            args.update(pairs[0])
+        elif pairs:
+            args["patches"] = pairs
+        return args if len(args) > 1 else None
+
+    stripped = (body or "").strip()
+    data = None
+    if stripped.startswith("{"):
+        try:
+            decoded = json.loads(stripped)
+            if isinstance(decoded, dict):
+                data = decoded
+        except json.JSONDecodeError:
+            # While a native call is streaming, complete scalar string
+            # arguments are still useful for a live find/replace preview.
+            partial = dict(_partial_json_arguments(body))
+            if "find" in partial and "replace" in partial:
+                data = partial
+            elif "insert" in partial:
+                data = partial
+    if not isinstance(data, dict):
+        return None
+
+    args = {"path": str(data.get("path") or file_path or "")}
+    for key in ("find", "replace", "patches", "insert", "line", "delete_lines"):
+        if key in data:
+            args[key] = data[key]
+    if not any(key in args for key in ("find", "patches", "insert", "delete_lines")):
+        return None
+    return args
+
+
 def _render_compact_patch_preview(
     file_path: str | None,
     body: str,
@@ -412,44 +482,8 @@ def _render_compact_patch_preview(
 
     header = _tool_header(display_name, color, file_path, elapsed_seconds, spinner_frame)
 
-    # Парсим текущие секции из частичного body
-    matches = list(_PATCH_SECTION_RE.finditer(body))
-    sections: list[tuple[str, str]] = []
-    for i, m in enumerate(matches):
-        kind = m.group(1)
-        start = m.end()
-        if start < len(body) and body[start] == "\n":
-            start += 1
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-        content = body[start:end].rstrip("\n")
-        sections.append((kind, content))
-
-    args: dict = {"path": file_path or ""}
-    pairs = []
-    pending_find = None
-    insert_section = None
-    for kind, content in sections:
-        if kind == "INSERT":
-            insert_section = content
-            break
-        if kind == "FIND":
-            pending_find = content
-        elif kind == "REPLACE" and pending_find is not None:
-            pairs.append({"find": pending_find, "replace": content})
-            pending_find = None
-    # незакрытая пара FIND без REPLACE — покажем как чистый минус
-    if pending_find is not None:
-        pairs.append({"find": pending_find, "replace": ""})
-
-    if insert_section is not None:
-        args["insert"] = insert_section
-    elif len(pairs) == 1:
-        args["find"] = pairs[0]["find"]
-        args["replace"] = pairs[0]["replace"]
-    elif len(pairs) > 1:
-        args["patches"] = pairs
-    else:
-        # ни одной секции — показываем только заголовок
+    args = _patch_preview_args_from_body(body, file_path)
+    if args is None:
         return Group(header)
 
     fake_result = _tools.ToolResult(
@@ -614,7 +648,7 @@ def render_partial_tool(
         lang = "text"
 
     cursor = ui.get("symbols.cursor", "\u258c")
-    compact = _compact_stream_block(display_text)
+    compact = display_text if is_block_expanded(tool_name) else _compact_stream_block(display_text)
     if tool_name == "shell" and "\n" not in display_text:
         code = f"$ {compact}{cursor}"
     else:
@@ -667,6 +701,7 @@ def render_reasoning_panel(text: str, streaming: bool = False, elapsed: float | 
         return render_thinking_summary(full, elapsed=elapsed)
 
     if is_compact:
+        expanded = is_block_full("reasoning", compact=not is_expanded_preview())
         header = Text()
         header.append(f"{emoji} {label}", style=f"bold {t('magenta')}")
         prefix = ui.get("symbols.summary_prefix", "⎿  ")
@@ -678,7 +713,7 @@ def render_reasoning_panel(text: str, streaming: bool = False, elapsed: float | 
             terminal_width = 80
         available = max(20, terminal_width - 6)
 
-        if not is_expanded_preview():
+        if not expanded:
             if elapsed is not None:
                 header.append(" ")
                 header.append(
@@ -687,21 +722,19 @@ def render_reasoning_panel(text: str, streaming: bool = False, elapsed: float | 
                         style=t("success"),
                     )
                 )
-            flat = " ".join(full.split())
+            formatted = collapsed_thought_text(full, base_style="dim italic")
             preview, expand_hint = compact_thought_preview(
-                flat,
+                formatted.plain,
                 prefix,
                 terminal_width,
                 available,
             )
             summary = Text("   " + prefix, style=muted)
+            summary.append_text(formatted[: len(preview)])
             if expand_hint is not None:
-                summary.append(preview, style="dim italic")
                 if preview:
                     summary.append(" ", style="dim italic")
-                summary.append(expand_hint, style="dim italic")
-            else:
-                summary.append(preview, style="dim italic")
+                append_expand_hint(summary, expand_hint, base_style="dim italic")
             return Group(header, summary)
 
         body = ThoughtMarkdown(raw, style=muted)

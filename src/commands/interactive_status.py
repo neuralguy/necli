@@ -208,13 +208,32 @@ def build_status_line(state, extra: str = "") -> str:
         # Читаем при каждой пересборке строки: списание за завершившийся запрос
         # сразу отражается в рамке поля ввода.
         from apis.config import get_provider_balance, get_router_balance
+        from apis.registry import get_definition
 
-        balance = (
-            get_router_balance(config.get_active_api_model())
-            if _api_id == "routers"
-            else get_provider_balance(_api_id)
-        )
-        provider_balance = f" · {balance:g}$"
+        definition = get_definition(_api_id)
+        if definition is not None and definition.type == "chatgpt":
+            from apis.chatgpt_auth import chatgpt_auth_status
+            from apis.chatgpt_usage import get_cached_chatgpt_usage
+            from config.i18n import t as _
+
+            usage = get_cached_chatgpt_usage()
+            authenticated = bool(chatgpt_auth_status().get("authenticated"))
+            if authenticated and usage:
+                provider_balance = " · " + _(
+                    "api.chatgpt_weekly_remaining",
+                    percent=f"{float(usage['remaining_percent']):g}",
+                )
+            elif authenticated:
+                provider_balance = " · " + _("api.chatgpt_weekly_unavailable")
+            else:
+                provider_balance = ""
+        else:
+            balance = (
+                get_router_balance(config.get_active_api_model())
+                if _api_id == "routers"
+                else get_provider_balance(_api_id)
+            )
+            provider_balance = f" · {balance:g}$"
     else:
         provider_balance = ""
 
@@ -272,8 +291,8 @@ def build_status_line(state, extra: str = "") -> str:
         git_s = ""
         line = render(cur_usage, think, extra_str, git_s)
 
-    # 6) минимальный fallback: модель + прогресс контекста (хвост тоже отбрасываем)
+    # 6) минимальный fallback: модель с лимитом/балансом + прогресс контекста.
     if _visible_len(line) > budget:
-        line = f"[{state.cur_model}] · [{ctx_str}]"
+        line = f"[{state.cur_model}{provider_balance}] · [{ctx_str}]"
 
     return line

@@ -28,8 +28,10 @@ from rich.cells import cell_len, chop_cells
 from rich.text import Text
 
 from config import settings as _settings
+from config.display import is_block_full
 from config.themes import t as _theme
 from config.ui import ui
+from ui.text_styles import inline_markdown_text, styled_count_text
 
 # Кэш для _think_enabled: значение читается на каждом chunk LiveStream
 # (parse_partial_thought + strip_think_blocks + parse_think_blocks),
@@ -58,6 +60,48 @@ def _plain_thought(text: str) -> str:
         line = _MD_INLINE_RE.sub(r"\2", line)
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _collapsed_thought_source(text: str) -> str:
+    """Flatten block Markdown while preserving inline emphasis for compact UI."""
+    lines: list[str] = []
+    in_fence = False
+    for line in (text or "").splitlines():
+        if _MD_FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        line = re.sub(r"^\s*[-*+]\s+\[[ xX]\]\s+", "", line)
+        line = _MD_LINE_PREFIX_RE.sub("", line)
+        if line.strip():
+            lines.append(line.strip())
+    return " ".join(" ".join(lines).split())
+
+
+def collapsed_thought_text(text: str, *, base_style: str) -> Text:
+    """One-line Rich Text preserving inline markdown emphasis."""
+    source = _collapsed_thought_source(text)
+    return inline_markdown_text(
+        source,
+        base_style=base_style,
+        code_style=_theme("info"),
+    )
+
+
+def append_expand_hint(target: Text, hint: str, *, base_style: str) -> None:
+    """Append an expand hint with its hidden-line count emphasized."""
+    match = re.search(r"\d+", hint or "")
+    if not match:
+        target.append(hint, style=base_style)
+        return
+    count = int(match.group(0))
+    target.append_text(
+        styled_count_text(
+            hint,
+            count,
+            base_style=base_style,
+            number_style=f"bold {_theme('info')}",
+        )
+    )
 
 
 def _settings_version() -> int:
@@ -296,9 +340,13 @@ def render_thinking_summary(
         "   " + ui.get("symbols.summary_prefix", "⎿  "),
         style=_theme("dim_text"),
     )
-    summary.append(
-        _i18n("compact.think_stream", n=lines),
-        style=f"italic {_theme('dim_text')}",
+    summary.append_text(
+        styled_count_text(
+            _i18n("compact.think_stream", n=lines),
+            lines,
+            base_style=f"italic {_theme('dim_text')}",
+            number_style=f"bold {_theme('info')}",
+        )
     )
     return Group(header, summary)
 
@@ -360,6 +408,7 @@ def render_think_static(
         return render_thinking_summary(raw_text, elapsed=elapsed)
 
     if is_compact:
+        expanded = is_block_full("think", compact=not is_expanded_preview())
         from rich.console import Group
         from rich.table import Table
 
@@ -367,11 +416,7 @@ def render_think_static(
 
         header = Text()
         header.append(f"{emoji} {label}", style=f"bold {_theme('magenta')}")
-        preview_text = "\n".join(
-            line
-            for line in "\n\n".join(step.text.strip() for step in log.steps).split("\n")
-            if line.strip()
-        )
+        preview_source = "\n\n".join(step.raw_text or step.text for step in log.steps)
         prefix = ui.get("symbols.summary_prefix", "⎿  ")
         try:
             import os
@@ -381,7 +426,7 @@ def render_think_static(
             terminal_width = 80
         available = max(20, terminal_width - 6)
 
-        if not is_expanded_preview():
+        if not expanded:
             header.append(" ")
             header.append(
                 Text(
@@ -389,21 +434,19 @@ def render_think_static(
                     style=_theme("success"),
                 )
             )
-            flat = " ".join(preview_text.split())
+            formatted = collapsed_thought_text(preview_source, base_style="dim italic")
             preview, expand_hint = compact_thought_preview(
-                flat,
+                formatted.plain,
                 prefix,
                 terminal_width,
                 available,
             )
             summary = Text("   " + prefix, style=muted)
+            summary.append_text(formatted[: len(preview)])
             if expand_hint is not None:
-                summary.append(preview, style="dim italic")
                 if preview:
                     summary.append(" ", style="dim italic")
-                summary.append(expand_hint, style="dim italic")
-            else:
-                summary.append(preview, style="dim italic")
+                append_expand_hint(summary, expand_hint, base_style="dim italic")
             return Group(header, summary)
 
         body = ThoughtMarkdown(raw_text, style=muted)

@@ -195,10 +195,13 @@ def hex_to_rgba(color: str | None, opacity: float = 1.0) -> tuple[int, int, int,
         return 0, 0, 0, 0
     if len(value) == 3:
         value = "".join(c * 2 for c in value)
-    value = (value + "00000000")[:8]
+    # Six-digit RGB is opaque. Only an explicitly supplied 8-digit value
+    # carries its own alpha channel.
+    explicit_alpha = len(value) >= 8
+    value = (value + "000000")[:8] if explicit_alpha else value[:6]
     try:
         r, g, b = int(value[:2], 16), int(value[2:4], 16), int(value[4:6], 16)
-        a = int(value[6:8], 16) if len(value) >= 8 else 255
+        a = int(value[6:8], 16) if explicit_alpha else 255
     except ValueError:
         return 0, 0, 0, 255
     return r, g, b, round(a * max(0.0, min(1.0, opacity)))

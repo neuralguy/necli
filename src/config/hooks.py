@@ -32,13 +32,13 @@ def _normalize_event_value(raw: Any) -> list[HookMatcher]:
         if "hooks" in item:
             try:
                 matchers.append(HookMatcher.from_dict(item))
-            except (ValueError, KeyError, TypeError) as e:
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
                 logger.warning("hooks: skipping bad matcher: %s", e)
         elif "type" in item or "command" in item or "url" in item:
             # Плоский hook без обёртки — собираем под matcher '*'.
             try:
                 flat.append(HookSpec.from_dict(item))
-            except (ValueError, KeyError, TypeError) as e:
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
                 logger.warning("hooks: skipping bad hook: %s", e)
     if flat:
         matchers.append(HookMatcher(matcher="*", hooks=flat))

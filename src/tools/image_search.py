@@ -338,7 +338,6 @@ def execute_image_search(call: ToolCall) -> ToolResult:
         all_lines.append(f"[Query {qidx + 1}: {query}] — {summary}")
         all_lines.append("")
 
-        dl_by_index = {d["index"]: d for d in downloaded}
         for i, r in enumerate(results):
             dims = ""
             if r["width"] and r["height"]:
@@ -353,7 +352,7 @@ def execute_image_search(call: ToolCall) -> ToolResult:
             if r["source"] or prov:
                 all_lines.append(f"      source: {r['source']}{prov}")
 
-            d = dl_by_index.get(i)
+            d = downloaded[i] if i < len(downloaded) else None
             if d is not None:
                 if d["ok"]:
                     fmt = f" [{d['format']}]" if d.get("format") else ""

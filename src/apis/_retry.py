@@ -100,7 +100,7 @@ def _backoff_delay(attempt: int, exc: Exception) -> float:
     return max(_RETRY_DELAYS[idx], _MIN_RETRY_DELAY)
 
 
-async def with_throttle_retry(coro_factory, on_retry=None):
+async def with_throttle_retry(coro_factory, on_retry=None, on_retry_attempt=None):
     for attempt in range(_MAX_RETRIES):
         try:
             return await coro_factory()
@@ -113,6 +113,8 @@ async def with_throttle_retry(coro_factory, on_retry=None):
                 logger.warning(
                     f"API throttled, retry in {delay:.1f}s (attempt {attempt + 1}/{_MAX_RETRIES}): {e}"
                 )
+                if on_retry_attempt:
+                    on_retry_attempt(attempt + 1, _MAX_RETRIES)
                 if on_retry:
                     on_retry()
                 await asyncio.sleep(delay)
@@ -137,7 +139,12 @@ def _merge_stream_text(current: str, piece: str) -> str:
 
 
 async def stream_with_throttle_retry(
-    astream_factory, on_chunk, on_retry=None, on_tool_chunk=None, on_reasoning_chunk=None
+    astream_factory,
+    on_chunk,
+    on_retry=None,
+    on_retry_attempt=None,
+    on_tool_chunk=None,
+    on_reasoning_chunk=None,
 ):
     """Streams text content with throttle retry.
 
@@ -327,6 +334,8 @@ async def stream_with_throttle_retry(
                 logger.warning(
                     f"API stream throttled, retry in {delay:.1f}s (attempt {attempt + 1}/{_MAX_RETRIES}): {e}"
                 )
+                if on_retry_attempt:
+                    on_retry_attempt(attempt + 1, _MAX_RETRIES)
                 if on_retry:
                     on_retry()
                 await asyncio.sleep(delay)

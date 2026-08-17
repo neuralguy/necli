@@ -217,7 +217,7 @@ class BaseProvider:
     def _credential_index(self, value: int) -> None:
         self._credential_index_ctx.set(int(value))
 
-    # ── Tool binding (заменяет LangChain bind_tools) ──
+    # ── Привязка инструментов ──
 
     def bind_tools(self, tools: list[dict], tool_choice: str = "auto") -> _BoundProvider:
         return _BoundProvider(self, list(tools), tool_choice)
@@ -720,7 +720,7 @@ class BaseProvider:
 
                     delta = choices[0].get("delta", {})
                     content = delta.get("content") or ""
-                    reasoning = delta.get("reasoning_content") or ""
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
                     if reasoning:
                         full_reasoning += reasoning
 
@@ -731,10 +731,10 @@ class BaseProvider:
 
                     # ВАЖНО: reasoning отдаём ТОЛЬКО как per-delta кусок в
                     # additional_kwargs. При слиянии чанков (final_chunk + chunk)
-                    # langchain конкатенирует строковые additional_kwargs →
-                    # получается полный текст рассуждения. Дублировать его ещё и
-                    # кумулятивно в response_metadata нельзя: при слиянии чанков
-                    # кумулятивные значения складывались бы повторно (double-count).
+                    # строковые additional_kwargs объединяются в полный текст
+                    # рассуждения. Дублировать его ещё и кумулятивно в
+                    # response_metadata нельзя: при слиянии чанков кумулятивные
+                    # значения складывались бы повторно (double-count).
                     yield AIMessageChunk(
                         content=content,
                         tool_call_chunks=tool_call_chunks,

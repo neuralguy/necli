@@ -49,6 +49,16 @@ def take_snapshot_throttled(working_dir: str) -> dict[str, tuple[float, int]]:
     return snap
 
 
+def refresh_snapshot(working_dir: str) -> dict[str, tuple[float, int]]:
+    """Создаёт свежий snapshot и синхронизирует throttled-кэш."""
+    key = os.path.abspath(working_dir)
+    snap = take_snapshot(working_dir)
+    with _SNAPSHOT_CACHE_LOCK:
+        _LAST_SNAPSHOT[key] = snap
+        _LAST_SNAPSHOT_AT[key] = time.monotonic()
+    return snap
+
+
 def take_snapshot(working_dir: str) -> dict[str, tuple[float, int]]:
     """Возвращает {relpath: (mtime, size)} для всех файлов проекта.
 

@@ -12,8 +12,8 @@ from rich.text import Text
 import tools
 from agent.display import (
     _w,
-    print_static,
 )
+from config.i18n import format_duration
 from config.themes import t
 from logger import logger
 
@@ -21,6 +21,9 @@ from logger import logger
 #: был rich Live с transient=True: спиннер исчезал, а итоговую шапку печатал
 #: show_tool_combined.
 _TOOL_ZONE = "tool"
+
+#: Порог появления индикатора: мгновенные read/grep не должны мелькать кадром.
+_TOOL_ZONE_DELAY_SEC = 1.5
 
 _WRITE_TIME_RE = re.compile(r"@@WRITE_TIME=([\d.]+)@@")
 
@@ -74,6 +77,47 @@ def _execution_error(call: tools.ToolCall, error: Exception) -> tools.ToolResult
 _SELF_RENDERING_TOOLS = frozenset({"subagent"})
 
 
+def _raise_tool_zone(call: tools.ToolCall, detail: str):
+    """Поднять живую строку «инструмент выполняется» над блоком Working.
+
+    Зона остаётся до конца вызова; итоговый статичный блок печатает
+    show_tool_combined. Кадр рендерится callable'ом и первые
+    _TOOL_ZONE_DELAY_SEC секунд пуст — быстрые вызовы не мельтешат.
+    Возвращает shell, если зона поднята (иначе None).
+    """
+    if call.tool_name in _SELF_RENDERING_TOOLS:
+        return None
+    from ui.shell import get_shell
+
+    shell = get_shell()
+    if shell is None:
+        return None
+    started = time.monotonic()
+    name = call.tool_name or "tool"
+
+    def _frame():
+        elapsed = time.monotonic() - started
+        if elapsed < _TOOL_ZONE_DELAY_SEC:
+            return ""
+        frame = Text()
+        frame.append("🛠 ", style=t("dim_text"))
+        frame.append(name, style=f"bold {t('accent')}")
+        if detail:
+            frame.append(f" · {detail}", style=t("dim_text"))
+        frame.append(" " + format_duration(elapsed, decimal_seconds=True), style="dim")
+        return frame
+
+    shell.set_dynamic(_TOOL_ZONE, _frame)
+    return shell
+
+
+def _clear_tool_zone(shell) -> None:
+    try:
+        shell.clear_dynamic(_TOOL_ZONE)
+    except Exception:
+        logger.debug("tool zone clear failed", exc_info=True)
+
+
 def _show_poll_result(result: tools.ToolResult):
     output = result.output.strip()
     if not output:
@@ -95,7 +139,9 @@ def _show_poll_result(result: tools.ToolResult):
     # \u0411\u0435\u0437 \u044d\u0442\u043e\u0439 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0440\u0438\u0441\u0443\u0435\u0442\u0441\u044f \u043f\u0443\u0441\u0442\u0430\u044f \u0440\u0430\u043c\u043a\u0430-\u043f\u0430\u043d\u0435\u043b\u044c \u256d\u2500\u2500\u256f.
     if not text.plain.strip():
         return
-    print_static(
+    from agent.display import print_block
+
+    print_block(
         Panel(
             text,
             border_style=t("accent"),
@@ -167,8 +213,6 @@ def _execute_single(
                 prompt_input.set_activity_status("poll")
             except Exception:
                 logger.debug("poll activity status set failed", exc_info=True)
-        if not _silent:
-            print_static(Text(""))
         from agent.working import current_working_round
 
         working = current_working_round()
@@ -188,6 +232,13 @@ def _execute_single(
             event_handler.on_tool_result(result)
         elif not _silent:
             _show_poll_result(result)
+        if working is not None:
+            try:
+                from ui.notifications import notify_turn_finished
+
+                notify_turn_finished(max(0.0, time.monotonic() - working.started_at), poll=True)
+            except Exception:
+                logger.debug("poll notification failed", exc_info=True)
         return result
     if event_handler is not None:
         event_handler.on_tool_start(call, subtitle=subtitle)
@@ -196,12 +247,15 @@ def _execute_single(
     from agent.working import current_working_round
 
     working = current_working_round()
+    detail = _working_detail(call.args)
     if working is not None:
-        detail = _working_detail(call.args)
         working.begin_call(call.tool_name, detail)
+    zone_shell = None if _silent else _raise_tool_zone(call, detail)
     try:
         result = tools.execute_call(call)
     finally:
+        if zone_shell is not None:
+            _clear_tool_zone(zone_shell)
         if working is not None:
             working.finish_call(call.tool_name)
     result.elapsed = time.monotonic() - t0
@@ -283,21 +337,30 @@ def _execute_single_safe(
         return _execution_error(call, error)
 
 
+def _scan_group_indices(calls: list[tools.ToolCall]) -> list[int]:
+    """Индексы read/grep вызовов батча: их блоки сливаются в один.
+
+    Порог >= 2 — единственный read/grep печатается обычным блоком. Смешанные
+    серии (read + grep рядом) тоже сливаются: это одна «сканирующая» фаза
+    агента, ей не нужно N отдельных блоков.
+    """
+    indices = [i for i, call in enumerate(calls) if call.tool_name in ("read", "grep")]
+    return indices if len(indices) >= 2 else []
+
+
 def execute_and_show(
     calls: list[tools.ToolCall], event_handler=None, subtitle: str = "", subtitle_factory=None
 ) -> list[tools.ToolResult]:
     # Сохраняем исходный порядок: results[idx] = result
     indexed: dict[int, tools.ToolResult] = {}
-    read_pairs: list[tuple[tools.ToolCall, tools.ToolResult]] = []
+    scan_pairs: list[tuple[tools.ToolCall, tools.ToolResult]] = []
 
     combine_reads = not getattr(event_handler, "single_line_tools", False)
+    merged = set(_scan_group_indices(calls)) if combine_reads else set()
+
     for idx, call in enumerate(calls):
-        if (
-            call.tool_name == "read"
-            and combine_reads
-            and sum(1 for c in calls if c.tool_name == "read") >= 2
-        ):
-            # Несколько read — без индивидуального отображения
+        if idx in merged:
+            # Соседние read/grep — без индивидуального отображения
             result = _execute_single_safe(
                 call,
                 event_handler,
@@ -305,7 +368,7 @@ def execute_and_show(
                 subtitle_factory=subtitle_factory,
                 suppress_display=True,
             )
-            read_pairs.append((call, result))
+            scan_pairs.append((call, result))
             indexed[idx] = result
         else:
             result = _execute_single_safe(
@@ -313,11 +376,11 @@ def execute_and_show(
             )
             indexed[idx] = result
 
-    # Показываем все read одним компактным блоком
-    if read_pairs:
-        from agent.display import show_read_combined
+    # Все read/grep батча — одним компактным блоком
+    if scan_pairs:
+        from agent.display import show_scan_combined
 
-        show_read_combined(read_pairs)
+        show_scan_combined(scan_pairs)
 
     results = [indexed[i] for i in range(len(calls))]
     return results
@@ -356,12 +419,12 @@ async def _execute_and_show_async_impl(
     agent_ctx = get_current_ctx()
     # Сохраняем исходный порядок: results[idx] = result
     indexed: dict[int, tools.ToolResult] = {}
-    read_pairs: list[tuple[tools.ToolCall, tools.ToolResult]] = []
-    n_read = sum(1 for c in calls if c.tool_name == "read")
     combine_reads = not getattr(event_handler, "single_line_tools", False)
+    merged = set(_scan_group_indices(calls)) if combine_reads else set()
+    scan_pairs: list[tuple[tools.ToolCall, tools.ToolResult]] = []
 
     for idx, call in enumerate(calls):
-        if call.tool_name == "read" and combine_reads and n_read >= 2:
+        if idx in merged:
             fn = partial(
                 _execute_single_safe,
                 call,
@@ -418,15 +481,15 @@ async def _execute_and_show_async_impl(
                 logger.debug("tool post-exec UI invalidate failed", exc_info=True)
         await asyncio.sleep(0)
 
-        if call.tool_name == "read" and combine_reads and n_read >= 2:
-            read_pairs.append((call, result))
+        if idx in merged:
+            scan_pairs.append((call, result))
         indexed[idx] = result
 
-    # Показываем все read одним компактным блоком
-    if read_pairs:
-        from agent.display import show_read_combined
+    # Все read/grep батча — одним компактным блоком
+    if scan_pairs:
+        from agent.display import show_scan_combined
 
-        show_read_combined(read_pairs)
+        show_scan_combined(scan_pairs)
 
     results = [indexed[i] for i in range(len(calls))]
 

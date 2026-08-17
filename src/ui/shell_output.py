@@ -10,6 +10,8 @@ from typing import Any
 
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.application.current import get_app_or_none
+from rich.console import Group
+from rich.text import Text
 
 from config.constants import Limits
 
@@ -98,11 +100,13 @@ class ShellOutputMixin:
         cached = self._dyn_cache
         if cached is not None and cached[0] == key:
             return cached[1]
-        # Working всегда последним: это стабильный блок, ближайший к полю
-        # ввода; стримящийся ответ и другие динамические элементы живут выше.
-        ordered = [k for k in self._dynamic_order if k != "working"]
+        # План всегда последним — непосредственно над полем ввода. Working
+        # и стримящиеся элементы остаются выше него.
+        ordered = [k for k in self._dynamic_order if k not in ("working", "plan")]
         if "working" in self._dynamic:
             ordered.append("working")
+        if "plan" in self._dynamic:
+            ordered.append("plan")
         parts = [(k, self.bridge.to_ansi(self._resolve(self._dynamic[k]), w)) for k in ordered]
         chunks: list[str] = []
         for dynamic_key, part in parts:
@@ -112,6 +116,10 @@ class ShellOutputMixin:
             # смысловыми блоками нужен пустой ряд, иначе нижняя строка мыслей
             # визуально слипается с заголовком Working.
             if dynamic_key == "working" and chunks:
+                chunks.append("\n")
+            # План — отдельный смысловой блок под Working, поэтому между ними
+            # сохраняем такую же отбивку, как между частичным выводом и Working.
+            elif dynamic_key == "plan" and "working" in self._dynamic and chunks:
                 chunks.append("\n")
             chunks.append(part if part.endswith("\n") else part + "\n")
         body = "".join(chunks).rstrip("\n")
@@ -208,6 +216,27 @@ class ShellOutputMixin:
                 logger.debug("print_static failed", exc_info=True)
 
         self._emit_static(_do)
+
+    def print_block(self, renderable: Any) -> None:
+        """Верхнеуровневый блок вывода: перед ним ровно одна пустая строка.
+
+        Вертикальный ритм строится на фактическом хвосте scrollback: если
+        предыдущий вывод уже кончился пустой строкой, вторая не добавляется,
+        если кончился контентом — добавляется ровно одна.
+        """
+        if not self._static_tail_blank:
+            renderable = Group(Text(""), renderable)
+        self.print_static(renderable)
+
+    def print_block_raw(self, text: str) -> None:
+        """Как print_block, но для готовой ANSI-строки (эхо ввода и т.п.)."""
+        if text and not self._static_tail_blank:
+            text = "\n" + text
+        self.print_static_raw(text)
+
+    def static_tail_blank(self) -> bool:
+        """Кончается ли scrollback пустой строкой (для агентской print_block)."""
+        return self._static_tail_blank
 
     def ensure_static_blank(self) -> None:
         """Оставить в конце scrollback ровно одну смысловую пустую строку.

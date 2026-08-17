@@ -117,7 +117,10 @@ def apply_emoji_width_patch() -> None:
     def patched_get_character_cell_size(character: str, unicode_version: str = "auto") -> int:
         if character and _is_emoji_codepoint(ord(character)):
             return 1
-        return orig_get_size(character, unicode_version)
+        try:
+            return orig_get_size(character, unicode_version)
+        except TypeError:
+            return orig_get_size(character)
 
     # Сбрасываем lru_cache на оригинале (он мог быть прогрет старыми значениями)
     with contextlib.suppress(AttributeError):

@@ -437,7 +437,7 @@ class InputPrompt:
             return "🔮 swarm > "
         return "🚀 agent > "
 
-    def render_echo(self, text: str) -> str:
+    def render_echo(self, text: str, time_str: str | None = None) -> str:
         """Собирает полосу эха: bold bright-white на фоне bg_code во всю ширину,
         префикс режима на первой строке, `[imageN]` как OSC-8 file://-ссылки,
         и справа снизу серое время отправки."""
@@ -479,11 +479,11 @@ class InputPrompt:
                 out.append(f"\033[1;{fg};{bg_seq}m{body}\033[0m\n")
             else:
                 out.append(f"\033[1;{fg}m{body}\033[0m\n")
-        now = datetime.now().strftime("%H:%M:%S")
+        now = time_str or datetime.now().strftime("%H:%M:%S")
         out.append(f"\033[38;5;250m{' ' * max(0, w - _vw(now))}{now}\033[0m\n")
         return "".join(out)
 
-    def echo_submitted(self, text: str) -> None:
+    def echo_submitted(self, text: str, time_str: str | None = None) -> None:
         """Печатает эхо реплики в scrollback.
 
         Курсор больше не отматывается вверх: поле ввода живёт внутри
@@ -493,13 +493,13 @@ class InputPrompt:
         if not (text or "").strip():
             return
         try:
-            block = self.render_echo(text)
+            block = self.render_echo(text, time_str=time_str)
         except Exception:
             logger.debug("render_echo failed", exc_info=True)
             return
         sh = self.shell
         if sh is not None:
-            sh.print_static_raw(block)
+            sh.print_block_raw(block)
             return
         try:
             sys.__stdout__.write(block)

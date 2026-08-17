@@ -192,6 +192,10 @@ class TelegramEventHandler:
             msg += f"\n<pre>{_html_escape(_trunc(out, _TG_TOOL_OUT_LIMIT))}</pre>"
         self._send(msg)
 
+    def on_model_response(self, text: str, usage: dict | None) -> None:
+        # Каждый ответ модели в TG не зеркалим: это зафлудило бы чат.
+        return None
+
     def on_plan_update(
         self,
         plan: Plan,

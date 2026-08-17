@@ -293,6 +293,8 @@ class Session:
         self._compressed_stats = {
             "messages": snapshot["messages"],
             "total_cost": snapshot["total_cost"],
+            "input_tokens": snapshot["input_tokens"],
+            "output_tokens": snapshot["output_tokens"],
         }
         self.messages.clear()
         self._cost_cache = None
@@ -338,10 +340,18 @@ class Session:
             len(tail),
             len(compressed_text),
         )
-        prev = self._compressed_stats or {"messages": 0, "total_cost": 0.0}
+        head_input_tokens, head_output_tokens = self._token_totals_of_messages(head)
+        prev = self._compressed_stats or {
+            "messages": 0,
+            "total_cost": 0.0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
         self._compressed_stats = {
             "messages": prev["messages"] + compressed_msgs,
             "total_cost": prev["total_cost"] + compressed_cost,
+            "input_tokens": prev.get("input_tokens", 0) + head_input_tokens,
+            "output_tokens": prev.get("output_tokens", 0) + head_output_tokens,
         }
         meta = f"[compressed {compressed_msgs} earlier round(s); recent rounds kept verbatim]"
         self.messages = [
@@ -378,11 +388,13 @@ class Session:
 
     @property
     def input_tokens(self) -> int:
-        return sum(s["input_tokens"] for s in self._compute_cost().values())
+        base = self._compressed_stats.get("input_tokens", 0) if self._compressed_stats else 0
+        return base + sum(s["input_tokens"] for s in self._compute_cost().values())
 
     @property
     def output_tokens(self) -> int:
-        return sum(m.tokens for m in self.messages if m.role == "assistant")
+        base = self._compressed_stats.get("output_tokens", 0) if self._compressed_stats else 0
+        return base + sum(m.tokens for m in self.messages if m.role == "assistant")
 
     @property
     def raw_input_tokens(self) -> int:
@@ -401,7 +413,26 @@ class Session:
         # история + оценка системного промта.
         if self.last_provider_input > 0:
             return self.last_provider_input + self._last_assistant_tokens
-        return self.raw_input_tokens + self.output_tokens + self.system_prompt_tokens
+        current_output_tokens = sum(m.tokens for m in self.messages if m.role == "assistant")
+        return self.raw_input_tokens + current_output_tokens + self.system_prompt_tokens
+
+    def _token_totals_of_messages(self, msgs: list) -> tuple[int, int]:
+        input_tokens = 0
+        output_tokens = 0
+        input_buffer: list[int] = []
+        for msg in msgs:
+            if msg.role in ("user", "system", "tool_result"):
+                input_buffer.append(msg.tokens)
+            elif msg.role == "assistant":
+                usage = msg.usage if isinstance(msg.usage, dict) else None
+                if usage and (usage.get("input") or usage.get("output")):
+                    input_tokens += int(usage.get("input") or 0)
+                    output_tokens += int(usage.get("output") or 0) or msg.tokens
+                else:
+                    input_tokens += sum(input_buffer)
+                    output_tokens += msg.tokens
+                input_buffer.append(msg.tokens)
+        return input_tokens, output_tokens
 
     def _compute_cost(self) -> dict:
         if self._cost_cache is not None:

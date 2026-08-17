@@ -26,6 +26,10 @@ class AgentEventHandler(Protocol):
         """Вызывается после выполнения tool-вызова."""
         ...
 
+    def on_model_response(self, text: str, usage: dict | None) -> None:
+        """Вызывается после каждого ответа модели (headless-статистика/лог)."""
+        ...
+
     def on_plan_update(
         self,
         plan: Plan,
@@ -85,12 +89,19 @@ class RichEventHandler:
 
             show_output(result)
 
+    def on_model_response(self, text: str, usage: dict | None) -> None:
+        return None
+
     def on_plan_update(
         self,
         plan: Plan,
         action: str = "",
         focus_index: int | None = None,
     ) -> None:
+        from agent.plan_panel import handle_plan_update
+
+        if handle_plan_update(plan, action=action, focus_index=focus_index):
+            return
         from agent.display import show_plan_update
 
         show_plan_update(plan, action=action, focus_index=focus_index)

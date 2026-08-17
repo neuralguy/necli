@@ -29,7 +29,6 @@ class AgentContext:
     step_tracker: StepTracker = field(default_factory=StepTracker)
     last_fs_snapshot: dict | None = None
     silent_console: bool = False
-    suppress_project_stats: bool = False
     render_store: RenderStore = field(default_factory=RenderStore)
     turn_start_time: float = field(default_factory=time.monotonic)
     working_round: object | None = None

@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # задачи субагента (число итераций не ограничено).
 MAX_SUBAGENT_CONTEXT_TOKENS = Limits.MAX_SUBAGENT_CONTEXT_TOKENS
 MAX_SUBAGENT_ITERATIONS = Limits.MAX_SUBAGENT_ITERATIONS
+MAX_SUBAGENT_WALL_SEC = Limits.MAX_SUBAGENT_WALL_SEC
 
 # Таймаут на ОДИН вызов модели субагентом. Прокси (onlysq) умеет зависать на
 # стриме (в логах ответы по 38с и дольше); без таймаута повисший ainvoke/astream
@@ -124,18 +125,10 @@ def _read_scratchpad(working_dir: str) -> str:
 
 
 def _project_context(working_dir: str) -> str:
-    """Краткий контекст проекта для субагента: статистика + начало AGENTS.md."""
+    """Краткий контекст проекта для субагента: начало AGENTS.md/README.md."""
     import os
 
     parts = []
-    try:
-        from agent.project_stats import count_project_stats, format_project_stats
-
-        fc, tl = count_project_stats(working_dir)
-        if fc:
-            parts.append(format_project_stats(fc, tl))
-    except Exception:
-        logger.debug("subagent project_stats failed", exc_info=True)
     for fname in ("AGENTS.md", "README.md"):
         path = os.path.join(working_dir, fname)
         try:
@@ -710,6 +703,41 @@ class _ApiSubagentRunner:
                     )
                     unbind("subagent")
                     return final, iterations, "stopped: iteration limit reached"
+                # Wall-clock бюджет: лимит итераций не спасает от висящего
+                # провайдера, который ретраится до таймаута каждую итерацию —
+                # такой зомби тянул бы пул и волны часами. Завершаемся с тем,
+                # что уже сделано; error (а не None), чтобы главный агент узнал
+                # о неполноте.
+                wall_elapsed = time.monotonic() - self.activity_start_time
+                if wall_elapsed > MAX_SUBAGENT_WALL_SEC:
+                    logger.warning(
+                        "Subagent %s wall-clock budget exceeded (%.0fs > %.0fs) at iter %d — stopping",
+                        self.index,
+                        wall_elapsed,
+                        MAX_SUBAGENT_WALL_SEC,
+                        iterations,
+                    )
+                    final = strip_tool_calls(raw_text).strip()
+                    final = (
+                        final
+                        + "\n\n[Subagent stopped: wall-clock time budget exceeded "
+                        + f"({format_duration(wall_elapsed)})]"
+                    ).strip()
+                    if self.buffer:
+                        self.buffer.on_done(final)
+                    info(
+                        "subagent.end",
+                        index=self.index,
+                        iterations=iterations,
+                        elapsed=wall_elapsed,
+                        error="stopped: wall-clock budget exceeded",
+                    )
+                    unbind("subagent")
+                    return (
+                        final,
+                        iterations,
+                        "stopped: wall-clock budget exceeded (work likely incomplete)",
+                    )
                 # Context-size backstop: если АКТИВНЫЙ контекст одного вызова
                 # (input последнего обмена) раздулся за потолок — это runaway-петля
                 # read/patch/re-read, которую прунер не смог удержать. Останавливаемся
@@ -1198,11 +1226,14 @@ async def run_api_subagents(
                 label=getattr(task, "label", "") or "",
             )
         except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            if buf:
+                buf.on_error(error)
             result = SubagentResult(
                 task_index=i,
                 mode=task.mode,
                 response="",
-                error=f"{type(e).__name__}: {e}",
+                error=error,
                 elapsed=runner.buffer.elapsed if runner.buffer else 0.0,
                 model_label=runner.model_id,
                 phase=getattr(task, "phase", "") or "",

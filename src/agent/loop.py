@@ -393,17 +393,23 @@ async def _stream_send(
             model=model,
             tools=len(api_tools) if api_tools else 0,
         )
+        working = getattr(ctx, "working_round", None)
+        on_retry_attempt = working.set_retry_status if working is not None else None
         api_result = await api_send_message(
             text,
             system_prompt=api_sys,
             on_chunk=stream.on_text_update,
             on_reasoning_chunk=stream.on_reasoning_update,
             on_tool_chunk=stream.on_native_tool_update,
+            on_retry_attempt=on_retry_attempt,
             tools=api_tools,
             images=images,
             tool_results=tool_results,
             extras=extras,
         )
+        working = getattr(ctx, "working_round", None)
+        if working is not None:
+            working.clear_retry_status()
         if isinstance(api_result, dict):
             response = api_result["text"]
             usage = api_result.get("usage") or {}
@@ -564,7 +570,16 @@ async def _send_via_api(
         tool_results=tool_results,
         extras=extras,
     )
-    # usage не аккумулируется: run_agent — служебная ветка без сессии/биллинга
+    # Usage здесь не аккумулируется по истории (run_agent — служебная ветка без
+    # сессии/биллинга), но уходит опциональным обработчикам: headless строит по
+    # нему сводку «✓ Worked» и полный JSON-отчёт.
+    if isinstance(result, dict):
+        on_response = getattr(getattr(ctx, "event_handler", None), "on_model_response", None)
+        if callable(on_response):
+            try:
+                on_response(result.get("text") or "", result.get("usage"))
+            except Exception:
+                logger.debug("on_model_response hook failed", exc_info=True)
     if return_result:
         return result if isinstance(result, dict) else {"text": result, "tool_calls": []}
     return result["text"] if isinstance(result, dict) else result
@@ -709,12 +724,10 @@ async def _run_agent_impl(
     history=None,
     images=None,
     event_handler=None,
-    suppress_project_stats=False,
 ):
     ctx = AgentContext(
         working_dir=working_dir or os.getcwd(),
         event_handler=event_handler,
-        suppress_project_stats=suppress_project_stats,
         memory_query=user_message or "",
     )
     if ctx.event_handler is None:
@@ -973,7 +986,6 @@ async def run_agent(
     history=None,
     images=None,
     event_handler=None,
-    suppress_project_stats=False,
 ):
     try:
         return await _run_agent_impl(
@@ -984,7 +996,6 @@ async def run_agent(
             history=history,
             images=images,
             event_handler=event_handler,
-            suppress_project_stats=suppress_project_stats,
         )
     except asyncio.CancelledError:
         try:

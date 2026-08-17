@@ -3,7 +3,7 @@ apis -- система API-провайдеров.
 
 Позволяет подключать LLM через прямые API вместо браузера.
 Каждый провайдер описан JSON-определением (URL, модели, формат)
-и классом-провайдером (наследник BaseProvider или LangChain wrapper).
+и классом-провайдером, наследником BaseProvider.
 
 Публичный API:
     from apis import get_provider, list_providers

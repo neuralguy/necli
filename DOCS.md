@@ -4,7 +4,7 @@
 
 necli — терминальный AI-агент с интерактивным CLI, headless-режимом и Telegram-мостом. Все фронтенды используют общее ядро агента, API-провайдеров, инструментов и хранения сессий.
 
-API-only клиент для LLM: прямые вызовы провайдеров через httpx (свои реализации, без LangChain), гибридный режим инструментов (fenced `:::call` блоки + native function calling), стриминг с инлайн-выполнением tool-блоков, агентный цикл без лимита итераций, до 100 задач на один вызов субагентов с git worktree-изоляцией, DAG-зависимостями, ролями/пресетами и фазовой оркестрацией (phases / items+stages в одном вызове), планировщик, скиллы, нативные движки `.docx` / `.pptx` (создание, правка, инспекция, рендер), долговременная память между сессиями с автоизвлечением фактов, инсайты по всем сессиям (`/insights`), MCP, LSP, хуки (совместимые с claude-code), авто-pruning истории, автоочистка `.data/`, headless-режим для CI и зеркало в Telegram.
+Клиент для LLM с прямыми вызовами провайдеров через httpx и входом в ChatGPT через браузерный OAuth: собственные реализации API, гибридный режим инструментов (fenced `:::call` блоки + native function calling), стриминг с инлайн-выполнением tool-блоков, агентный цикл без лимита итераций, до 100 задач на один вызов субагентов с git worktree-изоляцией, DAG-зависимостями, ролями/пресетами и фазовой оркестрацией (phases / items+stages в одном вызове), планировщик, скиллы, нативные движки `.docx` / `.pptx` (создание, правка, инспекция, рендер), долговременная память между сессиями с ручным сохранением фактов основным агентом, инсайты по всем сессиям (`/insights`), MCP, LSP, хуки (совместимые с claude-code), авто-pruning истории, автоочистка `.data/`, headless-режим для CI и зеркало в Telegram.
 
 Python ≥ 3.10. Управление зависимостями — `uv`.
 
@@ -24,7 +24,7 @@ uv run necli cli --api openai
 printf "сосчитай строки .py" | uv run necli run --quiet --allow-all
 ```
 
-Ключи API, определения провайдеров и модельные роутеры хранятся в `.data/apis.json` (`providers` / `keys` / `routers`) и редактируются через меню `/api` и `/models` внутри CLI.
+Ключи API, определения провайдеров и модельные роутеры хранятся в `.data/apis.json` (`providers` / `keys` / `routers`). OAuth-токены ChatGPT вынесены в `.data/chatgpt_auth.json`. Вход, выход и остальные настройки доступны через `/api` и `/models` внутри CLI.
 
 ## Содержание
 
@@ -107,7 +107,7 @@ src/  (точка входа: src/main.py)
 │   ├── commit_agent.py           # генерация коммита для /commit
 │   └── telemetry.py              # turn/round tracking для structured logging
 │
-├── apis/                         # API-провайдеры и интеграции (без LangChain)
+├── apis/                         # API-провайдеры и интеграции
 │   ├── registry.py               # load_all, get_provider, resolve_api_model
 │   ├── agent_adapter.py          # ApiSession, api_send_message, compress, api_recap
 │   ├── helper_models.py          # маршруты helper/image моделей
@@ -142,6 +142,7 @@ src/  (точка входа: src/main.py)
 │
 ├── config/                       # настройки и пути
 │   ├── settings.py               # config.json get/set/cache (+ tool_format_force_native)
+│   ├── display.py                # per-block full rendering selection for compact/full views
 │   ├── paths.py                  # .data/, sessions/, skills/, memory/, ensure_dirs
 │   ├── constants.py              # READ_ONLY_TOOLS, IGNORE_DIRS, Limits
 │   ├── data_cleanup.py           # автоочистка мусора из .data при старте (раз в сутки)
@@ -166,7 +167,7 @@ src/  (точка входа: src/main.py)
 │
 ├── memory/                       # долговременная память агента (см. раздел Память)
 │   ├── memdir.py                 # CRUD memory-файлов + format_memory_block/manifest
-│   ├── extract.py                # фоновое автоизвлечение фактов (one-shot вызов модели)
+│   ├── extract.py                # валидация решений модельного аудита памяти
 │   ├── cleanup.py                # модельная дедупликация/чистка раз в 3 дня
 │   ├── insights.py               # /insights: метрики + анализ моделью → HTML-отчёт + память
 │   └── _time.py                  # форматирование timestamps
@@ -225,6 +226,7 @@ src/  (точка входа: src/main.py)
 │   ├── menu.py / poll.py / file_context.py
 │   ├── clipboard.py / clipboard_copy.py / formatting.py
 │   ├── _filters.py / _emoji_width.py / _keyreader.py
+│   ├── focus.py / notifications.py
 │   └── terminal_title.py
 │
 └── .data/                        # рантайм-состояние (см. раздел Конфигурация)
@@ -250,7 +252,7 @@ src/  (точка входа: src/main.py)
 
 При старте `src/main.py` поднимает `RLIMIT_NOFILE` до 8192 (httpx-стримы + множество открытых файлов сессий быстро упираются в дефолт 1024 на Linux).
 
-Опции `run` (см. `commands/headless.py`): `--model/-m`, `--workdir/-w`, `--api/-A`, `--json`, `--quiet/-q`, `--timeout`, `--allow-all`. `stdin` подхватывается, если не tty. Exit code 0/1/2.
+Опции `run` (см. `commands/headless.py`): `--model/-m`, `--workdir/-w`, `--api/-A`, `--json`, `--full-json`, `--quiet/-q`, `--timeout`, `--allow-all`. `stdin` подхватывается, если не tty. Exit code 0/1/2. По завершении в сокращённом режиме на stderr печатается сводка `✓ Worked <время> ⎿ N⟳ · M🛠 · ↑in ↓out`; `--full-json` выводит на stdout полный отчёт (все ответы модели и tool-вызовы с аргументами и выводом, каждое событие один раз — без дублирования истории) и взаимно исключён с `--json`.
 
 ## Разработка и проверки
 
@@ -298,7 +300,7 @@ uv run pytest -q
 - `commands/interactive.py` — TUI с постоянным prompt_toolkit Application (`ui/shell.py`), последовательная очередь ходов агента (`commands/agent_queue.py`).
 - `apis/telegram.py` + `agent/telegram_handler.py` — Telegram-мост.
 
-**LangChain не используется.** Своя минимальная замена `langchain_core.messages` живёт в `apis/messages.py` (`SystemMessage` / `HumanMessage` / `AIMessage` / `ToolMessage` + `AIMessageChunk` с `__add__`). Общая логика стрима, retry/throttle, нативных tool calls и multimodal-вложений — в `apis/base.py:BaseProvider`. Провайдеры наследуются от него: `openai_provider`, `anthropic_provider`, `google_provider`, `custom_provider`.
+Собственные классы сообщений (`SystemMessage` / `HumanMessage` / `AIMessage` / `ToolMessage` и `AIMessageChunk` с `__add__`) определены в `apis/messages.py`. Общая логика стрима, retry/throttle, нативных tool calls и multimodal-вложений — в `apis/base.py:BaseProvider`. Провайдеры наследуются от него: `openai_provider`, `anthropic_provider`, `google_provider`, `custom_provider`.
 
 ## Конфигурация и `.data/`
 
@@ -308,6 +310,7 @@ uv run pytest -q
 .data/
 ├── config.json                # основной конфиг (config/settings.py)
 ├── apis.json                  # провайдеры, ключи и роутеры (providers / keys / routers)
+├── chatgpt_auth.json          # OAuth-токены ChatGPT (0600)
 ├── ui.json                    # override эмодзи/лейблов/цветов инструментов + лимиты
 ├── hooks.json                 # хуки (см. раздел Хуки)
 ├── mcp_servers.json           # MCP-сервера
@@ -348,12 +351,13 @@ uv run pytest -q
 | `theme`, `theme_custom` | Активная тема и переопределение ролей. |
 | `telegram_bot_token`, `telegram_chat_id`, `telegram_enabled` | Telegram-мост. |
 | `think_enabled` | Глобальный THINK-режим (рассуждения вслух). |
+| `notifications_enabled` | Desktop-уведомления о завершении долгого хода (дефолт `True`). |
 | `temperature`, `max_tokens` | Generation params. |
 | `tool_format_force_native` | Глобальный переключатель native/fenced (дефолт `True`). |
 | `disabled_tools` | Список отключённых пользователем инструментов. |
 | `emoji_width` | 0 — Rich считает emoji как 2 cell (дефолт), 1 — как 1 cell. |
 
-Провайдеры и ключи живут в `.data/apis.json` (поля `providers` / `keys`), миграция из старых `api_providers` / `api_keys` в `config.json` автоматическая. Доступ — `config.get(key, default)` / `config.set_value(key, value)`. Словарь кэшируется, мутации идут только через `set_value`.
+Провайдеры и ключи живут в `.data/apis.json` (поля `providers` / `keys`), миграция из старых `api_providers` / `api_keys` в `config.json` автоматическая. OAuth-токены ChatGPT хранятся отдельно в `.data/chatgpt_auth.json`, записываются атомарно с правами `0600` и не попадают в ротацию API-ключей. Доступ к обычным настройкам — `config.get(key, default)` / `config.set_value(key, value)`. Словарь кэшируется, мутации идут только через `set_value`.
 
 ## API-провайдеры
 
@@ -361,13 +365,15 @@ uv run pytest -q
 
 1. Читает встроенные шаблоны из `apis/definitions/*.json`, если каталог присутствует.
 2. Поверх накладывает пользовательские из `.data/apis.json["providers"]` (ключи — в `["keys"]`); пресеты для онбординга — `commands/onboarding.py:_PROVIDER_PRESETS`.
-3. По полю `type` выбирает фабрику: `openai_provider`, `anthropic_provider`, `google_provider` или `custom_provider` (httpx через `BaseProvider`, поддержка OpenAI-совместимых прокси с `reasoning_content`).
+3. По полю `type` выбирает фабрику: `chatgpt_provider`, `openai_provider`, `anthropic_provider`, `google_provider` или `custom_provider`. Обычные OpenAI-совместимые провайдеры используют Chat Completions через `BaseProvider`; ChatGPT использует Responses endpoint и OAuth bearer.
+
+`apis/chatgpt_auth.py` реализует OAuth 2.0 Authorization Code + PKCE. Вход расположен отдельной первой строкой главного меню `/api`, а не внутри добавления пользовательского провайдера. ChatGPT исключается из общего списка: после входа эта же верхняя строка становится `ChatGPT OAuth` и открывает сокращённое меню «использовать / модели / выйти». При каждой новой попытке прежний callback этого процесса принудительно останавливается до повторного bind на `127.0.0.1:1455`. Браузер открывает `auth.openai.com`, callback проверяет `state`, после чего access/refresh token сохраняются отдельно. Access token обновляется заранее и повторно после первого HTTP 401. `apis/providers/chatgpt_provider.py` преобразует внутренние сообщения и native function tools в Responses input items, передаёт `ChatGPT-Account-Id` и преобразует Responses SSE обратно в `AIMessageChunk`. Встроенные Sol, Terra и Luna имеют официальный контекст 1,05 млн токенов и стандартные short-context API-цены за 1 млн токенов; это справочная оценка, поскольку OAuth-запросы расходуют лимит подписки, а не оплачиваются как API-вызовы. `apis/chatgpt_usage.py` читает subscription rate limits из `backend-api/wham/usage`, определяет недельное окно по его длительности и кеширует оставшийся процент. Обновление выполняется в фоне при запуске и после открытия `/api` или `/models`, не задерживая первый рендер меню, а также после каждого завершённого ответа. Один кеш используют верхняя OAuth-строка `/api`, секция ChatGPT в `/models` и строка статуса над вводом; подписка UI на обновления перерисовывает статус после завершения фонового запроса.
 
 Инстансы кэшируются по `(provider_id, model_id, kwargs)` — kwargs включены в ключ, иначе каждый вызов с параметрами плодил бы новый инстанс со свежим `session_id` и сбивал prompt-cache. `reload_providers()` сбрасывает кэш — нужен после правок через `/api`.
 
 `/helpers` хранит независимые пары `provider/model` для helper- и image-запросов. Helper-модель обслуживает изолированные one-shot операции (`compress`, recap, извлечение памяти, insights), не меняя основную `ApiSession`. Если image-модель задана, `api_send_message` сначала отправляет ей все изображения (включая результаты tools), получает подробное описание сцены, текста, персонажей и интерфейса, а основной модели передаёт только блок `<image_descriptions>`. Описание сохраняется рядом с attachment и восстанавливается как текст после resume. Пустая или ставшая невалидной настройка использует основную модель.
 
-Пресеты онбординга (`commands/onboarding.py`): openai, anthropic, google, openrouter, groq, xai, ollama. Любой другой OpenAI-совместимый эндпоинт или свой шлюз добавляется через `/api` или правкой `.data/apis.json`.
+Пресеты онбординга (`commands/onboarding.py`): chatgpt (OAuth), openai, anthropic, google, openrouter, groq, xai, ollama. Любой другой OpenAI-совместимый эндпоинт или свой шлюз добавляется через `/api` или правкой `.data/apis.json`.
 
 Поля определения: `default_headers` (произвольные HTTP-заголовки) и `extra` — шлюзовые настройки без хардкода в коде: `append_query`, `session_id_header`, `billing_header`, `inject_metadata`, `use_aiohttp`, `system_as_first_message`, `use_bearer_auth`, `prompt_cache`, `extra_body`, `reasoning_models`.
 
@@ -404,6 +410,8 @@ uv run pytest -q
 Показывает:
 - Анимированный заголовок «Working» с shimmer-эффектом и таймером.
 - Число запросов к модели (`⟳`), вызовов инструментов (`🛠`), токены (`↑input ↓output`).
+- Долгий выполняемый инструмент — отдельная живая строка `🛠 shell · <команда> · 12s` в динамической зоне над Working (`agent/executor.py`, ключ `"tool"`): поднимается через 1.5 с исполнения и гасится перед печатью итогового статичного блока. Выше неё живёт свёрнутая панель плана (`agent/plan_panel.py`, ключ `"plan"`; см. раздел Планировщик).
+- Если ход агента завершён, но фоновая работа (background-задачи/субагенты) ещё идёт — заголовок переключается на статичный `⏳ Waiting` вместо вечного shimmer; раунд продолжает жить и просыпается при продолжении по фоновому результату.
 - При завершении — итоговая строка `✓ Worked 12s` (или `■ Interrupted` / `■ Stopped`).
 - Сводка персистируется в сессию как сообщение с ролью `"worked"` и сохраняется в `RenderStore` для Ctrl+O replay.
 
@@ -432,6 +440,8 @@ uv run pytest -q
 - Авто-продолжение: подозрение на обрыв (`is_likely_truncated`) → `CONTINUE_MESSAGE` («продолжай»); ошибка прокси (`is_api_proxy_error`) → повтор.
 - Авто-компрессия истории в `commands/interactive._maybe_auto_compress` срабатывает при `context_tokens / get_context_limit(model) ≥ 0.90`.
 - События — через интерфейс `AgentEventHandler` (`agent/events.py`). Дефолт — `RichEventHandler`; при активном TG-мосте оборачивается `TelegramEventHandler`.
+- Соседние `read`/`grep` одного батча сливаются в один компактный блок `show_scan_combined` (`agent/display.py`); fenced- и native-стримы накапливают такую скан-фазу до следующего другого инструмента или конца ответа. Свёрнуто — строка-счётчик «N чтений/поисков», Ctrl+O разворачивает в список путей со сводками; порог — от двух скан-вызовов, `single_line_tools` отключает слияние.
+- Токены везде рисуются со стрелкой вверх первой: `↑input ↓output` (Working, статус-строка, replay, headless-сводка).
 - Прерывания: `Ctrl+C` → `ctx.interrupted = True`, стрим закрывается, частичный ответ сохраняется как `[Прервано]`.
 - THINK-блоки (`agent/think.py`) парсятся и рисуются отдельной панелью. В сессию сохраняются как `Message.thoughts` отдельно от основного `content`.
 
@@ -508,7 +518,7 @@ call:::
 
 ### Лимиты вызовов
 
-- Итерации главного агента не ограничены — цикл работает, пока задача не завершена или не прервана. Субагенты — до 100 итераций (`MAX_SUBAGENT_ITERATIONS`, `config/constants.py:20`).
+- Итерации главного агента не ограничены — цикл работает, пока задача не завершена или не прервана. Стержневые ограничители субагентов: до 100 итераций (`MAX_SUBAGENT_ITERATIONS`), активный контекст 1M токенов (`MAX_SUBAGENT_CONTEXT_TOKENS`) и общий wall-clock бюджет 2 ч (`MAX_SUBAGENT_WALL_SEC`) — висящий провайдер с ретраями больше не тянет волну бесконечно. Все — в `config/constants.py`.
 - До 100 задач на один вызов `subagent` (`agent/subagent.py:80`), конкурентность внутри волны — `subagent.max_concurrency = 12` (`config/ui.py:224`).
 - Каждый вызов выполняется отдельно `agent/executor._execute_single` с тиканием спиннера и трекингом изменений ФС.
 
@@ -546,7 +556,7 @@ call:::
 
 Поддерживаемые действия: `create`, `update` (по `step` / `index` / `title`), `add_step`, `remove_step`. **Минимум 3 шага** (`planner.py:286`).
 
-После каждого ответа `agent/loop` применяет команды плана, обновляет `.plan.md` в директории сессии и рисует панель `render_plan_panel`.
+После каждого ответа `agent/loop` применяет команды плана и обновляет `.plan.md` в директории сессии. В TUI план живёт в динамической зоне Shell (`agent/plan_panel.py`, ключ `"plan"`): свёрнутая панель показывает заголовок, текущий и следующий шаг над блоком Working, `/plan` разворачивает её до полного списка и сворачивает обратно. По завершении плана один раз печатается финальная выполненная панель `render_plan_panel` в статичный scrollback, зона гаснет; при `/new` / `/branch` / смене сессии панель сбрасывается. Вне TUI (headless/TG) событие уходит в прежний статичный `show_plan_update`.
 
 `LiveStream` обрабатывает блоки plan в стриме: показывает прогресс-бар (`▮▮▯▯ 2/4`) прямо во время ответа.
 
@@ -562,7 +572,7 @@ call:::
 
 - `id` — изначально техническая метка `YYYYMMDD_HHMMSS_<uid>`. При первом user-сообщении переименовывается в `<slug>_YYYYMMDD_HHMMSS` (slug — первые 20 «слов»-символов). Директория двигается через `shutil.move`.
 - `messages: list[Message]` с ролями `user | assistant | system | tool_result | worked | tool_call`.
-- `_compressed_stats` — снапшот сообщений/стоимости после `/compress`.
+- `_compressed_stats` — накопленные сообщения, input/output-токены и стоимость до `/compress`; они сохраняются в шапке после сжатия, тогда как прогресс контекста показывает только текущую историю.
 
 ### Стоимость
 
@@ -621,7 +631,7 @@ call:::
 | `/sessions` | session | Меню сохранённых сессий с cost/tokens preview. |
 | `/compress` | session | Сжать историю через helper-модель (или основную как fallback), сохранить бэкап. |
 | `/reflect` | session | Рефлексия: модель анализирует сессию и предлагает обновить `AGENTS.md`. |
-| `/api` | model | Меню провайдеров: добавление/правка, ключи, активная модель. |
+| `/api` | model | Меню провайдеров: добавление/правка, ключи, активная модель. Курсор сразу на строке активного провайдера — и при входе, и при возврате из деталей. |
 | `/models` | model | Поисковый picker моделей всех включённых провайдеров; создание и настройка fallback-роутеров. |
 | `/autoprune` | model | Меню авто-pruning контекста (`commands/menus/autoprune.py`). |
 | `/proxy [URL\|off]` | model | Установить/сбросить HTTP(S)/SOCKS-прокси для API-вызовов. |
@@ -630,6 +640,7 @@ call:::
 | `/skills` | tools | Меню скиллов: список / создание / добавление / удаление. |
 | `/agents` | tools | CRUD заготовок-пресетов субагентов (`.data/agents/<name>/AGENT.md`). |
 | `/themes` | display | Выбор темы и кастомизация ролей. |
+| `/plan` | display | Развернуть/свернуть живую панель плана (свёрнутая — текущий и следующий шаг; финальный «выполнен» план печатается один раз в статик). |
 | `/think` | display | Toggle THINK-режима (рассуждения вслух); toggle `think_enabled`. |
 | `/tool_format` | display | Toggle глобального native function calling (`tool_format_force_native`) — иначе fenced. |
 | `/help` | misc | Справка (группировка по категориям). |
@@ -663,11 +674,13 @@ call:::
 - `depends_on` — список 1-based индексов задач, которые должны завершиться ДО этой. Их результаты инжектятся в промпт. Задачи без зависимостей идут параллельными волнами, зависимые ждут (`_resolve_dependencies` → топосортировка в волны). В `phases` зависимость от предыдущей фазы проставляется автоматически.
 - `isolate` — по умолчанию `false`: субагенты пишут ПРЯМО в общую рабочую директорию, поэтому работу надо резать на независимые слайсы (каждый субагент владеет своими файлами; no two touch the same path). `isolate=true` — каждому отдельный git worktree (см. ниже).
 
+Промпты (fenced/native `MODE_SWARM` + секция Subagents) требуют весь пайплайн делегирования одним вызовом: параллельные задачи — `tasks[]`, staged-пайплайн — `phases[]` того же вызова; последовательные вызовы `subagent` по одной фазе считаются ошибкой оркестратора (сериализуют ран и прячут DAG от планировщика).
+
 Все субагенты запускаются в agent-mode и получают одинаковый полный набор инструментов (кроме явно запрещённых внутри субагента `poll` и вложенного `subagent`).
 
 Дисплей: `SubagentTracker` / `SubagentBuffer` + `SwarmOverlay` — интерактивная панель в нижней зоне (навигация стрелками, Enter — детали задачи), плюс `agent/subagent_display.py`. Инкрементальный лог завершившихся — `progress.md` в run-директории.
 
-Итерации субагента ограничены 100 (`MAX_SUBAGENT_ITERATIONS`, `config/constants.py`) — по исчерпании лимита задача завершается с ошибкой.
+Итерации субагента ограничены 100 (`MAX_SUBAGENT_ITERATIONS`, `config/constants.py`), активный контекст — 1M токенов, общий wall-clock бюджет — 2 ч (`MAX_SUBAGENT_WALL_SEC`); по исчерпании любого лимита задача завершается с ошибкой, а сделанная работа сохраняется в финальном тексте.
 
 Внутри субагента запрещены `poll` и вложенный `subagent`. `web_search` разрешён — субагент умеет искать в сети.
 
@@ -722,15 +735,13 @@ disable-model-invocation: false
 
 Четыре типа памяти: `user`, `feedback`, `project`, `reference`.
 
-Четыре механизма (`memory/memdir.py`, `memory/extract.py`, `memory/cleanup.py`, `memory/insights.py`):
+Три механизма (`memory/memdir.py`, `memory/cleanup.py`, `memory/insights.py`):
 
 1. **Инжекция в промпт** — `format_memory_block()` всегда добавляет закреплённые/приоритетные записи и до 8 записей, лексически релевантных текущему пользовательскому запросу, в блок `<persistent_memory>` (`system_prompt._build_memory_block`, лимит ~6000 символов). Порядок файлов больше не определяет, какая память попадёт в контекст.
 
-2. **Автоизвлечение** — `extract_memories(transcript, working_dir)` запускается фоново из интерактивного цикла каждые ~6 сообщений. Изолированный helper-вызов читает транскрипт, manifest и полные тексты похожих записей. Для каждого факта модель выбирает `create`, `update`, `merge`, `delete` или `ignore`; операции валидируются перед применением, pinned-записи защищены от удаления и поглощения merge. Fire-and-forget: UI не блокируется, ошибки проглатываются.
+2. **Периодическая чистка** — при запуске CLI в фоне выполняется модельный аудит глобальной и текущей проектной памяти, но не чаще раза в 3 дня (маркер `.data/memory/.last_model_cleanup`). Дубли объединяются, однозначно устаревшие записи обновляются или удаляются; при сомнении модель выбирает `ignore`. Маркер обновляется только после успешного ответа модели.
 
-3. **Периодическая чистка** — при запуске CLI в фоне выполняется модельный аудит глобальной и текущей проектной памяти, но не чаще раза в 3 дня (маркер `.data/memory/.last_model_cleanup`). Дубли объединяются, однозначно устаревшие записи обновляются или удаляются; при сомнении модель выбирает `ignore`. Маркер обновляется только после успешного ответа модели.
-
-4. **Ручное редактирование моделью** — единый инструмент `memory` с действиями write / list / read / delete (`tools/memory_tool.py`): модель сама сохраняет факт, когда замечает что-то долговременное, и удаляет устаревшие записи.
+3. **Ручное редактирование моделью** — единый инструмент `memory` с действиями write / list / read / delete (`tools/memory_tool.py`): только основной агент по ходу текущего диалога решает, когда сохранить или удалить долговременный факт.
 
 ## Хуки (hooks)
 
@@ -907,7 +918,7 @@ Shell разбит на три mixin'а:
 - `Ctrl+O` — toggle expanded/compact replay: перерисовывает весь вывод сессии из `agent/render_store.py` через `agent/render_replay.py` (полные превью без обрезки ↔ компактные).
 - `Ctrl+C` обрабатывается как событие клавиши (прерывание хода/ввода), `Ctrl+D` — выход.
 
-История ввода — `.data/history` (FileHistory + ThreadedHistory). Автокомплит — `ui/completer.py`: slash-команды + файлы (`@`-prefix).
+История ввода — `.data/history` (FileHistory + ThreadedHistory): slash-команды не сохраняются, одинаковые соседние записи не дублируются. Автокомплит — `ui/completer.py`: slash-команды + файлы (`@`-prefix).
 
 ### Темы
 
@@ -926,6 +937,12 @@ Shell разбит на три mixin'а:
 ### Emoji width
 
 `ui/_emoji_width.py` — патч `rich.cells.get_character_cell_size` для терминалов, где emoji рендерятся как 1 cell вместо 2. Включается через `config.json: "emoji_width": 1` или `NECLI_EMOJI_WIDTH=1`.
+
+### Desktop-уведомления
+
+`ui/focus.py` — отслеживание фокуса терминала через focus reporting (`CSI ?1004`): при старте Shell пишет `\x1b[?1004h`, обёртка над `Vt100Input` вырезает `\x1b[I` / `\x1b[O]` из потока ввода до vt100-парсера (prompt_toolkit их не знает) и превращает в булево состояние (`is_terminal_focused()`, `None` = терминал не отчитывается). При выходе режим выключается (`\x1b[?1004l`).
+
+`ui/notifications.py` — `notify_turn_finished(elapsed, cancelled=, poll=)`: системный тост о завершении хода (или poll-ожидания), если включено `notifications_enabled`, ход длился ≥ 60 сек (`MIN_TURN_SECONDS`), терминал не в фокусе (`None` трактуется как «не в фокусе») и с прошлого уведомления прошло ≥ 5 сек. Доставка — фоновым потоком-демоном: Linux `notify-send -a necli`, macOS `osascript`, Windows PowerShell toast через Windows Runtime API. Вызовы: `commands/interactive.py` после `_run_with_interrupt` (обычный ход и авто-резюм фоновой задачи), `agent/executor.py` после poll-инструмента. Переключатель — `/settings` → Interface (при включении кидает пробный тост).
 
 ## Логирование
 

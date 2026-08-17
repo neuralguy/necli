@@ -50,6 +50,16 @@ def _finished_header(
     return header
 
 
+def _waiting_header(elapsed: float) -> Text:
+    """Заголовок раунда, ждущего фоновую работу: ход агента завершён,
+    но background-задачи/субагенты ещё идут и раунд продолжится позже."""
+    header = Text()
+    header.append("⏳ ", style=f"bold {t('dim_text')}")
+    header.append("Waiting", style=f"bold {t('dim_text')}")
+    header.append(" " + format_duration(elapsed), style="dim")
+    return header
+
+
 def _usage_parts(usage: dict | None) -> tuple[int, int]:
     """Вернуть (input, output) из canonical и provider-specific usage."""
     usage = usage or {}
@@ -112,10 +122,12 @@ class WorkingRound:
     _started_stream_indexes: set[int] = field(default_factory=set, repr=False)
     _usage_accounted_stream_indexes: set[int] = field(default_factory=set, repr=False)
     current: str = ""
+    retry_status: str = ""
     declared_calls: int = 0
     calls: list[str] = field(default_factory=list)
     active_calls: list[str] = field(default_factory=list)
     active: bool = True
+    waiting: bool = False
     outcome: str = _FINISH_WORKED
 
     def start(self) -> None:
@@ -134,6 +146,8 @@ class WorkingRound:
         """
         if not self.active:
             return
+        self.waiting = False
+        self.retry_status = ""
         self.model = model or self.model
         self.index = index
 
@@ -162,9 +176,21 @@ class WorkingRound:
     def call_count(self) -> int:
         return max(self.declared_calls, len(self.calls))
 
+    def set_retry_status(self, attempt: int, total: int) -> None:
+        if not self.active:
+            return
+        self.retry_status = tr("working.retrying", attempt=attempt, total=total)
+        self.invalidate()
+
+    def clear_retry_status(self) -> None:
+        if self.retry_status:
+            self.retry_status = ""
+            self.invalidate()
+
     def update_stream(self, text: str, *, current_call: str = "") -> None:
         if not self.active:
             return
+        self.retry_status = ""
         if text:
             # На каждом SSE-чанке нужен O(1) апдейт. Полный tokenizer здесь
             # добавлял заметную паузу при первом кадре; точное usage всё равно
@@ -212,6 +238,7 @@ class WorkingRound:
     def begin_call(self, name: str, detail: str = "") -> None:
         if not self.active:
             return
+        self.waiting = False
         label = str(name or "tool")
         self.calls.append(label)
         active = label + (f" · {detail}" if detail else "")
@@ -228,6 +255,18 @@ class WorkingRound:
                 self.active_calls.pop(index)
                 break
         self.current = self.active_calls[-1] if self.active_calls else tr("working.processing")
+        self.invalidate()
+
+    def mark_waiting(self) -> None:
+        """Ход агента завершён, но фоновая работа ещё идёт.
+
+        Раунд остаётся живым (продолжится по SUBMIT_BG_RESUME), однако вместо
+        вечного шиммера «Working» и двух «работающих» индикаторов одновременно
+        показываем статичный кадр ожидания. Любая новая активность будит раунд.
+        """
+        if not self.active or self.waiting:
+            return
+        self.waiting = True
         self.invalidate()
 
     def invalidate(self) -> None:
@@ -273,9 +312,14 @@ class WorkingRound:
                     live_outcome,
                     stopping=live_outcome == _FINISH_STOPPED,
                 )
+            elif self.waiting:
+                header = _waiting_header(self.elapsed)
             else:
                 header = Text()
-                header.append_text(self._shimmer())
+                if self.retry_status:
+                    header.append(self.retry_status, style=f"bold {t('warning')}")
+                else:
+                    header.append_text(self._shimmer())
                 header.append(" " + format_duration(self.elapsed), style="dim")
 
         output_tokens = self.output_tokens + self.estimated_output_tokens + self.token_estimate
@@ -285,18 +329,19 @@ class WorkingRound:
         details.append(" · ", style="dim")
         details.append(f"{self.call_count} 🛠", style=t("fg_primary"))
         details.append(" · ", style="dim")
-        details.append(f"↑{_fmt_tokens(self.input_tokens)}", style=t("fg_primary"))
-        details.append(" ", style="dim")
         details.append(
-            f"↓{output_prefix}{_fmt_tokens(output_tokens)}",
+            f"↑{_fmt_tokens(self.input_tokens)}",
             style=t("fg_primary"),
         )
+        details.append(" ", style="dim")
+        details.append(f"↓{output_prefix}{_fmt_tokens(output_tokens)}", style=t("fg_primary"))
         return Group(header, details)
 
     def finish(self, outcome: str | None = None) -> None:
         if not self.active:
             return
         self.active = False
+        self.waiting = False
         self.finished_at = time.monotonic()
         if outcome is None:
             outcome = self._interrupt_outcome()
@@ -308,7 +353,7 @@ class WorkingRound:
         shell = get_shell()
         if shell is not None and not getattr(self.ctx, "silent_console", False):
             shell.clear_dynamic(_WORKING_ZONE)
-            shell.print_static(Group(Text(""), self.render(final=True)))
+            shell.print_block(self.render(final=True))
         try:
             store = getattr(self.ctx, "render_store", None)
             if store is not None:
@@ -403,6 +448,7 @@ def finish_working_round(
             from tools.background import has_running_work
 
             if has_running_work():
+                current.mark_waiting()
                 return
         except Exception:
             pass

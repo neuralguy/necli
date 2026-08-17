@@ -10,11 +10,13 @@ from rich.text import Text
 
 import tools
 from agent.syntax import _EXT_LEXER_MAP
+from config.display import is_block_full
 from config.i18n import t as _i18n
 from config.themes import t
 from config.ui import ui
 from tools._html_unescape import unescape_nested as _unescape_for_display
 from tools.models import TOOL_TITLE_ARG as _TOOL_TITLE_ARG
+from ui.text_styles import styled_count_text
 
 is_compact = True
 
@@ -26,12 +28,6 @@ console = Console()
 #: перерисовывалась бы столько раз, сколько в сессии сообщений.
 _STATIC_CAPTURE: Console | None = None
 
-# Последний семантический compact-блок в live scrollback. Инструмент сразу
-# после текста агента продолжает ход без пустой строки, а соседние инструменты
-# должны быть разделены одной пустой строкой. Replay ведёт spacing сам и в это
-# состояние не вмешивается.
-_LAST_LIVE_COMPACT_KIND: str | None = None
-
 
 def set_static_capture(target: Console | None) -> None:
     global _STATIC_CAPTURE
@@ -42,21 +38,34 @@ def get_static_capture() -> Console | None:
     return _STATIC_CAPTURE
 
 
-def mark_compact_assistant_output() -> None:
-    """Отметить, что последним live-блоком был текст ответа агента."""
-    global _LAST_LIVE_COMPACT_KIND
-    if _STATIC_CAPTURE is None:
-        _LAST_LIVE_COMPACT_KIND = "assistant"
+#: Печаталось ли уже что-то в консоль без Shell (headless/тесты) — для
+#: вертикального ритма print_block: перед первым блоком пустая строка не нужна.
+_console_printed_any = False
 
 
-def _space_compact_tool(parts: list) -> list:
-    """Добавить spacer только между двумя соседними live-инструментами."""
-    global _LAST_LIVE_COMPACT_KIND
+def print_block(renderable) -> None:
+    """Верхнеуровневый блок вывода: перед ним ровно одна пустая строка.
+
+    Единый вертикальный ритм для инструментов, ответов, мыслей, планов,
+    Working-итогов и poll-панелей. Решение принимается по фактическому хвосту
+    scrollback (Shell._static_tail_blank): соседние блоки не слипаются и не
+    раздваиваются. В режиме replay (static capture) отступ не добавляется —
+    replay ведёт свои отбивки сам.
+    """
+    global _console_printed_any
     if _STATIC_CAPTURE is not None:
-        return parts
-    adjacent_tool = _LAST_LIVE_COMPACT_KIND == "tool"
-    _LAST_LIVE_COMPACT_KIND = "tool"
-    return [Text(""), *parts] if adjacent_tool else parts
+        print_static(renderable)
+        return
+    from ui.shell import get_shell
+
+    shell = get_shell()
+    if shell is not None:
+        if not shell.static_tail_blank():
+            renderable = Group(Text(""), renderable)
+    elif _console_printed_any:
+        renderable = Group(Text(""), renderable)
+    _console_printed_any = True
+    print_static(renderable)
 
 
 def print_static(renderable) -> None:
@@ -164,19 +173,9 @@ def show_plan_update(plan, action: str = "", focus_index: int | None = None) -> 
     try:
         from planner import plan_to_snapshot, render_plan_panel
 
-        # Ведущая пустая строка и панель уходят одним print_static: два вызова
-        # означали бы два run_in_terminal, то есть лишний перерисованный кадр
-        # рамки между пустой строкой и самой панелью.
-        print_static(
-            Group(
-                Text(""),
-                render_plan_panel(
-                    plan,
-                    compact=False,
-                    focus_index=focus_index,
-                ),
-            )
-        )
+        # Ведущая пустая строка обеспечивается print_block; панель уходит одним
+        # вызовом (два run_in_terminal — лишний перерисованный кадр рамки).
+        print_block(render_plan_panel(plan, compact=False, focus_index=focus_index))
         if not _REPLAY_ACTIVE:
             from agent.loop import get_current_ctx
 
@@ -341,11 +340,11 @@ def _format_path_for_title(path) -> str:
     return str(path) if path else ""
 
 
-def _compact_display_value(value: str) -> str:
+def _compact_display_value(value: str, block_name: str = "") -> str:
     """Compact display: head + ... + tail for large text values."""
     if not isinstance(value, str):
         return value
-    if _EXPANDED_PREVIEW:
+    if (block_name and is_block_expanded(block_name)) or (not block_name and _EXPANDED_PREVIEW):
         return value
     return _compact_content(value, COMPACT_HEAD_LINES(), COMPACT_TAIL_LINES())
 
@@ -358,7 +357,7 @@ def prepare_display_args(args: dict, tool_name: str) -> dict:
 
     # Compact display of content for write_file / create_file / patch_file
     if "content" in display_args and isinstance(display_args["content"], str):
-        display_args["content"] = _compact_display_value(display_args["content"])
+        display_args["content"] = _compact_display_value(display_args["content"], tool_name)
 
     # Compact display for patches in patch_file
     if "patches" in display_args and isinstance(display_args["patches"], list):
@@ -367,14 +366,14 @@ def prepare_display_args(args: dict, tool_name: str) -> dict:
             cp = dict(p)
             for key in ("find", "replace", "insert"):
                 if key in cp and isinstance(cp[key], str):
-                    cp[key] = _compact_display_value(cp[key])
+                    cp[key] = _compact_display_value(cp[key], tool_name)
             compact_patches.append(cp)
         display_args["patches"] = compact_patches
 
     # Top-level find/replace fields
     for key in ("find", "replace", "insert"):
         if key in display_args and isinstance(display_args[key], str):
-            display_args[key] = _compact_display_value(display_args[key])
+            display_args[key] = _compact_display_value(display_args[key], tool_name)
 
     return display_args
 
@@ -476,7 +475,7 @@ def _format_tool_tokens(call: tools.ToolCall | None, result: tools.ToolResult) -
         return f" ↓{format_tokens(count_tokens(payload))}"
 
     payload = json.dumps(call.args if call else {}, ensure_ascii=False, default=str)
-    return f" ↓{format_tokens(count_tokens(payload))} ↑{format_tokens(count_tokens(result.output))}"
+    return f" ↑{format_tokens(count_tokens(result.output))} ↓{format_tokens(count_tokens(payload))}"
 
 
 def _truncate_cmd(cmd: str) -> str:
@@ -520,7 +519,7 @@ def _compact_title_text(
     # Синтетический блок нескольких Read: количество нужно только развёрнутым.
     combined_read_count = args.get("_combined_read_count")
     if tool_name == "read" and combined_read_count:
-        arg_disp = f"{combined_read_count} files" if _EXPANDED_PREVIEW else ""
+        arg_disp = f"{combined_read_count} files" if is_block_expanded("read") else ""
     # Несколько поисковых запросов отображаются как grouped Read: в свёрнутом
     # заголовке не перечисляем их (счётчик будет в summary), а в раскрытом
     # оставляем компактный счётчик — сами запросы идут отдельными строками.
@@ -529,7 +528,7 @@ def _compact_title_text(
         tool_name == "web_search" and isinstance(search_queries, list) and len(search_queries) > 1
     )
     if grouped_search:
-        arg_disp = f"{len(search_queries)} queries" if _EXPANDED_PREVIEW else ""
+        arg_disp = f"{len(search_queries)} queries" if is_block_expanded("web_search") else ""
     if tool_name == "grep" and args.get("pattern"):
         pat = str(args["pattern"])[:60]
         arg_disp = f"{pat} -> {path_disp}" if path_disp else pat
@@ -602,7 +601,7 @@ def _compact_summary_line(
             if not out:
                 return ""
             n_queries = len(re.findall(r"(?m)^\[Query \d+:", out))
-            if n_queries >= 2 and not _EXPANDED_PREVIEW:
+            if n_queries >= 2 and not is_block_expanded("web_search"):
                 return _i18n("compact.queries_n", n=n_queries)
         return ""
 
@@ -617,7 +616,7 @@ def _compact_summary_line(
             if not infos:
                 return ""
             # Свёрнутый вид: "N files" одной строкой; развёрнутый — дерево.
-            if len(infos) >= 2 and not _EXPANDED_PREVIEW:
+            if len(infos) >= 2 and not is_block_expanded("memory"):
                 return _i18n("compact.files_n", n=len(infos))
             return "\n".join(infos)
         return ""
@@ -692,6 +691,11 @@ def COMPACT_PREVIEW_LINES_SHELL():
 _EXPANDED_PREVIEW = False
 
 
+def is_block_expanded(block_name: str) -> bool:
+    """Whether this block is full in the currently selected display mode."""
+    return is_block_full(block_name, compact=not _EXPANDED_PREVIEW)
+
+
 def set_expanded_preview(active: bool) -> None:
     global _EXPANDED_PREVIEW
     _EXPANDED_PREVIEW = bool(active)
@@ -702,7 +706,7 @@ def is_expanded_preview() -> bool:
 
 
 def _preview_limit() -> int | None:
-    """None = без ограничения (Ctrl+O expand), иначе COMPACT_PREVIEW_LINES."""
+    """Default compact limit; callers use is_block_expanded for named blocks."""
     return None if _EXPANDED_PREVIEW else COMPACT_PREVIEW_LINES()
 
 
@@ -713,8 +717,11 @@ def _compact_preview_content(
 
     Возвращает список Rich-renderable строк (Text/Syntax) или None.
     """
-    # patch_file — diff-preview из output
+    # patch_file — diff-preview из output. «No changes» — no-op: дифф из args
+    # вводил в заблуждение (выглядел как применённый патч при нетронутом файле).
     if tool_name == "patch_file" and result is not None and result.status == "ok":
+        if "No changes in" in (result.output or ""):
+            return None
         return _compact_patch_preview(args, result)
 
     # create_file — summary "N строк" + нумерованный листинг контента
@@ -739,7 +746,7 @@ def _compact_preview_content(
         path = args.get("path", "")
         ext_m = re.match(r".*\.(\w+)$", path or "")
         lexer = _EXT_LEXER_MAP.get(ext_m.group(1).lower(), "text") if ext_m else "text"
-        limit = _preview_limit()
+        limit = None if is_block_expanded(tool_name) else _preview_limit()
         head = lines if limit is None else lines[:limit]
         num_w = len(str(total))
         for i, ln in enumerate(head, start=1):
@@ -762,9 +769,12 @@ def _compact_preview_content(
         if total > len(head):
             rest = total - len(head)
             out.append(
-                Text(
-                    "        " + _i18n("compact.more_lines", n=rest),
-                    style=f"italic {t('dim_text')}",
+                styled_count_text(
+                    _i18n("compact.more_lines", n=rest),
+                    rest,
+                    prefix="        ",
+                    base_style=f"italic {t('dim_text')}",
+                    number_style=f"bold {t('info')}",
                 )
             )
         return out
@@ -779,7 +789,7 @@ def _compact_preview_content(
             return None
         lines = output.split("\n")
         total = len(lines)
-        limit = None if _EXPANDED_PREVIEW else COMPACT_PREVIEW_LINES_SHELL()
+        limit = None if is_block_expanded(tool_name) else COMPACT_PREVIEW_LINES_SHELL()
         failed = result.status != "ok"
         if limit is None or total <= limit:
             head = lines
@@ -793,13 +803,29 @@ def _compact_preview_content(
         num_w = len(str(total))
         out: list = []
         if offset > 0:
-            out.append(Text("        " + _i18n("compact.more_lines", n=offset), style="dim italic"))
+            out.append(
+                styled_count_text(
+                    _i18n("compact.more_lines", n=offset),
+                    offset,
+                    prefix="        ",
+                    base_style="dim italic",
+                    number_style=f"bold {t('info')}",
+                )
+            )
         for i, ln in enumerate(head, start=offset + 1):
             num = Text(f"      {str(i).rjust(num_w)} ", style=t("fg_primary"))
             out.append(num + Text(ln))
         if offset == 0 and total > len(head):
             rest = total - len(head)
-            out.append(Text("        " + _i18n("compact.more_lines", n=rest), style="dim italic"))
+            out.append(
+                styled_count_text(
+                    _i18n("compact.more_lines", n=rest),
+                    rest,
+                    prefix="        ",
+                    base_style="dim italic",
+                    number_style=f"bold {t('info')}",
+                )
+            )
         return out
 
     # Web search — тот же grouped UX, что у Read: в свёрнутом виде счётчик,
@@ -817,11 +843,14 @@ def _compact_preview_content(
             return None
 
         indent = "   "
-        if not _EXPANDED_PREVIEW:
+        if not is_block_expanded(tool_name):
             return [
-                Text(
-                    f"{indent}\u23bf {_i18n('compact.queries_n', n=len(queries))}",
-                    style=f"italic {t('dim_text')}",
+                styled_count_text(
+                    _i18n("compact.queries_n", n=len(queries)),
+                    len(queries),
+                    prefix=f"{indent}\u23bf ",
+                    base_style=f"italic {t('dim_text')}",
+                    number_style=f"bold {t('info')}",
                 )
             ]
 
@@ -846,7 +875,7 @@ def _compact_preview_content(
     # image_search — в свёрнутом виде None (сводка через _compact_summary_line),
     # в развёрнутом — полный вывод инструмента.
     if tool_name == "image_search" and result is not None and result.status == "ok":
-        if not _EXPANDED_PREVIEW:
+        if not is_block_expanded(tool_name):
             return None
         output = (result.output or "").strip()
         if not output:
@@ -877,7 +906,7 @@ def _compact_read_preview(result: tools.ToolResult, args: dict | None = None) ->
     При _EXPANDED_PREVIEW показывает кликабельные пути файлов.
     При свёрнутом виде возвращает None — _compact_summary_line покажет «N файлов».
     """
-    if not _EXPANDED_PREVIEW:
+    if not is_block_expanded("read"):
         return None
     output = (result.output or "").strip()
     if not output:
@@ -960,16 +989,19 @@ def _compact_result_list_preview(tool_name: str, result: tools.ToolResult) -> li
             )
         )
 
-    limit = None if _EXPANDED_PREVIEW else 2
+    limit = None if is_block_expanded(tool_name) else 2
     head = rows if limit is None else rows[:limit]
     for ln in head:
         out.append(Text("      " + ln.strip(), style=t("dim_text")))
     if len(rows) > len(head):
         rest = len(rows) - len(head)
         out.append(
-            Text(
-                "        " + _i18n("compact.more_lines", n=rest),
-                style=f"italic {t('dim_text')}",
+            styled_count_text(
+                _i18n("compact.more_lines", n=rest),
+                rest,
+                prefix="        ",
+                base_style=f"italic {t('dim_text')}",
+                number_style=f"bold {t('info')}",
             )
         )
     return out
@@ -994,7 +1026,7 @@ def _compact_memory_preview(result: tools.ToolResult) -> list | None:
         # В compact оставляем только основные поля; Ctrl+O показывает все.
         for kv in meta_str.split(","):
             kv = kv.strip()
-            if _EXPANDED_PREVIEW or kv.startswith(("scope=", "type=")):
+            if is_block_expanded("memory") or kv.startswith(("scope=", "type=")):
                 meta_parts.append(kv)
 
     out: list = []
@@ -1007,15 +1039,18 @@ def _compact_memory_preview(result: tools.ToolResult) -> list | None:
         )
 
     body_lines = body.split("\n") if body else []
-    limit = None if _EXPANDED_PREVIEW else 5
+    limit = None if is_block_expanded("memory") else 5
     head = body_lines if limit is None else body_lines[:limit]
     out.extend(Text(f"      {ln}", style=t("dim_text")) for ln in head)
     if limit is not None and len(body_lines) > limit:
         rest_n = len(body_lines) - limit
         out.append(
-            Text(
-                "      " + _i18n("compact.more_lines", n=rest_n),
-                style=f"italic {t('dim_text')}",
+            styled_count_text(
+                _i18n("compact.more_lines", n=rest_n),
+                rest_n,
+                prefix="      ",
+                base_style=f"italic {t('dim_text')}",
+                number_style=f"bold {t('info')}",
             )
         )
     return out or None
@@ -1027,7 +1062,7 @@ def _compact_memory_catalog_preview(result: tools.ToolResult) -> list | None:
     if not output:
         return None
     rows = [line for line in output.split("\n") if line.strip()]
-    limit = None if _EXPANDED_PREVIEW else 2
+    limit = None if is_block_expanded("memory") else 2
     head = rows if limit is None else rows[:limit]
     out = []
     for i, line in enumerate(head):
@@ -1040,9 +1075,12 @@ def _compact_memory_catalog_preview(result: tools.ToolResult) -> list | None:
         )
     if limit is not None and len(rows) > limit:
         out.append(
-            Text(
-                "      " + _i18n("compact.more_lines", n=len(rows) - limit),
-                style=f"italic {t('dim_text')}",
+            styled_count_text(
+                _i18n("compact.more_lines", n=len(rows) - limit),
+                len(rows) - limit,
+                prefix="      ",
+                base_style=f"italic {t('dim_text')}",
+                number_style=f"bold {t('info')}",
             )
         )
     return out
@@ -1085,58 +1123,71 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
     m = re.match(r".*\.(\w+)$", file_path)
     lexer = _EXT_LEXER_MAP.get(m.group(1).lower(), "text") if m else "text"
 
-    from agent.diff_render import _locate_find_in_file as _locate
-
-    # Стартовые строки блоков, посчитанные patch_file'ом по ИСХОДНОМУ файлу
-    # (до правки). Надёжнее _locate: после записи find_text в файле уже нет.
-    line_starts = list(getattr(result, "line_starts", None) or [])
-    _block_idx = [0]
-
-    def _split(text: str) -> list[str]:
-        lns = (text or "").split("\n")
-        if lns and lns[-1] == "":
-            lns = lns[:-1]
-        return lns
-
-    # Собираем блоки (find, replace) с абсолютной стартовой строкой в файле.
-    # Структура minus_lines / plus_lines: список (abs_line_number, text).
+    # Prefer the actual applied hunks carried by patch_file.  Reconstructing a
+    # diff from tool arguments was lossy for native JSON calls and fuzzy edits.
     minus_lines: list[tuple[int, str]] = []
     plus_lines: list[tuple[int, str]] = []
+    actual_changes = getattr(result, "patch_changes", None) or []
+    if actual_changes:
+        for change in actual_changes:
+            if not isinstance(change, dict):
+                continue
+            old_start = int(change.get("old_start", 1) or 1)
+            new_start = int(change.get("new_start", old_start) or old_start)
+            for offset, line in enumerate(change.get("old_lines") or []):
+                minus_lines.append((old_start + offset, str(line)))
+            for offset, line in enumerate(change.get("new_lines") or []):
+                plus_lines.append((new_start + offset, str(line)))
+    else:
+        from agent.diff_render import _locate_find_in_file as _locate
 
-    def _add_block(find_text: str, replace_text: str, insert_text: str = "") -> None:
-        find_lns = _split(find_text)
-        repl_lns = _split(replace_text or insert_text)
-        bi = _block_idx[0]
-        _block_idx[0] += 1
-        if bi < len(line_starts):
-            start = line_starts[bi]
-        else:
-            start = _locate(file_path, find_text) if find_text else 1
-        # Срезаем общий префикс/суффикс — это анкорные строки, они не менялись.
-        pref = 0
-        while pref < len(find_lns) and pref < len(repl_lns) and find_lns[pref] == repl_lns[pref]:
-            pref += 1
-        suf = 0
-        while (
-            suf < len(find_lns) - pref
-            and suf < len(repl_lns) - pref
-            and find_lns[len(find_lns) - 1 - suf] == repl_lns[len(repl_lns) - 1 - suf]
-        ):
-            suf += 1
-        find_core = find_lns[pref : len(find_lns) - suf] if suf else find_lns[pref:]
-        repl_core = repl_lns[pref : len(repl_lns) - suf] if suf else repl_lns[pref:]
-        for k, ln in enumerate(find_core):
-            minus_lines.append((start + pref + k, ln))
-        for k, ln in enumerate(repl_core):
-            plus_lines.append((start + pref + k, ln))
+        # Fallback for in-progress streaming and old persisted sessions.
+        line_starts = list(getattr(result, "line_starts", None) or [])
+        block_idx = [0]
 
-    patches = args.get("patches")
-    if isinstance(patches, list):
-        for p in patches:
-            if isinstance(p, dict):
-                _add_block(p.get("find", ""), p.get("replace", ""), p.get("insert", ""))
-    if "find" in args or "replace" in args or "insert" in args:
-        _add_block(args.get("find", ""), args.get("replace", ""), args.get("insert", ""))
+        def _split(text: str) -> list[str]:
+            lns = (text or "").split("\n")
+            if lns and lns[-1] == "":
+                lns = lns[:-1]
+            return lns
+
+        def _add_block(find_text: str, replace_text: str, insert_text: str = "") -> None:
+            find_lns = _split(find_text)
+            repl_lns = _split(replace_text or insert_text)
+            bi = block_idx[0]
+            block_idx[0] += 1
+            start = line_starts[bi] if bi < len(line_starts) else (
+                _locate(file_path, find_text) if find_text else 1
+            )
+            # Anchor lines shared by FIND/REPLACE are context, not changes.
+            pref = 0
+            while pref < len(find_lns) and pref < len(repl_lns) and find_lns[pref] == repl_lns[pref]:
+                pref += 1
+            suf = 0
+            while (
+                suf < len(find_lns) - pref
+                and suf < len(repl_lns) - pref
+                and find_lns[len(find_lns) - 1 - suf] == repl_lns[len(repl_lns) - 1 - suf]
+            ):
+                suf += 1
+            find_core = find_lns[pref : len(find_lns) - suf] if suf else find_lns[pref:]
+            repl_core = repl_lns[pref : len(repl_lns) - suf] if suf else repl_lns[pref:]
+            for offset, line in enumerate(find_core):
+                minus_lines.append((start + pref + offset, line))
+            for offset, line in enumerate(repl_core):
+                plus_lines.append((start + pref + offset, line))
+
+        patches = args.get("patches")
+        if isinstance(patches, list):
+            for patch in patches:
+                if isinstance(patch, dict):
+                    _add_block(
+                        patch.get("find", ""),
+                        patch.get("replace", ""),
+                        patch.get("insert", ""),
+                    )
+        if "find" in args or "replace" in args or "insert" in args:
+            _add_block(args.get("find", ""), args.get("replace", ""), args.get("insert", ""))
 
     total = len(minus_lines) + len(plus_lines)
     if total == 0:
@@ -1146,7 +1197,7 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
     # затем все добавленные (+), каждая со своим абсолютным номером, фон на
     # всю ширину терминала.
     total_lines = len(minus_lines) + len(plus_lines)
-    limit = _preview_limit()
+    limit = None if is_block_expanded("patch_file") else _preview_limit()
     if limit is None:
         minus_show = minus_lines
         plus_show = plus_lines
@@ -1212,9 +1263,12 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
     rest_rows = total_lines - shown
     if rest_rows > 0:
         out.append(
-            Text(
-                "        " + _i18n("compact.more_lines", n=rest_rows),
-                style=f"italic {t('dim_text')}",
+            styled_count_text(
+                _i18n("compact.more_lines", n=rest_rows),
+                rest_rows,
+                prefix="        ",
+                base_style=f"italic {t('dim_text')}",
+                number_style=f"bold {t('info')}",
             )
         )
     return out
@@ -1264,17 +1318,12 @@ def _show_tool_compact(
     else:
         status_full = f"{icon}{time_str}{_format_tool_tokens(call, result)}" if icon else ""
 
-    # Весь блок инструмента печатается ОДНИМ print_static. Построчная печать
-    # давала бы по run_in_terminal на строку: рамка снималась и возвращалась
-    # десять раз на один результат, и между строками мог вклиниться чужой вывод.
-    # После текста агента инструмент идёт без пустой строки. Если предыдущим
-    # видимым блоком тоже был инструмент, _space_compact_tool добавит ровно
-    # один separator, чтобы соседние вызовы не слипались.
-    parts: list = _space_compact_tool(
-        [
-            _compact_title_text(tool_name, args, status_full, status_color),
-        ]
-    )
+    # Весь блок инструмента печатается ОДНИМ print_block (внутри — один
+    # print_static): построчная печать давала бы по run_in_terminal на строку.
+    # Пустая строка перед блоком гарантируется вертикальным ритмом print_block.
+    parts: list = [
+        _compact_title_text(tool_name, args, status_full, status_color),
+    ]
 
     # Сначала пробуем богатое превью контента (только если успех).
     # Используем НЕурезанные raw_args — _compact_preview_content сам ограничивает
@@ -1283,7 +1332,7 @@ def _show_tool_compact(
         preview = _compact_preview_content(tool_name, raw_args, result)
         if preview:
             parts.extend(preview)
-            print_static(Group(*parts))
+            print_block(Group(*parts))
             return
 
     summary = _compact_summary_line(tool_name, args, result, cmd)
@@ -1302,8 +1351,18 @@ def _show_tool_compact(
                     if i == len(lines) - 1
                     else ui.get("symbols.tree_branch", "├─ ")
                 )
-            parts.append(Text(f"{indent}{prefix}{line}", style=sum_color))
-    print_static(Group(*parts))
+            rendered = Text(f"{indent}{prefix}{line}", style=sum_color)
+            if "ctrl+o" in line.lower():
+                count_match = re.search(r"\d+", line)
+                if count_match:
+                    start = len(indent) + len(prefix) + count_match.start()
+                    rendered.stylize(
+                        f"bold {t('info')}",
+                        start,
+                        start + len(count_match.group(0)),
+                    )
+            parts.append(rendered)
+    print_block(Group(*parts))
 
 
 def show_tool_combined(
@@ -1320,20 +1379,22 @@ def show_tool_combined(
     _show_tool_compact(call, result, cmd, tool_name, args, subtitle=subtitle)
 
 
-def show_read_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> None:
-    """Сгруппировать несколько read результатов в один компактный блок.
+def show_scan_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> None:
+    """Сгруппировать несколько соседних read/grep результатов в один блок.
 
     Вызывается из executor.execute_and_show, когда в одном вызове агент
-    читает несколько файлов подряд — вместо N отдельных блоков показываем
-    один заголовок и список файлов.
+    читает файлы и запускает поиски подряд — вместо N отдельных блоков
+    показываем один заголовок и список операций.
 
-    По умолчанию блок свёрнут — показывает только «… N файлов (ctrl+o развернуть)».
-    При Ctrl+O (replay) раскрывается в список файлов с кликабельными путями.
+    По умолчанию блок свёрнут — показывает только «… N файлов/поисков
+    (ctrl+o развернуть)». При Ctrl+O (replay) раскрывается в список строк с
+    кликабельными путями.
     """
     if not pairs:
         return
 
     n = len(pairs)
+    names = {call.tool_name for call, _ in pairs}
     all_ok = all(r.status == "ok" for _, r in pairs)
     icon = "✓" if all_ok else "✗"
     status_color = "green" if all_ok else "red"
@@ -1350,53 +1411,67 @@ def show_read_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> 
     info_items: list[tuple[str, str]] = []  # (path, suffix)
     all_lines: list[str] = []
     for call, result in pairs:
-        path = (call.args or {}).get("path", "") or ""
-        item = _format_read_info(call, result)
+        if call.tool_name == "grep":
+            item = _format_grep_info(call, result)
+        else:
+            item = _format_read_info(call, result)
         if item is not None:
             path, suffix = item
         else:
-            suffix = "read"
+            path, suffix = (call.args or {}).get("path", "") or "", "read"
         info_items.append((path, suffix))
         all_lines.append(f"[{path} · {suffix}]")
     combined_output = "\n".join(all_lines)
 
-    # Синтетический вызов — без path/paths в args, чтобы заголовок был просто «Read»
+    # Синтетический вызов — без path/paths в args, чтобы заголовок не тащил
+    # скобки с путями. Имя — по составу группы (replay берёт из него лейбл).
+    synthetic_name = "read" if "read" in names else "grep"
     combined_call = tools.ToolCall(
-        command="read",
-        tool_name="read",
+        command=synthetic_name,
+        tool_name=synthetic_name,
         args={"_combined_read_count": n},
         raw="",
     )
     combined_result = tools.ToolResult(
-        name="read",
+        name=synthetic_name,
         status="ok" if all_ok else "error",
         output=combined_output,
         exit_code=0,
-        command="read",
+        command=synthetic_name,
         elapsed=total_elapsed,
     )
 
     # Сохраняем один combined entry в RenderStore (для Ctrl+O replay)
     _store_tool(combined_call, combined_result)
 
-    # Рендер заголовка — без скобок (paths в теле блока). Блок целиком уходит
-    # одним print_static: см. _show_tool_compact.
-    parts: list = _space_compact_tool(
-        [
+    status_text = f"{icon}{time_str} ↑{format_tokens(total_tk)}"
+    if names == {"read"}:
+        parts: list = [
             _compact_title_text(
                 "read",
                 {"_combined_read_count": n},
-                f"{icon}{time_str} ↑{format_tokens(total_tk)}",
+                status_text,
                 status_color,
             )
         ]
-    )
+    else:
+        read_disp, read_color = TOOL_DISPLAY.get("read", ("Read", "cyan"))
+        grep_disp, grep_color = TOOL_DISPLAY.get("grep", ("Grep", "cyan"))
+        if "read" in names:
+            display, color = f"{read_disp} + {grep_disp}", read_color
+        else:
+            display, color = grep_disp, grep_color
+        title = Text()
+        title.append(display, style=f"bold {color}")
+        title.append("  ")
+        title.append(status_text, style=status_color)
+        parts = [title]
 
     if not info_items:
-        print_static(Group(*parts))
+        print_block(Group(*parts))
         return
 
-    if _EXPANDED_PREVIEW:
+    if is_block_expanded(synthetic_name):
         # Раскрытый вид — кликабельные file:// URI
         indent = "   "
         for i, (path, suffix) in enumerate(info_items):
@@ -1407,15 +1482,41 @@ def show_read_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> 
             line.append(f" · {suffix}", style=t("info"))
             parts.append(line)
     else:
-        # Свёрнутый вид — "N файлов (ctrl+o развернуть)"
+        # Свёрнутый вид — одна строка-счётчик (ctrl+o развернуть)
         indent = "   "
+        count_key = "compact.files_n" if names == {"read"} else "compact.scans_n"
         parts.append(
-            Text(
-                f"{indent}\u23bf {_i18n('compact.files_n', n=n)}",
-                style=f"italic {t('dim_text')}",
+            styled_count_text(
+                _i18n(count_key, n=n),
+                n,
+                prefix=f"{indent}\u23bf ",
+                base_style=f"italic {t('dim_text')}",
+                number_style=f"bold {t('info')}",
             )
         )
-    print_static(Group(*parts))
+    print_block(Group(*parts))
+
+
+#: Совместимость со старым именем: слияние ранее касалось только read.
+show_read_combined = show_scan_combined
+
+
+def _format_grep_info(call: tools.ToolCall, result: tools.ToolResult) -> tuple[str, str]:
+    """(path, suffix) для grep-строки комбинированного блока.
+
+    path — кликабельная цель поиска; suffix — pattern и первая строка вывода
+    (сводка «Found N matches …»), чтобы строка была узнаваемой без тела.
+    """
+    args = call.args or {}
+    path = str(args.get("path") or "") or "."
+    pattern = str(args.get("pattern") or args.get("include") or "").strip()
+    first = (result.output or "").strip().split("\n", 1)[0].rstrip(":")
+    suffix_parts = []
+    if pattern:
+        suffix_parts.append(f"/{pattern[:30]}/")
+    if first:
+        suffix_parts.append(first[:80])
+    return path, " · ".join(suffix_parts) or "grep"
 
 
 def _format_read_info(call: tools.ToolCall, result: tools.ToolResult) -> tuple[str, str] | None:

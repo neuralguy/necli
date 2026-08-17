@@ -11,7 +11,6 @@ from rich.text import Text
 import tools
 from agent.block_stream import BlockStreamer
 from agent.context import AgentContext
-from agent.display import print_static
 from agent.native_tool_stream import (
     CallState,
     NativeCall,
@@ -125,6 +124,8 @@ class LiveStream:
         self._think_started_at: float | None = None
         self.inline_results: list[tools.ToolResult] = []
         self.inline_call_keys: list[tuple[str, str]] = []
+        self._deferred_scan_calls: list = []
+        self._deferred_native_scan_calls: list[tuple[NativeCall, tools.ToolCall]] = []
         #: Занята ли динамическая зона _STREAM_ZONE нашим кадром. Раньше здесь
         #: лежал объект Live; наличие кадра проверяется в тех же местах.
         self._dyn = False
@@ -155,17 +156,6 @@ class LiveStream:
         self._native_executed_indexes: set[int] = set()
         self._native_exec_lock: asyncio.Lock | None = None
         self._native_tools_started: bool = False
-
-    def _lead_blank(self) -> None:
-        """Одна пустая строка-разделитель перед элементом.
-
-        Печатается ВСЕГДА (включая первый элемент turn'а — отделяет от
-        введённого prompt'а). Дубли исключены тем, что каждый элемент зовёт
-        _lead_blank ровно один раз перед собой и больше никто пустых не печатает.
-        """
-        if getattr(self.ctx, "silent_console", False):
-            return
-        print_static(Text(""))
 
     def _ts(self):
         self._tick_spinners()
@@ -330,12 +320,9 @@ class LiveStream:
                 if self._reasoning_started_at is not None
                 else None
             )
-            print_static(
-                Group(
-                    Text(""),
-                    render_reasoning_panel(rb, elapsed=elapsed),
-                )
-            )
+            from agent.display import print_block
+
+            print_block(render_reasoning_panel(rb, elapsed=elapsed))
         except Exception:
             logger.debug("render_reasoning_panel failed", exc_info=True)
         self._reasoning_printed = True
@@ -416,12 +403,9 @@ class LiveStream:
             if self._think_started_at is not None
             else None
         )
-        print_static(
-            Group(
-                Text(""),
-                render_think_static(self.think_log, elapsed=elapsed),
-            )
-        )
+        from agent.display import print_block
+
+        print_block(render_think_static(self.think_log, elapsed=elapsed))
         self._think_static_printed = True
         self._store_think_raw_steps()
 
@@ -472,6 +456,8 @@ class LiveStream:
         self._reasoning_started_at = None
         self.inline_results = []
         self.inline_call_keys = []
+        self._deferred_scan_calls = []
+        self._deferred_native_scan_calls = []
         self.ctx.step_tracker.reset()
         self._plan_processed_count = 0
         self._plan_shown_count = 0
@@ -589,14 +575,19 @@ class LiveStream:
             return
 
         self._native_scheduled_indexes.add(call.index)
+        coro = self._exec_sealed_call(call)
         try:
             prefix = "spec-final" if final else "spec"
             task = _aio.create_task(
-                self._exec_sealed_call(call),
+                coro,
                 name=f"{prefix}-{call.index}-{call.name}",
             )
             self._pending_exec_tasks.append(task)
         except RuntimeError:
+            # create_task() may reject the coroutine when there is no running
+            # event loop. Close it explicitly so the fallback path does not
+            # leak an un-awaited coroutine (and a RuntimeWarning at shutdown).
+            coro.close()
             self._native_scheduled_indexes.discard(call.index)
             logger.debug("native stream exec: no running loop")
 
@@ -664,11 +655,44 @@ class LiveStream:
         for call in ready:
             self._schedule_native_call(call)
 
+    async def _execute_native_calls(self, pending: list[tuple[NativeCall, tools.ToolCall]]) -> None:
+        """Исполнить native-вызовы одним батчем и сохранить их результаты."""
+        from agent.executor import execute_and_show_async
+        from agent.loop import _tool_call_identity
+
+        if not pending:
+            return
+        native_calls, tool_calls = zip(*pending, strict=True)
+        results = await execute_and_show_async(
+            list(tool_calls),
+            event_handler=self.ctx.event_handler,
+        )
+        self.inline_results.extend(results)
+        self.inline_call_keys.extend(_tool_call_identity(tool_call) for tool_call in tool_calls)
+        for native_call in native_calls:
+            native_call.state = CallState.EXECUTED
+        if any(result.fatal for result in results):
+            self.ctx.interrupted = True
+
+    async def _flush_deferred_native_scan_tools_locked(self) -> None:
+        if not self._deferred_native_scan_calls:
+            return
+        pending = list(self._deferred_native_scan_calls)
+        self._deferred_native_scan_calls.clear()
+        await self._execute_native_calls(pending)
+
+    async def _flush_deferred_native_scan_tools(self) -> None:
+        """Исполнить накопленные native read/grep одним scan-батчем."""
+        if not self._deferred_native_scan_calls:
+            return
+        if self._native_exec_lock is None:
+            self._native_exec_lock = asyncio.Lock()
+        async with self._native_exec_lock:
+            await self._flush_deferred_native_scan_tools_locked()
+
     async def _exec_sealed_call(self, call: NativeCall) -> None:
         """Исполнить sealed native call строго по одному, пока модель стримится."""
         from agent._common import native_tool_calls_to_calls
-        from agent.executor import execute_and_show_async
-        from agent.loop import _tool_call_identity
 
         args = call.parsed_args()
         if args is None:
@@ -694,15 +718,11 @@ class LiveStream:
                 # Дать Shell один тик, чтобы clear_dynamic + static reasoning
                 # реально применились раньше tool_start/tool_result.
                 await asyncio.sleep(0)
-                results = await execute_and_show_async(
-                    [tool_call],
-                    event_handler=self.ctx.event_handler,
-                )
-                self.inline_results.extend(results)
-                self.inline_call_keys.append(_tool_call_identity(tool_call))
-                call.state = CallState.EXECUTED
-                if any(r.fatal for r in results):
-                    self.ctx.interrupted = True
+                if tool_call.tool_name in ("read", "grep"):
+                    self._deferred_native_scan_calls.append((call, tool_call))
+                else:
+                    await self._flush_deferred_native_scan_tools_locked()
+                    await self._execute_native_calls([(call, tool_call)])
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -730,6 +750,7 @@ class LiveStream:
             _drain_started = time.monotonic()
             _pending_count = len(self._pending_exec_tasks)
             await _aio.gather(*self._pending_exec_tasks, return_exceptions=True)
+            await self._flush_deferred_native_scan_tools()
             _drain_elapsed = time.monotonic() - _drain_started
             if _drain_elapsed >= 0.10:
                 logger.info(
@@ -776,6 +797,7 @@ class LiveStream:
         """
         if text != self.buffer:
             await self.on_text_update(text)
+        await self._flush_deferred_scan_tools()
 
     def _init_first_chunk(self) -> None:
         """Фиксирует время первого чанка (для метрик TTFB)."""
@@ -940,6 +962,12 @@ class LiveStream:
             self._current_text_start = max(self._current_text_start, partial.start)
             self._start_live()
 
+    async def _flush_deferred_scan_tools(self) -> None:
+        """Закрыть накопившуюся read/grep-фазу единым batch-вызовом."""
+        from agent.stream_tool_exec import flush_deferred_scan_tools
+
+        await flush_deferred_scan_tools(self, self._deferred_scan_calls)
+
     async def _process_complete_tools(self) -> None:
         """Исполняет все готовые tool-блоки, начиная с _current_text_start."""
         from agent.stream_tool_exec import handle_complete_tool
@@ -973,7 +1001,13 @@ class LiveStream:
                         eh.emit_stream_chunk(text_before, "tool_prefix")
                 except Exception:
                     logger.warning("emit tool_prefix failed", exc_info=True)
-            await handle_complete_tool(self, complete)
+            if complete.tool_name not in ("read", "grep"):
+                await self._flush_deferred_scan_tools()
+            await handle_complete_tool(
+                self,
+                complete,
+                deferred_scan_calls=self._deferred_scan_calls,
+            )
             self._current_text_start = complete.end
             self._printed_text_end = complete.end
             # Новая «страница» текста после tool-блока — сбрасываем.
@@ -1074,9 +1108,8 @@ class LiveStream:
         # всего ответа, и в scrollback мысли оказываются ниже текста.
         if not self._block_streamer.has_active and not self._block_streamer._emitted_any:
             self._flush_reasoning_static()
-            # Ведущая пустая строка перед первым блоком текста в этом сегменте
-            # (если до него уже что-то было напечатано — think/tool/etc).
-            self._lead_blank()
+            # Ведущая пустая строка перед текстом обеспечивается вертикальным
+            # ритмом print_block внутри BlockStreamer.
         self._block_streamer.update(cleaned)
 
     def stop(self, show_final: bool = True, cancelled: bool = False):

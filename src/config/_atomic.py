@@ -26,7 +26,10 @@ def atomic_write_text(path: Path | str, text: str, *, encoding: str = "utf-8") -
     fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
     try:
         if existing_mode is not None:
-            os.fchmod(fd, existing_mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, existing_mode)
+            else:
+                os.chmod(tmp_name, existing_mode)
         with os.fdopen(fd, "w", encoding=encoding) as fh:
             # Ownership of fd has moved to the file object. Mark it invalid so
             # the exception path does not attempt to close it twice.

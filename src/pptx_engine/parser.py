@@ -240,9 +240,10 @@ def _parse_text(node: ET.Element, theme: dict[str, str]) -> TextBody | None:
             "b": attr_int(body_pr, "bIns", 45720),
         }
     autofit = "none"
-    if tx_body.find("a:normAutofit", NS) is not None:
+    # DrawingML stores autofit inside a:bodyPr, not beside it in a:txBody.
+    if body_pr is not None and body_pr.find("a:normAutofit", NS) is not None:
         autofit = "shrink"
-    elif tx_body.find("a:spAutoFit", NS) is not None:
+    elif body_pr is not None and body_pr.find("a:spAutoFit", NS) is not None:
         autofit = "resize"
     return TextBody(
         [_parse_paragraph(p, theme) for p in tx_body.findall("a:p", NS)],
@@ -451,7 +452,7 @@ def _parse_group(
         identifier,
         "group",
         anchor,
-        _find_xfrm(group_pr or node),
+        _find_xfrm(group_pr if group_pr is not None else node),
         name,
         descr,
         nv_id=nv_id,
@@ -598,7 +599,8 @@ def _placeholder_transforms(xml: str | None) -> dict[str, Transform]:
         if ph is None:
             continue
         kind = ph.get("type", "body")
-        transform = _find_xfrm(shape.find("p:spPr", NS) or shape)
+        sp_pr = shape.find("p:spPr", NS)
+        transform = _find_xfrm(sp_pr if sp_pr is not None else shape)
         if transform.offset.cx or transform.offset.cy:
             result.setdefault(kind, transform)
     return result

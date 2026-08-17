@@ -137,8 +137,11 @@ async def _handle_slash(
 
     if head == "/models":
         active_api = config.get_active_api()
-        if not active_api:
-            return r
+        from apis.chatgpt_usage import (
+            get_cached_chatgpt_usage,
+            schedule_connected_chatgpt_usage_refresh,
+            subscribe_chatgpt_usage,
+        )
         from apis.config import get_provider_balance
         from apis.registry import get_definitions
 
@@ -150,6 +153,7 @@ async def _handle_slash(
         api_models = []
         model_providers = []  # provider_id, параллельно api_models
         group_labels = []  # имя провайдера для секции, параллельно api_models
+        chatgpt_group_names: dict[int, str] = {}
         from apis.models import ApiModelInfo
 
         def _append_router_manager(label: str = "routers") -> None:
@@ -169,11 +173,25 @@ async def _handle_slash(
             if not defn or not defn.models:
                 continue
             balance = get_provider_balance(pid)
-            label = f"{defn.name} · {balance:g}$" if balance else defn.name
+            if defn.type == "chatgpt":
+                usage = get_cached_chatgpt_usage()
+                weekly = (
+                    _(
+                        "api.chatgpt_weekly_remaining",
+                        percent=f"{float(usage['remaining_percent']):g}",
+                    )
+                    if usage
+                    else _("api.chatgpt_weekly_unavailable")
+                )
+                label = f"{defn.name} · {weekly}"
+            else:
+                label = f"{defn.name} · {balance:g}$" if balance else defn.name
             for m in defn.models:
                 api_models.append(m)
                 model_providers.append(pid)
                 group_labels.append(label)
+                if defn.type == "chatgpt":
+                    chatgpt_group_names[len(group_labels) - 1] = defn.name
             if pid == "routers":
                 _append_router_manager(label)
                 manager_added = True
@@ -184,12 +202,33 @@ async def _handle_slash(
         current_api_model = config.get_active_api_model()
         from ui.menu import select_api_model_menu
 
-        choice = await _call_menu(
-            select_api_model_menu,
-            api_models,
-            current_id=current_api_model,
-            group_labels=group_labels,
-        )
+        def unsubscribe_usage() -> None:
+            pass
+
+        if chatgpt_group_names:
+
+            def _update_usage(usage: dict) -> None:
+                weekly = _(
+                    "api.chatgpt_weekly_remaining",
+                    percent=f"{float(usage['remaining_percent']):g}",
+                )
+                for index, provider_name in chatgpt_group_names.items():
+                    group_labels[index] = f"{provider_name} · {weekly}"
+                from ui.overlays import refresh_active_panel
+
+                refresh_active_panel()
+
+            unsubscribe_usage = subscribe_chatgpt_usage(_update_usage)
+            schedule_connected_chatgpt_usage_refresh()
+        try:
+            choice = await _call_menu(
+                select_api_model_menu,
+                api_models,
+                current_id=current_api_model,
+                group_labels=group_labels,
+            )
+        finally:
+            unsubscribe_usage()
         if choice is not None:
             chosen_model = api_models[choice]
             chosen_provider = model_providers[choice]
@@ -278,6 +317,12 @@ async def _handle_slash(
         from commands.menus.settings import settings_interactive
 
         await _call_menu(settings_interactive)
+        return r
+
+    if head == "/plan":
+        from agent.plan_panel import toggle_plan
+
+        toggle_plan()
         return r
 
     if head == "/help":

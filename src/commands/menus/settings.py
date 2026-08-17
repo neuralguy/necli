@@ -37,7 +37,11 @@ _SECTIONS = (
     (
         "interface",
         "◫",
-        (("lang", "lang.subtitle", "help.lang"),),
+        (
+            ("lang", "lang.subtitle", "help.lang"),
+            ("notifications", "notifications.title", "help.notifications"),
+            ("display", "display.title", "display.hint"),
+        ),
     ),
 )
 
@@ -151,6 +155,14 @@ async def _open_action(action: str) -> None:
         from commands.menus.lang import lang_interactive
 
         result = lang_interactive()
+    elif action == "notifications":
+        from commands.menus.notifications import notifications_interactive
+
+        result = notifications_interactive()
+    elif action == "display":
+        from commands.menus.display import display_interactive
+
+        result = display_interactive()
     else:
         return
     if inspect.isawaitable(result):

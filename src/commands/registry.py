@@ -50,6 +50,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/skills", "tools", "help.skills", immediate=True),
     SlashCommand("/agents", "tools", "help.agents", immediate=True),
     SlashCommand("/themes", "display", "help.themes", immediate=True),
+    SlashCommand("/plan", "display", "help.plan", immediate=True),
     SlashCommand(
         "/think",
         "display",

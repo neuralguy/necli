@@ -337,11 +337,26 @@ For custom scientific visualizations that are better expressed by matplotlib, ge
 
 ### Table of contents
 
+For documents with sections or headings, create a real, updateable Word table of contents by default:
+
 ```json
-{"type":"toc","entries":[...]}
+{"type":"toc","entries":[
+  {"level":1,"text":"Введение"},
+  {"level":1,"text":"1. Теоретическая часть"},
+  {"level":2,"text":"1.1. Основные понятия"},
+  {"level":1,"text":"Заключение"}
+]}
 ```
 
-Use only when you have the required TOC entry structure. For uncommon TOC syntax, query `docx(action="help", topic="blocks")` rather than guessing.
+Rules:
+- Use real `h1`–`h9` heading blocks for every entry that should appear in the TOC; the heading text and TOC entry text must match.
+- Insert the `toc` block, not manually typed lines with dots and guessed page numbers.
+- Do not add a manual contents list before or after the `toc` block. If replacing an existing manual contents list, delete all of its lines and any explanatory note about manually specified page numbers.
+- Use `level` values matching the heading levels. Include only the requested heading depth; for a standard academic document, include main sections at level 1 and subsections at level 2.
+- After creation or structural edits, re-read the relevant blocks and confirm that the document contains an `Auto TOC`/`TOC entry` field and no duplicate manual contents lines.
+- Tell the user that Word may need `Ctrl+A`, then `F9` (or “Update field”) to recalculate page numbers.
+
+The `entries` array supplies the initial visible TOC entries, while Word updates the field from the document headings. For uncommon TOC syntax, query `docx(action="help", topic="blocks")` rather than guessing.
 
 ### Caption
 
@@ -565,7 +580,7 @@ Common examples:
 {
   "options":{
     "header":{"text":"Confidential report"},
-    "footer":{"text":"Page ","pageNumber":true},
+    "footer":{"pageNumber":true},
     "watermark":"DRAFT",
     "section":{"orientation":"landscape"}
   }
@@ -575,7 +590,7 @@ Common examples:
 The engine supports native document options including:
 
 - `header`: text or paragraph-based header content
-- `footer`: text or paragraph-based footer content; optional page number
+- `footer`: text or paragraph-based footer content; optional page number. If page numbering is requested without additional wording, use only the page-number field (`{"pageNumber":true}`): the footer should contain digits only. Add text before or after the number only when the user explicitly requests it.
 - `watermark`
 - `section`: orientation, page size, margins and other section properties
 - `comments`
@@ -694,6 +709,18 @@ When the user asks for a course paper, report, thesis section, RGR, etc.:
 - Use native tables and native equations.
 - Keep table/figure captions and numbering consistent.
 - For a supplied university template, edit a copy of that template instead of recreating it from blank.
+
+### Default academic-document conventions
+
+When the user has not supplied a template or different formatting requirements, use these defaults for course papers and similar academic DOCX files:
+
+- **Page setup:** portrait A4; Times New Roman throughout; 14 pt body text; standard academic margins (approximately 2–3 cm); one-inch/1.0 line spacing unless the institution's rules are known.
+- **Page structure:** create a separate title page, then a separate contents page, then the introduction, main chapters, conclusion and references. Start each major part on a new page. Use real page breaks; use a section break after the title page when later sections may need independent page settings or numbering.
+- **Page numbers:** add page numbering by default as a footer field containing digits only (`{"pageNumber":true}`), with no word, dash, bullet or decorative text unless explicitly requested. Do not add a visible page number to the title page unless the user or template requires it; use the document's first-page/title-page setting when available rather than typing a number manually.
+- **Title page:** make it from ordinary paragraphs, not a table, text box, image or manually positioned shapes. Center the institution, faculty/department, program/profile, work type, discipline and topic. Use empty paragraphs only for vertical spacing. Make the work type prominent (usually bold, 16 pt) and keep the topic centered and prominent. Put the author, group, supervisor/checker and assessment lines in a separate block below the topic, aligned to the right.
+- **Title-page alignment:** the author/checker block must use paragraph right alignment or a right tab stop; never simulate right alignment with leading spaces. The city and year at the bottom are centered. Use placeholders such as `Образовательная организация`, `Группа ______`, `ФИО`, `Город ______` when the user's details are unavailable; do not invent institutional or personal data.
+- **Headings:** use semantic `h1`/`h2`/`h3` blocks, not bold ordinary paragraphs. Keep heading levels consistent with the contents.
+- **Contents:** always use a real updateable Word `toc` field based on the semantic headings. Never create a manual list using dots, typed page numbers or spaces. The `toc` entries and heading texts must match, and the `level` values must match the heading levels. After creating or editing the document, verify that an `Auto TOC`/`TOC entry` field exists and that no duplicate manual contents lines remain.
 
 Do not invent page numbers for a manually written contents list unless they are known. Without a page-layout/rendering tool, guessed page numbers are worse than an updatable Word TOC field.
 

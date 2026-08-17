@@ -60,13 +60,39 @@ def _diagnose_parse_failure(tool_name: str, attrs_header: str, body: str) -> str
     return "unknown reason (see body above)"
 
 
-async def handle_complete_tool(stream, complete) -> bool:
+async def flush_deferred_scan_tools(stream, deferred_calls: list) -> None:
+    """Исполнить отложенную скан-группу одним batch-вызовом executor'а."""
+    if not deferred_calls:
+        return
+    pending = list(deferred_calls)
+    deferred_calls.clear()
+    calls = [call for call, _subtitle, _factory in pending]
+    subtitle = pending[0][1] if len(pending) == 1 else ""
+    subtitle_factory = pending[0][2] if len(pending) == 1 else None
+    results = await execute_and_show_async(
+        calls,
+        event_handler=stream.ctx.event_handler,
+        subtitle=subtitle,
+        subtitle_factory=subtitle_factory,
+    )
+    stream.inline_results.extend(results)
+    from agent.loop import _tool_call_identity
+
+    stream.inline_call_keys.extend(_tool_call_identity(call) for call in calls)
+    if any(result.fatal for result in results):
+        stream.ctx.interrupted = True
+
+
+async def handle_complete_tool(stream, complete, deferred_scan_calls: list | None = None) -> bool:
     """Обрабатывает один complete-блок: парсит, исполняет или показывает ошибку.
 
     Возвращает True если блок реально исполнен (для инкремента счётчика).
     КЛЮЧЕВОЕ ОТЛИЧИЕ от старой логики — если call=None, мы НЕ молчим:
     показываем error-панель и добавляем ToolResult в inline_results.
     """
+    if deferred_scan_calls and complete.tool_name not in ("read", "grep", "think", "plan"):
+        await flush_deferred_scan_tools(stream, deferred_scan_calls)
+
     # think — это не исполняемый инструмент, а отображаемая мысль.
     # Native function-calling провайдеры присылают его как обычный tool_call
     # с args={"thought": "..."}, и он попадает сюда же как fenced-блок.
@@ -105,6 +131,7 @@ async def handle_complete_tool(stream, complete) -> bool:
     # если ни body, ни attrs не дают валидных args — вернёт None → нижняя
     # ветка ниже покажет parse error с диагностикой.
     if not complete.body and not (complete.attrs_header or "").strip():
+        await flush_deferred_scan_tools(stream, deferred_scan_calls or [])
         reason = "empty fenced block body"
         err = _build_parse_error_result(complete.tool_name, "", complete.raw, reason)
         show_tool_combined(
@@ -172,6 +199,7 @@ async def handle_complete_tool(stream, complete) -> bool:
         complete.raw,
     )
     if call is None:
+        await flush_deferred_scan_tools(stream, deferred_scan_calls or [])
         reason = _diagnose_parse_failure(
             complete.tool_name,
             complete.attrs_header,
@@ -212,10 +240,15 @@ async def handle_complete_tool(stream, complete) -> bool:
         current_active_skills(),
         call.args,
     ):
+        await flush_deferred_scan_tools(stream, deferred_scan_calls or [])
         blocked = build_blocked_result(call, stream.ctx.mode)
         show_tool_combined(call, blocked, subtitle=_mk_subtitle(blocked))
         stream.inline_results.append(blocked)
         stream.inline_call_keys.append(_tool_call_identity(call))
+        return True
+
+    if deferred_scan_calls is not None and call.tool_name in ("read", "grep"):
+        deferred_scan_calls.append((call, subtitle, _mk_subtitle))
         return True
 
     res = await execute_and_show_async(

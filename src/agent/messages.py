@@ -218,7 +218,7 @@ def _build_tool_results_payload(results) -> str:
 
 
 def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=None) -> str:
-    """Добавки к результатам раунда: план + проверка TypeScript + fs-изменения + статистика.
+    """Добавки к результатам раунда: план + проверка TypeScript + fs-изменения.
 
     Это НЕ часть вывода инструментов — в native режиме отправляется отдельным
     HumanMessage, чтобы не попасть внутрь ToolMessage и не путать модель.
@@ -251,13 +251,26 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
             from agent.fs_watcher import (
                 diff_snapshots,
                 format_changes_block,
+                refresh_snapshot,
                 take_snapshot_throttled,
             )
 
-            new_snap = take_snapshot_throttled(working_dir)
             old_snap = ctx.last_fs_snapshot
+            if step_tracker and step_tracker.files_changed:
+                new_snap = refresh_snapshot(working_dir)
+            else:
+                new_snap = take_snapshot_throttled(working_dir)
             if old_snap is not None:
-                own = set(step_tracker.files_changed) if step_tracker else set()
+                own = set()
+                if step_tracker:
+                    for path in step_tracker.files_changed:
+                        if not os.path.isabs(path):
+                            path = os.path.join(working_dir, path)
+                        try:
+                            path = os.path.relpath(os.path.abspath(path), working_dir)
+                        except ValueError:
+                            path = os.path.abspath(path)
+                        own.add(path)
                 changes = diff_snapshots(old_snap, new_snap, own_paths=own)
                 if changes:
                     block = format_changes_block(changes)
@@ -268,26 +281,13 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
         except Exception as e:
             logger.debug("fs_watcher failed: %s", e)
 
-    # Статистика проекта и шага не нужна в headless run: она увеличивает
-    # контекст и не влияет на выполнение инструментов.
-    if working_dir and not (ctx and ctx.suppress_project_stats):
-        _t = time.monotonic()
-        from agent.project_stats import StepTracker, build_stats_line
-
-        tracker = step_tracker or StepTracker()
-        stats_line = build_stats_line(working_dir, tracker)
-        _timings["project_stats"] = time.monotonic() - _t
-        if stats_line:
-            parts.append(f"[{stats_line}]")
-
     _total = time.monotonic() - _extras_started
     if _total >= 0.25:
         logger.warning(
-            "slow result extras: total=%.3fs project_check=%.3fs fs=%.3fs stats=%.3fs",
+            "slow result extras: total=%.3fs project_check=%.3fs fs=%.3fs",
             _total,
             _timings.get("project_check", 0.0),
             _timings.get("fs_snapshot", 0.0),
-            _timings.get("project_stats", 0.0),
         )
     return "\n\n".join(parts)
 

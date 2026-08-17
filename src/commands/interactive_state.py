@@ -31,7 +31,7 @@ class InteractiveState:
 
     recap_task: object = None  # asyncio.Task генерации рекапа текущего раунда
     recap_background_tasks: set[object] = field(default_factory=set)
-    memory_background_tasks: set[object] = field(default_factory=set)
+    memory_background_tasks: set[object] = field(default_factory=set)  # периодическая чистка памяти
 
     def save_session(self) -> None:
         try:

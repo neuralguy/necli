@@ -13,13 +13,23 @@ from logger import logger
 
 
 class _HeadlessEventHandler:
-    """Однострочный прогресс для ``run``; основной ответ остаётся в stdout."""
+    """Однострочный прогресс для ``run``; основной ответ остаётся в stdout.
+
+    Параллельно копит статистику хода (запросы к модели, инструменты, usage) —
+    из неё строится финальная сводка «✓ Worked …» и полный JSON-отчёт.
+    """
 
     single_line_tools = True
 
     def __init__(self, quiet: bool = False):
         self._quiet = quiet
         self._call = None
+        self.model_calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.tool_calls = 0
+        self.responses: list[dict] = []
+        self.tools: list[dict] = []
 
     @staticmethod
     def _single_line(value: object, limit: int = 120) -> str:
@@ -29,9 +39,29 @@ class _HeadlessEventHandler:
     def on_tool_start(self, call, subtitle: str = "") -> None:
         self._call = call
 
+    def on_model_response(self, text: str, usage: dict | None) -> None:
+        from agent.working import _usage_parts
+
+        self.model_calls += 1
+        inp, out = _usage_parts(usage)
+        self.input_tokens += inp
+        self.output_tokens += out
+        self.responses.append({"text": text or "", "input_tokens": inp, "output_tokens": out})
+
     def on_tool_result(self, result) -> None:
         call = self._call
         self._call = None
+        self.tool_calls += 1
+        self.tools.append(
+            {
+                "name": (getattr(call, "tool_name", None) or result.name or "tool"),
+                "args": dict(getattr(call, "args", None) or {}),
+                "status": result.status,
+                "exit_code": result.exit_code,
+                "output": result.output or "",
+                "command": result.command or "",
+            }
+        )
         if self._quiet:
             return
         name = getattr(call, "tool_name", None) or result.name
@@ -53,6 +83,17 @@ class _HeadlessEventHandler:
             error = self._single_line(result.output, 160)
             line += f" ✗{': ' + error if error else ''}"
         click.echo(line, err=True)
+
+    def summary_line(self, duration: float) -> str:
+        """Сводка «✓ Worked» в стиле интерактивного блока Working."""
+        from config.i18n import format_duration
+        from ui.formatting import format_tokens
+
+        return (
+            f"✓ Worked {format_duration(duration)} "
+            f"⎿ {self.model_calls}⟳ · {self.tool_calls}🛠 · "
+            f"↑{format_tokens(self.input_tokens)} ↓{format_tokens(self.output_tokens)}"
+        )
 
     def on_plan_update(self, plan, action: str = "", focus_index: int | None = None) -> None:
         return None
@@ -147,10 +188,12 @@ async def _run_once(
     prompt: str,
     model: str,
     workdir: str,
-    quiet: bool,
+    handler: _HeadlessEventHandler,
     timeout: float | None,
 ) -> tuple[str, dict]:
     """Запускает один проход агента и возвращает (text, meta)."""
+    import time as _time
+
     from agent.loop import run_agent
 
     def _no_chunk(_chunk: str) -> None:
@@ -161,10 +204,10 @@ async def _run_once(
         model=model,
         on_chunk=_no_chunk,
         working_dir=workdir,
-        event_handler=_HeadlessEventHandler(quiet=quiet),
-        suppress_project_stats=True,
+        event_handler=handler,
     )
 
+    started = _time.monotonic()
     try:
         if timeout:
             text = await asyncio.wait_for(coro, timeout=timeout)
@@ -176,6 +219,7 @@ async def _run_once(
     meta = {
         "model": model,
         "workdir": workdir,
+        "duration": _time.monotonic() - started,
     }
     return text or "", meta
 
@@ -186,6 +230,15 @@ async def _run_once(
 @click.option("--workdir", "-w", default=None, help="Working directory (defaults to cwd).")
 @click.option("--api", "-A", default=None, help="API provider for this run.")
 @click.option("--json", "json_output", is_flag=True, help="JSON output to stdout.")
+@click.option(
+    "--full-json",
+    "full_json",
+    is_flag=True,
+    help=(
+        "Full JSON report to stdout: every model response and every tool call "
+        "with args and output (each event once, no history duplication)."
+    ),
+)
 @click.option("--quiet", "-q", is_flag=True, help="Suppress successful run output.")
 @click.option("--timeout", type=float, default=None, help="Global timeout (sec).")
 @click.option(
@@ -199,6 +252,7 @@ def run_command(
     workdir: str | None,
     api: str | None,
     json_output: bool,
+    full_json: bool,
     quiet: bool,
     timeout: float | None,
     allow_all: bool,
@@ -210,8 +264,17 @@ def run_command(
       necli run "fix the failing test"
       git diff | necli run "write a commit message" --quiet
       necli run --json "how many lines in the project" | jq .text
+      necli run --full-json "refactor the parser" > report.json
     """
-    logger.info("headless run: argv-prompt-len={} api={} json={}", len(prompt), api, json_output)
+    if json_output and full_json:
+        raise click.UsageError("--json and --full-json are mutually exclusive")
+    logger.info(
+        "headless run: argv-prompt-len={} api={} json={} full-json={}",
+        len(prompt),
+        api,
+        json_output,
+        full_json,
+    )
 
     stdin_text = _read_stdin_if_piped()
     cli_text = " ".join(prompt).strip()
@@ -291,23 +354,43 @@ def run_command(
         )
 
     # Запуск
+    handler = _HeadlessEventHandler(quiet=quiet)
     try:
         text, meta = asyncio.run(
-            _run_once(full_prompt, resolved_model, workdir_resolved, quiet, timeout),
+            _run_once(full_prompt, resolved_model, workdir_resolved, handler, timeout),
         )
     except click.ClickException as e:
         # timeout и пр. структурированные ошибки: в --json — как JSON, иначе обычно
-        if json_output:
-            _fail(e.format_message(), json_output, code=e.exit_code)
+        if json_output or full_json:
+            _fail(e.format_message(), json_output=True, code=e.exit_code)
             return
         raise
     except KeyboardInterrupt:
-        _fail("interrupted", json_output, code=130)
+        _fail("interrupted", json_output or full_json, code=130)
     except Exception as e:
         logger.opt(exception=True).error("headless run failed: {}", e)
-        _fail(f"{type(e).__name__}: {e}", json_output, code=1)
+        _fail(f"{type(e).__name__}: {e}", json_output or full_json, code=1)
 
-    if not quiet:
+    if full_json:
+        payload = {
+            "ok": True,
+            "model": meta["model"],
+            "workdir": meta["workdir"],
+            "stats": {
+                "duration_sec": round(meta["duration"], 3),
+                "model_calls": handler.model_calls,
+                "tool_calls": handler.tool_calls,
+                "input_tokens": handler.input_tokens,
+                "output_tokens": handler.output_tokens,
+            },
+            "text": text,
+            "responses": handler.responses,
+            "tools": handler.tools,
+        }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        if not quiet:
+            click.echo(handler.summary_line(meta["duration"]), err=True)
+    elif not quiet:
         if json_output:
             payload = {
                 "ok": True,
@@ -317,6 +400,7 @@ def run_command(
             }
             sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         else:
+            click.echo(handler.summary_line(meta["duration"]), err=True)
             sys.stdout.write(text)
             if not text.endswith("\n"):
                 sys.stdout.write("\n")

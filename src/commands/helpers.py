@@ -83,7 +83,7 @@ def _read_version() -> str:
         from importlib.metadata import version as _pkg_version
 
         try:
-            return _pkg_version("necli-api")
+            return _pkg_version("necli")
         except PackageNotFoundError:
             pass
     except Exception:

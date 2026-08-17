@@ -1,8 +1,7 @@
 """OpenAI-совместимый провайдер (на httpx).
 
-Заменяет langchain-openai. Использует тот же CustomHttpProvider — формат
-запросов идентичен (chat/completions). Различие лишь в дефолтных заголовках
-и базовом URL, которые приходят из ApiProviderDefinition.
+Использует CustomHttpProvider с форматом запросов chat/completions.
+Дефолтные заголовки и базовый URL приходят из ApiProviderDefinition.
 """
 
 from __future__ import annotations

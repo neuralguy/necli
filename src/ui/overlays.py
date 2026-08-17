@@ -841,6 +841,15 @@ async def select_menu(
     return await shell.run_overlay(SelectOverlay(items, current, title, allow_back, allow_forward))
 
 
+def refresh_active_panel() -> None:
+    """Invalidate an open rendered panel after its external data changes."""
+    shell = get_shell()
+    if shell is None or not isinstance(shell.overlay, PanelOverlay):
+        return
+    shell.overlay._revision += 1
+    shell.invalidate()
+
+
 async def panel_menu(
     render_fn,
     hint_text: str,

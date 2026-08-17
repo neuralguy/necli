@@ -46,6 +46,14 @@ console = Console()
 
 _PROVIDER_PRESETS = [
     (
+        "chatgpt",
+        "ChatGPT OAuth",
+        "chatgpt.com",
+        "https://chatgpt.com/backend-api/codex",
+        "chatgpt",
+        "openai",
+    ),
+    (
         "openai",
         "OpenAI",
         "api.openai.com",
@@ -275,6 +283,7 @@ async def _step_theme(start: int = 0) -> tuple[bool, int]:
 
 async def _step_provider(start: int = 0) -> tuple[bool, int]:
     from apis.config import add_api_config, list_api_configs
+    from apis.providers.chatgpt_provider import chatgpt_models
     from apis.registry import get_definition, reload_providers
 
     _show_hero(3, 3, "onboarding.title_provider")
@@ -302,11 +311,15 @@ async def _step_provider(start: int = 0) -> tuple[bool, int]:
         base_url=base_url,
         provider_type=ptype,
         api_format=api_format,
+        models=chatgpt_models() if pid == "chatgpt" else None,
+        default_model="gpt-5.6-sol" if pid == "chatgpt" else "",
     )
     reload_providers()
     print_static(f"[{tc('success')}]✓[/{tc('success')}] {_('api.added', name=name)}")
 
-    if pid not in ("ollama",):
+    if pid == "chatgpt":
+        await _ask_chatgpt_login()
+    elif pid not in ("ollama",):
         await _ask_api_key(pid, name)
 
     defn = get_definition(pid)
@@ -343,6 +356,19 @@ async def _ask_api_key(pid: str, name: str) -> None:
         )
 
 
+async def _ask_chatgpt_login() -> None:
+    from apis.chatgpt_auth import ChatGPTAuthError, login_chatgpt
+
+    print_static("")
+    print_static(f"[dim]{_('onboarding.chatgpt_browser_hint')}[/dim]")
+    try:
+        await login_chatgpt()
+    except ChatGPTAuthError as exc:
+        print_static(f"[{tc('warning')}]⚠[/{tc('warning')}] {exc}")
+    else:
+        print_static(f"[{tc('success')}]✓[/{tc('success')}] {_('api.chatgpt_connected')}")
+
+
 def _ensure_default_provider() -> None:
     from apis.config import add_api_config, list_api_configs
     from apis.registry import get_definition, reload_providers
@@ -361,7 +387,9 @@ def _ensure_default_provider() -> None:
                         config.set_active_api_model(model_id)
         return
 
-    pid, name, _host, base_url, ptype, api_format = _PROVIDER_PRESETS[0]
+    pid, name, _host, base_url, ptype, api_format = next(
+        preset for preset in _PROVIDER_PRESETS if preset[0] == "openai"
+    )
     add_api_config(
         provider_id=pid,
         name=name,

@@ -1,4 +1,4 @@
-"""Google Gemini провайдер на httpx (без langchain-google-genai).
+"""Google Gemini-провайдер на httpx.
 
 Формат: POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key=...
   - system_instruction отдельным полем

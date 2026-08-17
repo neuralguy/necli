@@ -54,7 +54,7 @@ class LazyCommandGroup(click.Group):
 
 @click.group(cls=LazyCommandGroup)
 def cli():
-    """necli-api — AI chat from the terminal (API-only mode, no browser)."""
+    """necli — AI coding agent for the terminal."""
     _logger.info("necli-api CLI start")
 
 

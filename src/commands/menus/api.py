@@ -79,12 +79,18 @@ def _provider_rows(providers: list, active_api: str) -> list[dict]:
         else:
             badge, style = _("api.status_no_models"), "warning"
         balance = get_provider_balance(p["id"])
+        weekly = p.get("weekly_usage") if p.get("type") == "chatgpt" else None
+        if weekly:
+            remaining = float(weekly.get("remaining_percent") or 0)
+            balance_label = _("api.chatgpt_weekly_remaining", percent=f"{remaining:g}")
+        else:
+            balance_label = f"{balance:g}$" if balance else "—"
         rows.append(
             {
                 "label": p["name"],
                 "hint": _shorten_url(p.get("base_url") or ""),
                 "models": str(models_count) if models_count else "—",
-                "balance": f"{balance:g}$" if balance else "—",
+                "balance": balance_label,
                 "badge": badge,
                 "badge_style": style,
                 "haystack": f"{p['name']} {p.get('base_url', '')}".casefold(),
@@ -93,11 +99,17 @@ def _provider_rows(providers: list, active_api: str) -> list[dict]:
     return rows
 
 
-async def _provider_menu(providers: list, active_api: str) -> int | None:
+async def _provider_menu(
+    providers: list,
+    active_api: str,
+    *,
+    chatgpt_connected: bool = False,
+    chatgpt_weekly_label: str = "",
+) -> int | None:
     """Список провайдеров с поиском по имени и URL, как /models и /sessions.
 
-    Возвращает индекс в ИСХОДНОМ списке `providers` либо `len(providers)` —
-    пункт «Добавить провайдера», либо None при отмене.
+    Возвращает -1 для входа через ChatGPT, индекс в ИСХОДНОМ списке
+    `providers`, `len(providers)` для добавления провайдера либо None.
     """
     from ui.menu import (
         ROW_INDENT,
@@ -116,11 +128,15 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
     )
     from ui.overlays import key_hints
 
-    rows = _provider_rows(providers, active_api)
+    visible_indices = [
+        i for i, provider in enumerate(providers) if provider.get("type") != "chatgpt"
+    ]
+    visible_providers = [providers[i] for i in visible_indices]
+    rows = _provider_rows(visible_providers, active_api)
     total_providers = len(rows)
     query = ""
 
-    # Позиция → индекс в rows; последний элемент всегда «Добавить провайдера».
+    # Позиция → индекс в rows; OAuth всегда сверху, добавление — снизу.
     order: list[int] = list(range(total_providers))
     version = 0
     layout_cache: dict = {}
@@ -134,7 +150,7 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
             if not tokens or all(token in rows[i]["haystack"] for token in tokens)
         ]
         version += 1
-        total = len(order) + 1  # + строка «Добавить провайдера»
+        total = len(order) + 2
         return (True, min(keep, max(0, total - 1)), total)
 
     def _layout(width: int) -> tuple[int, int, int, int, int]:
@@ -166,7 +182,7 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
         pal = Palette()
         width = render_width()
         label_w, hint_w, models_w, balance_w, badge_w = _layout(width)
-        total = len(order) + 1
+        total = len(order) + 2
         budget = max(3, overlay_rows(reserve=3))
         start, end, above, below = scroll_window(total, sel, budget)
 
@@ -192,15 +208,38 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
         if badge_w:
             headings.append(("  " + cell(_("api.col_status"), badge_w, "right"), pal.dim))
         lines.append(row_line(headings, width, pal=pal))
-        if total == 1 and not order:
-            lines.append(f"  {pal.dim}{_('common.no_data')}{pal.reset}")
-            return "\n".join(lines)
-
         if above:
             lines.append(more_note(above, up=True))
         for pos in range(start, end):
-            if pos == len(order):
-                # Последний пункт — «Добавить провайдера».
+            if pos == 0:
+                oauth_label = (
+                    _("api.chatgpt_provider") if chatgpt_connected else _("api.chatgpt_connect")
+                )
+                oauth_hint = (
+                    _("api.chatgpt_manage_hint")
+                    if chatgpt_connected
+                    else _("api.chatgpt_connect_hint")
+                )
+                current_weekly_label = (
+                    chatgpt_weekly_label()
+                    if callable(chatgpt_weekly_label)
+                    else chatgpt_weekly_label
+                )
+                if chatgpt_connected and current_weekly_label:
+                    oauth_hint = f"{oauth_hint} · {current_weekly_label}"
+                lines.append(
+                    row_line(
+                        [
+                            ("◉ " + oauth_label, pal.success),
+                            ("  " + oauth_hint, pal.dim),
+                        ],
+                        width,
+                        selected=pos == sel,
+                        pal=pal,
+                    )
+                )
+                continue
+            if pos == len(order) + 1:
                 lines.append(
                     row_line(
                         [
@@ -213,9 +252,9 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
                     )
                 )
                 continue
-            orig = order[pos]
+            orig = order[pos - 1]
             r = rows[orig]
-            is_active = orig < total_providers and providers[orig]["id"] == active_api
+            is_active = orig < total_providers and visible_providers[orig]["id"] == active_api
             cells = [
                 ("● " if is_active else "  ", pal.success),
                 (cell(r["label"], label_w), pal.success if is_active else ""),
@@ -249,25 +288,35 @@ async def _provider_menu(providers: list, active_api: str) -> int | None:
             if query:
                 query = ""
                 return _refilter(sel)
-            return (False, sel, len(order) + 1)
+            return (False, sel, len(order) + 2)
         if len(key) == 1 and key.isprintable():
             query += key
             return _refilter(0)
         return None
 
-    total = len(order) + 1
+    total = len(order) + 2
+    # Курсор сразу на строке активного провайдера (pos 0 — ChatGPT OAuth,
+    # последняя строка — «Добавить»): и при входе в /api, и при возврате
+    # из деталей провайдера, потому что список каждый раз строится заново.
+    initial_pos = 0
+    for pos, orig in enumerate(order):
+        if orig < total_providers and visible_providers[orig]["id"] == active_api:
+            initial_pos = pos + 1
+            break
     result_pos = await _run_panel(
         render_fn,
         key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "open"), ("esc", "close")),
         total,
-        0,
+        initial_pos,
         on_key=on_key,
     )
     if result_pos is None:
         return None
-    if result_pos >= len(order):
-        return total_providers  # «Добавить провайдера»
-    return order[result_pos]
+    if result_pos == 0:
+        return -1
+    if result_pos >= len(order) + 1:
+        return len(providers)  # «Добавить провайдера»
+    return visible_indices[order[result_pos - 1]]
 
 
 async def api_interactive():
@@ -278,14 +327,79 @@ async def api_interactive():
     r = SlashResult()
 
     while True:
-        providers = list_providers()
         active_api = config.get("active_api", "")
         active_model = config.get("active_api_model", "")
+        from apis.chatgpt_auth import chatgpt_auth_status
 
-        choice = await _provider_menu(providers, active_api)
+        oauth_status = chatgpt_auth_status()
+        weekly_state = {"label": ""}
+
+        def unsubscribe_usage() -> None:
+            pass
+
+        if oauth_status.get("authenticated"):
+            from apis.chatgpt_usage import (
+                get_cached_chatgpt_usage,
+                schedule_connected_chatgpt_usage_refresh,
+                subscribe_chatgpt_usage,
+            )
+
+            def _format_weekly(usage: dict | None) -> str:
+                return (
+                    _(
+                        "api.chatgpt_weekly_remaining",
+                        percent=f"{float(usage['remaining_percent']):g}",
+                    )
+                    if usage
+                    else _("api.chatgpt_weekly_unavailable")
+                )
+
+            weekly_state["label"] = _format_weekly(get_cached_chatgpt_usage())
+
+            def _update_usage(usage: dict, state=weekly_state) -> None:
+                state["label"] = _format_weekly(usage)
+                from ui.overlays import refresh_active_panel
+
+                refresh_active_panel()
+
+            unsubscribe_usage = subscribe_chatgpt_usage(_update_usage)
+            schedule_connected_chatgpt_usage_refresh()
+        providers = list_providers()
+        try:
+            choice = await _provider_menu(
+                providers,
+                active_api,
+                chatgpt_connected=bool(oauth_status.get("authenticated")),
+                chatgpt_weekly_label=partial(weekly_state.__getitem__, "label"),
+            )
+        finally:
+            unsubscribe_usage()
 
         if choice is None:
             return r
+
+        if choice == -1:
+            if not oauth_status.get("authenticated"):
+                await _connect_chatgpt()
+                reload_providers()
+                continue
+
+            _ensure_chatgpt_provider()
+            reload_providers()
+            providers = list_providers()
+            chatgpt = next((p for p in providers if p.get("type") == "chatgpt"), None)
+            if chatgpt is None:
+                continue
+            from apis.chatgpt_usage import refresh_chatgpt_usage
+            from apis.registry import get_definition
+
+            defn = get_definition(chatgpt["id"])
+            await refresh_chatgpt_usage(force=True, proxy=defn.proxy if defn else "")
+            chatgpt = next((p for p in list_providers() if p.get("type") == "chatgpt"), chatgpt)
+            result = await _api_provider_detail(chatgpt, active_api, active_model)
+            if result is not None:
+                return result
+            continue
 
         if choice == len(providers):
             await _api_add_menu()
@@ -293,6 +407,14 @@ async def api_interactive():
             continue
 
         provider = providers[choice]
+        if provider.get("type") == "chatgpt" and provider.get("has_key"):
+            from apis.chatgpt_usage import refresh_chatgpt_usage
+            from apis.registry import get_definition
+
+            defn = get_definition(provider["id"])
+            await refresh_chatgpt_usage(force=True, proxy=defn.proxy if defn else "")
+            providers = list_providers()
+            provider = next((p for p in providers if p["id"] == provider["id"]), provider)
         result = await _api_provider_detail(provider, active_api, active_model)
         if result is not None:
             return result
@@ -685,15 +807,40 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
 
         is_active = pid == active_api
         credentials = get_api_credentials(pid)
-        has_key = bool(credentials)
+        is_chatgpt = defn.type == "chatgpt"
+        auth_status = {}
+        if is_chatgpt:
+            from apis.chatgpt_auth import chatgpt_auth_status
+            from apis.chatgpt_usage import get_cached_chatgpt_usage
+
+            auth_status = chatgpt_auth_status()
+            weekly_usage = get_cached_chatgpt_usage() if auth_status.get("authenticated") else None
+        else:
+            weekly_usage = None
+        has_key = bool(auth_status.get("authenticated")) if is_chatgpt else bool(credentials)
         cache_enabled = _prompt_cache_enabled(defn)
         cache_status = _("api.prompt_cache_on") if cache_enabled else _("api.prompt_cache_off")
-        key_status = f"{len(credentials)} key(s)" if has_key else f"API key: {_('common.not_set')}"
-        balance_status = (
-            f"{sum(float(c.get('balance') or 0) for c in credentials):g}$"
-            if any(c.get("balance") for c in credentials)
-            else "без баланса"
-        )
+        if is_chatgpt:
+            key_status = (
+                auth_status.get("email") or _("api.chatgpt_connected")
+                if has_key
+                else _("api.chatgpt_not_connected")
+            )
+        else:
+            key_status = (
+                f"{len(credentials)} key(s)" if has_key else f"API key: {_('common.not_set')}"
+            )
+        if weekly_usage:
+            remaining = float(weekly_usage.get("remaining_percent") or 0)
+            balance_status = _("api.chatgpt_weekly_remaining", percent=f"{remaining:g}")
+        elif is_chatgpt and has_key:
+            balance_status = _("api.chatgpt_weekly_unavailable")
+        else:
+            balance_status = (
+                f"{sum(float(c.get('balance') or 0) for c in credentials):g}$"
+                if any(c.get("balance") for c in credentials)
+                else "без баланса"
+            )
         model_names = ", ".join(m.display_name for m in defn.models) or _("common.none")
 
         default_model = defn.default_model or (defn.models[0].id if defn.models else "")
@@ -704,15 +851,23 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
             if default_model
             else _("api.status_no_models")
         )
-        actions = [
-            {
-                "icon": "●",
-                "icon_style": "success",
-                "role": "success",
-                "action": True,
-                "label": _("api.switch_model") if is_active else _("api.use"),
-                "hint": hint,
-            },
+        use_action = {
+            "icon": "●",
+            "icon_style": "success",
+            "role": "success",
+            "action": True,
+            "label": _("api.switch_model") if is_active else _("api.use"),
+            "hint": hint,
+        }
+        models_action = {
+            "icon": "▦",
+            "icon_style": "info",
+            "action": True,
+            "label": _("api.manage_models"),
+            "hint": f"{len(defn.models)} {_('api.col_models').lower()}",
+        }
+        provider_actions = [
+            use_action,
             {
                 "icon": "◆",
                 "icon_style": "warning" if not has_key else "success",
@@ -727,13 +882,7 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
                 "label": _("api.edit_provider"),
                 "hint": _("api.edit_provider_hint"),
             },
-            {
-                "icon": "▦",
-                "icon_style": "info",
-                "action": True,
-                "label": _("api.manage_models"),
-                "hint": f"{len(defn.models)} {_('api.col_models').lower()}",
-            },
+            models_action,
             {
                 "icon": "◉",
                 "icon_style": "success" if cache_enabled else "muted",
@@ -758,10 +907,27 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
             },
             {"icon": "←", "label": _("common.back"), "role": "muted"},
         ]
+        actions = (
+            [
+                use_action,
+                models_action,
+                {
+                    "icon": "×",
+                    "icon_style": "error",
+                    "role": "error",
+                    "action": True,
+                    "label": _("api.chatgpt_disconnect"),
+                    "hint": key_status,
+                },
+                {"icon": "←", "label": _("common.back"), "role": "muted"},
+            ]
+            if is_chatgpt
+            else provider_actions
+        )
 
         choice = await card_menu(
             actions,
-            title=defn.name,
+            title=_("api.chatgpt_provider") if is_chatgpt else defn.name,
             status="● " + _("common.active") if is_active else _("common.inactive"),
             status_style="success" if is_active else "muted",
             facts=[
@@ -774,7 +940,7 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
             ],
         )
 
-        if choice is None or choice == 7:
+        if choice is None or choice == (3 if is_chatgpt else 7):
             return None
 
         if choice == 0:
@@ -789,6 +955,27 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
             r.switch_api = pid
             r.switch_api_model = model_id
             return r
+
+        if is_chatgpt:
+            if choice == 1:
+                await _api_models_menu(pid)
+                reload_providers()
+                continue
+            if choice == 2:
+                from apis.chatgpt_auth import clear_chatgpt_auth
+                from apis.chatgpt_usage import clear_chatgpt_usage_cache
+
+                if await confirm_delete(_("api.chatgpt_disconnect_q")):
+                    clear_chatgpt_auth()
+                    clear_chatgpt_usage_cache()
+                    _refresh_active_api_session(pid, active_api)
+                    if is_active:
+                        config.set_active_api("")
+                        config.set_active_api_model("")
+                        r.switch_api = ""
+                        return r
+                    return None
+                continue
 
         if choice == 1:
             await _api_keys_menu(pid, active_api)
@@ -832,7 +1019,7 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
 
 
 async def _api_add_menu():
-    """Добавление нового провайдера: сразу запрос имени и URL."""
+    """Добавление пользовательского OpenAI-совместимого провайдера."""
     import re as _re
 
     from apis.config import add_api_config
@@ -853,6 +1040,64 @@ async def _api_add_menu():
         provider_type="openai_compatible",
         api_format="openai",
     )
+
+
+async def _connect_chatgpt() -> None:
+    from apis.chatgpt_auth import ChatGPTAuthError, login_chatgpt
+
+    _ensure_chatgpt_provider()
+    try:
+        await login_chatgpt()
+    except ChatGPTAuthError as exc:
+        await card_menu(
+            [{"label": _("common.back")}],
+            title=_("api.chatgpt_login_failed"),
+            facts=[str(exc)],
+        )
+
+
+def _ensure_chatgpt_provider() -> None:
+    from apis.config import add_api_config, add_model_to_provider, list_api_configs
+    from apis.providers.chatgpt_provider import chatgpt_models
+    from apis.registry import reload_providers
+
+    models = chatgpt_models()
+    existing = next(
+        (provider for provider in list_api_configs() if provider.get("id") == "chatgpt"),
+        None,
+    )
+    if existing is not None:
+        official = {model["id"]: model for model in models}
+        for current in existing.get("models") or []:
+            model = official.get(current.get("id"))
+            if model is None:
+                continue
+            if (
+                int(current.get("context_window") or 0) == 400_000
+                and float(current.get("input_price") or 0) == 0
+                and float(current.get("output_price") or 0) == 0
+            ):
+                add_model_to_provider(
+                    "chatgpt",
+                    model["id"],
+                    model["display_name"],
+                    model["context_window"],
+                    model["input_price"],
+                    model["output_price"],
+                )
+        reload_providers()
+        return
+
+    add_api_config(
+        provider_id="chatgpt",
+        name="ChatGPT OAuth",
+        base_url="https://chatgpt.com/backend-api/codex",
+        provider_type="chatgpt",
+        api_format="openai",
+        models=models,
+        default_model="gpt-5.6-sol",
+    )
+    reload_providers()
 
 
 async def _api_sync_models(provider_id: str):

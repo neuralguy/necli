@@ -544,6 +544,7 @@ async def api_send_message(
     images=None,
     on_reasoning_chunk=None,
     on_tool_chunk=None,
+    on_retry_attempt=None,
     tool_results=None,
     extras=None,
 ):
@@ -891,6 +892,7 @@ async def api_send_message(
                 lambda: llm.astream(messages),
                 _debug_on_chunk,
                 on_tool_chunk=on_tool_chunk,
+                on_retry_attempt=on_retry_attempt,
                 on_reasoning_chunk=on_reasoning_chunk,
             )
             raw_text = _content_to_text(getattr(final_chunk, "content", ""))
@@ -913,7 +915,9 @@ async def api_send_message(
                 tool_calls = _ensure_tool_call_ids(tool_calls)
                 logger.info("API native tool_calls: " + str(len(tool_calls)) + " calls")
         else:
-            result = await with_throttle_retry(lambda: llm.ainvoke(messages))
+            result = await with_throttle_retry(
+                lambda: llm.ainvoke(messages), on_retry_attempt=on_retry_attempt
+            )
             raw_text = _content_to_text(getattr(result, "content", result))
             tool_calls = list(getattr(result, "tool_calls", []) or [])
             tool_calls = _ensure_tool_call_ids(tool_calls)

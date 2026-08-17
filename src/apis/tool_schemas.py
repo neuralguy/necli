@@ -328,8 +328,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "patch_file",
             "description": (
-                "Targeted file edit. `replace` replaces the exact text in `find`. "
-                "For multiple edits, use `patches` array of {find, replace} objects."
+                "Atomic targeted file edit. Prefer a small unique FIND copied from the current file; "
+                "whitespace differences and small unambiguous stale-context drift are tolerated. "
+                "If any match fails, nothing from that call is written: re-read the affected lines and retry. "
+                "Use patches for multiple find/replace edits, insert+line for insertion, or delete_lines for line removal."
             ),
             "parameters": {
                 "type": "object",
@@ -337,6 +339,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "path": {"type": "string"},
                     "find": {"type": "string", "description": "Text to find"},
                     "replace": {"type": "string", "description": "Replacement text"},
+                    "insert": {
+                        "type": "string",
+                        "description": "Text to insert before the 1-based `line`.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "1-based insertion line; len(file)+1 appends.",
+                    },
+                    "delete_lines": {
+                        "oneOf": [{"type": "integer"}, {"type": "string"}],
+                        "description": "1-based line or ranges to remove, e.g. 4, '4-7', or '2,5-7'.",
+                    },
                     "patches": {
                         "type": "array",
                         "items": {
@@ -347,7 +362,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             },
                             "required": ["find"],
                         },
-                        "description": "Multiple find/replace pairs (applied sequentially)",
+                        "description": "Multiple find/replace pairs applied sequentially as one atomic edit",
                     },
                 },
                 "required": ["path"],
@@ -903,35 +918,47 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "plan",
             "description": (
-                "Task checklist (3+ steps). action: create (goal + steps[], once, min 3), update (by index or title, status: "
-                "pending|in_progress|done|skipped), add_step. Mark in_progress when starting a step, done when finished; all done/skipped before final reply."
+                "Adaptive task plan: use it only when the task is genuinely multi-step, large, or uncertain — not as a mandatory ceremony. "
+                "Do not create a plan for a simple task, a small localized change, or work whose path is already obvious. "
+                "inspect first with read-only tools; create the plan only after reconnaissance shows that coordination is needed; "
+                "do not use a generic upfront checklist such as find/fix/test. "
+                "Make each step concrete and outcome-oriented: state WHAT result is required and HOW it will be achieved, "
+                "including exact paths, relevant symbols, interfaces, decisions, dependencies, and exact verification when known; explain how it will be done. "
+                "Use as many or as few steps as the work actually needs — Do not force a fixed number of steps. "
+                "Create once, then update it rather than recreating it. Exactly one unfinished step is kept in_progress automatically; "
+                "completing/removing it advances the next pending step. Actions: create, update (single index/title, index list, or updates[] batch), "
+                "add_step, remove_step. All steps must be done/skipped before the final reply."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["create", "update", "add_step"]},
+                    "action": {"type": "string", "enum": ["create", "update", "add_step", "remove_step"]},
                     "goal": {
                         "type": "string",
                         "description": "Single line — the goal of the entire task (for create).",
                     },
                     "steps": {
                         "type": "array",
+                        "minItems": 2,
                         "items": {
                             "type": "object",
                             "properties": {
-                                "title": {"type": "string"},
+                                "title": {
+                                    "type": "string",
+                                    "description": "Concrete step describing the required result and the implementation approach, not a vague verb or generic phase.",
+                                },
                                 "status": {"type": "string"},
                             },
                             "required": ["title"],
                         },
-                        "description": "Full list of steps for create. Minimum 3.",
+                        "description": "Full list of concrete outcome-level steps for create (minimum 2). Each title must say what will be achieved and how, with exact paths/symbols or verification details when known; do not pad the list to a conventional step count.",
                     },
                     "index": {
                         "oneOf": [
                             {"type": "integer"},
                             {"type": "array", "items": {"type": "integer"}, "minItems": 1},
                         ],
-                        "description": "1-based step index or list of indices (for update).",
+                        "description": "1-based step index/list for update; single index also selects remove_step position.",
                     },
                     "title": {
                         "type": "string",
@@ -944,7 +971,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                     "notes": {
                         "type": "string",
-                        "description": "Brief note on the step (optional).",
+                        "description": "Optional implementation detail: exact files/symbols, approach, dependency, decision, or verification command.",
                     },
                     "updates": {
                         "type": "array",

@@ -63,7 +63,7 @@ printf 'Count the lines in the project Python files' \
   | uv run necli run --quiet --allow-all
 ```
 
-Use `--json` for machine-readable output. Interactive actions that require user input are unavailable in headless mode.
+When the turn finishes, the short mode prints a `✓ Worked 2m ⎿ 5⟳ · 12🛠 · ↑12K ↓4K` summary to stderr (per-tool progress lines go there too), keeping stdout clean for the answer. Use `--json` for machine-readable output, or `--full-json` for a full report (every model response and tool call with args and output, each event once). Interactive actions that require user input are unavailable in headless mode.
 
 ## Data and Security
 

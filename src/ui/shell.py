@@ -361,10 +361,13 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
             except Exception:
                 logger.debug("submission text transform failed", exc_info=True)
         self.submissions.put_nowait((kind, submitted))
-        try:
-            self.input_buffer.history.append_string(submitted)
-        except Exception:
-            logger.debug("history append failed", exc_info=True)
+        if kind == SUBMIT_USER:
+            try:
+                latest = next(iter(self.input_buffer.history.load_history_strings()), None)
+                if latest != submitted:
+                    self.input_buffer.history.append_string(submitted)
+            except Exception:
+                logger.debug("history append failed", exc_info=True)
         self._trim_history()
         # Buffer держит _working_lines — снимок истории с первого рендера;
         # обновить его может только reset(). Без него вводы текущей сессии
@@ -449,6 +452,19 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
 
     def start(self) -> asyncio.Task:
         """Создать Application и запустить его как фоновую задачу."""
+        from ui.focus import (
+            disable_focus_reporting,
+            enable_focus_reporting,
+            wrap_input_for_focus_tracking,
+        )
+
+        base_input = None
+        try:
+            from prompt_toolkit.input import create_input
+
+            base_input = wrap_input_for_focus_tracking(create_input())
+        except Exception:
+            logger.debug("focus tracking input unavailable", exc_info=True)
         self.app = Application(
             layout=self.layout,
             key_bindings=self.kb,
@@ -458,6 +474,7 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
             mouse_support=False,  # иначе умрёт выделение мышью
             erase_when_done=False,
             refresh_interval=0,
+            input=base_input,
         )
         # ESC — и отдельная команда, и префикс Esc+Enter. Стандартный
         # timeoutlen prompt_toolkit ждёт продолжение целую секунду.
@@ -468,7 +485,11 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
         # перекидываться сюда, иначе она ляжет поверх рамки.
         self._loop = asyncio.get_event_loop()
         self._ticker_task = asyncio.create_task(self._ticker(), name="shell-ticker")
-        return asyncio.create_task(self.app.run_async(), name="shell-app")
+        app_task = asyncio.create_task(self.app.run_async(), name="shell-app")
+        if base_input is not None:
+            enable_focus_reporting()
+            app_task.add_done_callback(lambda _: disable_focus_reporting())
+        return app_task
 
     def print_exit_notice(self, text: str) -> None:
         """Стереть рамку ввода и напечатать финальное сообщение на её месте.
@@ -526,6 +547,12 @@ def ensure_static_blank() -> None:
         sh.ensure_static_blank()
         return
     Console(file=sys.__stdout__, force_terminal=True).print()
+
+
+def static_tail_blank() -> bool | None:
+    """Кончается ли scrollback пустой строкой; None — Shell ещё не создан."""
+    sh = Shell.instance()
+    return sh.static_tail_blank() if sh is not None else None
 
 
 def set_dynamic(key: str, renderable: Any) -> None:

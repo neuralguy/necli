@@ -1,4 +1,4 @@
-"""Anthropic провайдер на httpx (без langchain-anthropic).
+"""Anthropic-провайдер на httpx.
 
 Формат: POST https://api.anthropic.com/v1/messages
   - system передаётся отдельным полем

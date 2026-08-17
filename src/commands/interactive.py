@@ -25,6 +25,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
+from datetime import datetime
 
 import click
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -130,6 +131,20 @@ def _set_activity_status(state: InteractiveState, status: str) -> None:
         set_session_terminal_title(state.session, status)
     except Exception:
         logger.debug("terminal activity status update failed", exc_info=True)
+
+
+def _notify_turn_done(elapsed: float | None, *, cancelled: bool = False) -> None:
+    """Desktop-уведомление о завершении хода, если проходят фильтры.
+
+    Фильтры (вкл/выкл, длительность ≥ минуты, терминал не в фокусе) сидят в
+    ui.notifications.notify_turn_finished; здесь только безопасный вызов.
+    """
+    try:
+        from ui.notifications import notify_turn_finished
+
+        notify_turn_finished(elapsed, cancelled=cancelled)
+    except Exception:
+        logger.debug("turn-finish notification failed", exc_info=True)
 
 
 def _status_extra(state: InteractiveState) -> str:
@@ -516,6 +531,18 @@ def interactive(model, workdir, resume, api_provider):
                 # с пустой верхней линией.
                 _refresh_status(state)
 
+                from apis.chatgpt_usage import (
+                    refresh_connected_chatgpt_usage,
+                    subscribe_chatgpt_usage,
+                )
+
+                unsubscribe_chatgpt_usage = subscribe_chatgpt_usage(
+                    lambda _snapshot: _refresh_status(state)
+                )
+                chatgpt_usage_task = asyncio.create_task(
+                    refresh_connected_chatgpt_usage(), name="chatgpt-usage-startup"
+                )
+
                 if not mcp_boot_task.done():
                     from rich.text import Text
 
@@ -584,6 +611,10 @@ def interactive(model, workdir, resume, api_provider):
                             queue.submit_user(text)
                             continue
                 finally:
+                    unsubscribe_chatgpt_usage()
+                    chatgpt_usage_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await chatgpt_usage_task
                     for task in pumps:
                         task.cancel()
                     if immediate is not None:
@@ -665,8 +696,10 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     await _apply_pending_round_compress(state)
 
     status = build_status_line(state)
+    # Один таймстемп на батч: эхо и Ctrl+O-replay показывают одно время отправки.
+    submitted_at = datetime.now().strftime("%H:%M:%S")
     for text in texts:
-        state.prompt_input.echo_submitted(text)
+        state.prompt_input.echo_submitted(text, time_str=submitted_at)
     # Отдаём управление loop'у, чтобы эхо реально нарисовалось СЕЙЧАС.
     # Печать идёт через run_in_terminal, то есть отложенной задачей; без этой
     # уступки loop не крутится, и пользователь видит паузу в секунду между
@@ -682,7 +715,6 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     state.msg_num += 1
 
     _maybe_launch_recap(state)
-    _maybe_extract_memory(state)
 
     message_images = state.prompt_input.get_and_clear_images()
 
@@ -720,7 +752,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
                 working_dir=state.workdir, mode=state.mode_state.get("mode", "agent")
             )
             set_current_ctx(_ctx)
-        _ctx.render_store.add_user(user, status=status)
+        _ctx.render_store.add_user(user, status=status, time_str=submitted_at)
     except Exception:
         import logging as _lg
 
@@ -799,6 +831,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     try:
         state.last_elapsed, _cancelled = await _run_with_interrupt(coro, state.session)
         _set_activity_status(state, "idle" if _cancelled else "done")
+        _notify_turn_done(state.last_elapsed, cancelled=_cancelled)
     except Exception:
         _set_activity_status(state, "idle")
 
@@ -1000,7 +1033,6 @@ async def _handle_tg_compress(state: InteractiveState):
 
 _AUTO_COMPRESS_THRESHOLD = 0.90
 _RECAP_EVERY = 10
-_MEMORY_EXTRACT_EVERY = 6
 
 
 def _maybe_cleanup_memory(state: InteractiveState) -> None:
@@ -1021,43 +1053,6 @@ def _maybe_cleanup_memory(state: InteractiveState) -> None:
         task.add_done_callback(_log_task_error)
     except Exception:
         logger.debug("memory cleanup launch failed", exc_info=True)
-
-
-def _maybe_extract_memory(state: InteractiveState) -> None:
-    """Каждые N сообщений запускает фоновое извлечение долговременной памяти.
-
-    Fire-and-forget: результат (число сохранённых фактов) только логируется,
-    UI не блокируется и не засоряется. Ошибки внутри проглатываются.
-    """
-    if state.msg_num <= 0 or state.msg_num % _MEMORY_EXTRACT_EVERY != 0:
-        return
-    try:
-        transcript = state.session.build_compress_text()
-    except Exception:
-        logger.debug("memory extract transcript build failed", exc_info=True)
-        return
-    if not transcript.strip():
-        return
-
-    workdir = getattr(state.session, "working_dir", None) or os.getcwd()
-
-    async def _run_extract():
-        try:
-            from memory import extract_memories
-
-            n = await extract_memories(transcript, working_dir=workdir)
-            if n:
-                logger.info("memory extract: saved %d fact(s) at msg #%d", n, state.msg_num)
-        except Exception as e:
-            logger.debug("memory extract failed: %s", e, exc_info=True)
-
-    try:
-        task = asyncio.create_task(_run_extract(), name="memory-extract")
-        state.memory_background_tasks.add(task)
-        task.add_done_callback(state.memory_background_tasks.discard)
-        task.add_done_callback(_log_task_error)
-    except Exception:
-        logger.debug("memory extract launch failed", exc_info=True)
 
 
 def _maybe_launch_recap(state: InteractiveState) -> None:
@@ -1136,7 +1131,7 @@ def _schedule_recap_output(state: InteractiveState) -> None:
 
 
 async def _stop_memory_tasks(state: InteractiveState) -> None:
-    """Cancel outstanding fire-and-forget memory extraction on shutdown."""
+    """Cancel the periodic memory cleanup task on shutdown."""
     tasks = set(state.memory_background_tasks)
     state.memory_background_tasks.clear()
     for task in tasks:
@@ -1483,6 +1478,7 @@ async def _resume_agent_for_background(state: InteractiveState) -> bool:
     try:
         state.last_elapsed, _cancelled = await _run_with_interrupt(coro, state.session)
         _set_activity_status(state, "idle" if _cancelled else "done")
+        _notify_turn_done(state.last_elapsed, cancelled=_cancelled)
     except Exception:
         _set_activity_status(state, "idle")
     return True

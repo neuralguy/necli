@@ -29,8 +29,14 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "telegram_chat_id": "",
     "telegram_enabled": False,
     "think_enabled": False,
+    # Desktop-уведомления о завершении хода агента: системный тост, если ход
+    # длился дольше минуты и окно терминала не в фокусе (или терминал не
+    # поддерживает focus reporting). Переключаются в /settings → Interface.
+    "notifications_enabled": True,
     "tool_format_force_native": True,
     "disabled_tools": [],
+    "display_full_blocks_compact": [],
+    "display_full_blocks_full": ["*"],
     # Авто-резюм агента при завершении фоновой shell-задачи: если задача
     # завершилась, пока агент ждёт ввода пользователя, он сам продолжит работу
     # с её результатом (не прерывая пользователя, если тот печатает).

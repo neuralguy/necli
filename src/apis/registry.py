@@ -209,6 +209,11 @@ def _create_instance(defn: ApiProviderDefinition, model_id: str, **kwargs) -> Ba
             raise ValueError(f"Router '{model_id}' is not configured")
         return RouterProvider(model_id, router["routes"], **kwargs)
 
+    if ptype == "chatgpt":
+        from apis.providers.chatgpt_provider import create_chatgpt_provider
+
+        return create_chatgpt_provider(defn, model_id, **kwargs)
+
     if ptype == "anthropic" or fmt == "anthropic":
         from apis.providers.anthropic_provider import create_anthropic_provider
 
@@ -286,7 +291,15 @@ def list_providers() -> list[dict]:
     for defn in definitions:
         if defn.type == "router":
             continue
-        has_key = bool(get_api_key(defn.id))
+        if defn.type == "chatgpt":
+            from apis.chatgpt_auth import chatgpt_auth_status
+            from apis.chatgpt_usage import get_cached_chatgpt_usage
+
+            has_key = bool(chatgpt_auth_status().get("authenticated"))
+            weekly_usage = get_cached_chatgpt_usage() if has_key else None
+        else:
+            has_key = bool(get_api_key(defn.id))
+            weekly_usage = None
         result.append(
             {
                 "id": defn.id,
@@ -297,6 +310,7 @@ def list_providers() -> list[dict]:
                 "has_key": has_key,
                 "models": [m.display_name for m in defn.models],
                 "default_model": defn.default_model,
+                "weekly_usage": weekly_usage,
             }
         )
     return result

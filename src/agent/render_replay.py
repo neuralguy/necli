@@ -214,7 +214,7 @@ def _replay_item(
         text = p.get("text", "")
         if text:
             _out().print()
-            _print_user_line(text, status=p.get("status", ""))
+            _print_user_line(text, status=p.get("status", ""), time_str=p.get("time", ""))
         return
 
     if kind == "assistant":
@@ -237,8 +237,8 @@ def _replay_item(
         subtitle = p.get("subtitle", "")
         if not call_d:
             return
-        if previous_kind in ("tool", "command_only"):
-            _out().print()
+        # Каждый блок в replay отделён ровно одной пустой строкой — как в live.
+        _out().print()
         call = deserialize_tool_call(call_d)
         result = deserialize_tool_result(result_d) if result_d else None
         if result is None:
@@ -251,8 +251,7 @@ def _replay_item(
         call_d = p.get("call")
         if not call_d:
             return
-        if previous_kind in ("tool", "command_only"):
-            _out().print()
+        _out().print()
         call = deserialize_tool_call(call_d)
         show_command(
             call.command, tool_name=call.tool_name, args=call.args, subtitle=p.get("subtitle", "")
@@ -305,10 +304,7 @@ def _replay_item(
         details.append(" · ", style="dim")
         details.append(f"↑{format_tokens(input_tokens)}", style=theme("fg_primary"))
         details.append(" ", style="dim")
-        details.append(
-            f"↓{output_prefix}{format_tokens(output_tokens)}",
-            style=theme("fg_primary"),
-        )
+        details.append(f"↓{output_prefix}{format_tokens(output_tokens)}", style=theme("fg_primary"))
         _out().print(header)
         _out().print(details)
         return
@@ -407,6 +403,7 @@ def print_session_history(necli_session, *, max_messages: int = 20) -> None:
                 if pending_calls:
                     call = pending_calls.pop(0)
                 if call is not None:
+                    _out().print()
                     show_tool_combined(call, res)
                 else:
                     show_command(
@@ -636,7 +633,7 @@ def _replay_welcome() -> None:
         logger.opt(exception=True).debug("replay welcome failed")
 
 
-def _print_user_line(text: str, status: str = "") -> None:
+def _print_user_line(text: str, status: str = "", time_str: str = "") -> None:
     from wcwidth import wcswidth
 
     from config.themes import t as theme
@@ -696,6 +693,9 @@ def _print_user_line(text: str, status: str = "") -> None:
                 rows.append(f"\033[1;97;{bg_seq}m{body}\033[0m\n")
             else:
                 rows.append(f"\033[1;97m{body}\033[0m\n")
+        # Серое время отправки справа снизу — как render_echo в live.
+        if time_str:
+            rows.append(f"\033[38;5;250m{' ' * max(0, w - _vw(time_str))}{time_str}\033[0m\n")
         _raw("".join(rows))
     except Exception:
         line = Text()

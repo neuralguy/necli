@@ -59,6 +59,10 @@ class ToolResult:
     # (до правки). Нужно для корректной нумерации diff-превью — после записи
     # find_text в файле уже нет, искать его поздно.
     line_starts: list[int] | None = None
+    # patch_file: actual line-level hunks produced by the successful edit.
+    # Keeping the applied diff on the result makes UI/replay independent from
+    # how the model expressed the patch (native JSON vs fenced FIND/REPLACE).
+    patch_changes: list[dict] | None = None
 
     def to_dict(self) -> dict:
         d = {
@@ -72,4 +76,6 @@ class ToolResult:
             d["full_content"] = True
         if self.line_starts:
             d["line_starts"] = list(self.line_starts)
+        if self.patch_changes:
+            d["patch_changes"] = [dict(change) for change in self.patch_changes]
         return d

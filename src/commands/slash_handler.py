@@ -54,6 +54,12 @@ def _busy(label: str):
 
 
 async def handle_slash_result(act: SlashResult, state: InteractiveState) -> bool:
+    if act.switch_session or act.do_new or act.do_branch:
+        # Смена диалога — живая панель плана прежнего хода больше неактуальна.
+        from agent.plan_panel import reset_plan_panel
+
+        reset_plan_panel()
+
     if act.switch_session:
         await _handle_switch_session(act, state)
         return True

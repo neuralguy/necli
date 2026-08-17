@@ -821,7 +821,7 @@ async def select_api_model_menu(
     # плоский список строк и Rich-таблицу заново на КАЖДОМ кадре (тикер даёт
     # 10 fps, а кадр зовёт рендер дважды) — отсюда и тормоза на больших списках.
     if group_labels is not None:
-        groups = list(group_labels)
+        groups = group_labels
     else:
         groups = [model_group(m.display_name or m.id) for m in api_models]
     static = [
@@ -960,9 +960,11 @@ async def select_api_model_menu(
         for ridx in range(start, end):
             orig = flat[ridx]
             if orig < 0:
+                next_orig = flat[ridx + 1] if ridx + 1 < len(flat) else -1
+                group_title = groups[next_orig] if next_orig >= 0 else flat_group[ridx]
                 lines.append(
                     row_line(
-                        [(clip(flat_group[ridx].upper(), name_w), pal.bold + pal.accent)],
+                        [(clip(group_title.upper(), name_w), pal.bold + pal.accent)],
                         width,
                         pal=pal,
                     )

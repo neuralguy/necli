@@ -121,38 +121,87 @@ class Plan:
                 self.steps.append(PlanStep._from_dict(s))
         self.updated_at = time.time()
 
+    def ensure_progress(self, preferred_start: int = 0) -> int | None:
+        """Keep at most one active step and start a pending step when needed."""
+        active = [i for i, step in enumerate(self.steps) if step.status == StepStatus.IN_PROGRESS]
+        if active:
+            keep = active[0]
+            for idx in active[1:]:
+                self.steps[idx].status = StepStatus.PENDING
+            return keep
+
+        if not self.steps:
+            return None
+        preferred_start = max(0, min(preferred_start, len(self.steps)))
+        order = [*range(preferred_start, len(self.steps)), *range(0, preferred_start)]
+        for idx in order:
+            if self.steps[idx].status == StepStatus.PENDING:
+                self.steps[idx].status = StepStatus.IN_PROGRESS
+                self.updated_at = time.time()
+                return idx
+        return None
+
     def update_step(
         self,
         index: int,
         status: str | None = None,
         notes: str | None = None,
     ):
-        """Обновить статус/заметки шага по индексу."""
+        """Update one step while preserving a single-current-step invariant."""
         if index not in range(len(self.steps)):
             return
+
         if status:
             normalized = _normalize_status(status)
-            if normalized is not None:
-                self.steps[index].status = normalized
-            else:
+            if normalized is None:
                 logger.warning("plan update: unknown status %r — ignored", status)
+            else:
+                if normalized == StepStatus.IN_PROGRESS:
+                    for i, step in enumerate(self.steps):
+                        if i != index and step.status == StepStatus.IN_PROGRESS:
+                            step.status = StepStatus.PENDING
+                self.steps[index].status = normalized
+                if normalized in (StepStatus.DONE, StepStatus.SKIPPED):
+                    self.ensure_progress(preferred_start=index + 1)
+
         if notes is not None:
             self.steps[index].notes = notes
         self.updated_at = time.time()
 
-    def add_step(self, title: str, index: int | None = None):
-        """Добавить новый шаг (в конец или по индексу)."""
-        step = PlanStep(title=title)
+    def add_step(
+        self,
+        title: str,
+        index: int | None = None,
+        *,
+        status: str | None = None,
+        notes: str = "",
+    ):
+        """Add a step and honor optional status/notes from the tool schema."""
+        normalized = _normalize_status(status) if status else StepStatus.PENDING
+        if normalized is None:
+            normalized = StepStatus.PENDING
+        step = PlanStep(title=title, status=normalized, notes=str(notes or ""))
         if index is not None and index in range(len(self.steps) + 1):
             self.steps.insert(index, step)
+            inserted = index
         else:
             self.steps.append(step)
+            inserted = len(self.steps) - 1
+        if step.status == StepStatus.IN_PROGRESS:
+            for i, other in enumerate(self.steps):
+                if i != inserted and other.status == StepStatus.IN_PROGRESS:
+                    other.status = StepStatus.PENDING
         self.updated_at = time.time()
 
     def remove_step(self, index: int):
-        """Удалить шаг по индексу."""
+        """Remove a step and immediately advance if it was the active/current one."""
         if index in range(len(self.steps)):
+            current = self.current_step_index
             self.steps.pop(index)
+            if current == index or not any(
+                step.status == StepStatus.IN_PROGRESS for step in self.steps
+            ):
+                self.ensure_progress(preferred_start=min(index, len(self.steps)))
             self.updated_at = time.time()
 
     # ── Статистика ──
@@ -264,6 +313,24 @@ class PlanCommand:
     data: dict
 
 
+def _valid_create_steps(steps) -> bool:
+    """A useful plan needs 2+ non-empty named steps; reject transport junk."""
+    if not isinstance(steps, list) or len(steps) < 2:
+        return False
+    for item in steps:
+        if isinstance(item, str):
+            if not item.strip():
+                return False
+            continue
+        if isinstance(item, dict):
+            title = item.get("title") or item.get("name") or item.get("step") or item.get("text")
+            if not isinstance(title, str) or not title.strip():
+                return False
+            continue
+        return False
+    return True
+
+
 def _parse_plan_body(match):
     """Parse JSON from a :::call plan ... call::: block body."""
     body = match.group("body").strip()
@@ -290,11 +357,11 @@ def _parse_plan_body(match):
         if "steps" not in data:
             return None
         steps = data.get("steps")
-        if not isinstance(steps, list) or len(steps) < 3:
+        if not _valid_create_steps(steps):
             from logger import logger as structured_logger
 
             structured_logger.warning(
-                "plan create rejected: steps must be a list of 3+ items, got {} (raw_preview={!r})",
+                "plan create rejected: steps must be a list of 2+ named items, got {} (raw_preview={!r})",
                 len(steps) if isinstance(steps, list) else type(steps).__name__,
                 match.group(0)[:200],
             )
@@ -313,7 +380,7 @@ def _plan_command_from_data(data: dict) -> PlanCommand | None:
         return None
     if action == "create":
         steps = data.get("steps")
-        if not isinstance(steps, list) or len(steps) < 3:
+        if not _valid_create_steps(steps):
             return None
     return PlanCommand(action=action, data=data)
 
@@ -404,6 +471,14 @@ def resolve_plan_command_focus(plan: Plan | None, cmd: PlanCommand) -> int | Non
     if plan is None:
         return None
     if cmd.action == "update":
+        raw_index = cmd.data.get("index")
+        if isinstance(raw_index, list):
+            resolved = [
+                _resolve_step_index(plan, {**cmd.data, "index": value})
+                for value in raw_index
+            ]
+            resolved = [idx for idx in resolved if idx is not None]
+            return resolved[-1] if resolved else None
         return _resolve_step_index(plan, cmd.data)
     if cmd.action == "add_step":
         index = cmd.data.get("index")
@@ -459,12 +534,16 @@ def apply_plan_commands(
             steps = cmd.data.get("steps", [])
             plan = Plan(goal=goal)
             plan.set_steps(steps)
+            plan.ensure_progress()
 
         elif plan is not None:
             if cmd.action == "update":
                 updates_list = cmd.data.get("updates")
-                if updates_list is not None:
+                if isinstance(updates_list, list):
                     for item in updates_list:
+                        if not isinstance(item, dict):
+                            logger.warning("plan update: ignoring non-object batch item %r", item)
+                            continue
                         step_idx = _resolve_step_index(plan, item)
                         if step_idx is not None:
                             plan.update_step(
@@ -473,19 +552,39 @@ def apply_plan_commands(
                                 notes=item.get("notes"),
                             )
                 else:
-                    step_idx = _resolve_step_index(plan, cmd.data)
-                    if step_idx is not None:
-                        plan.update_step(
-                            step_idx,
-                            status=cmd.data.get("status"),
-                            notes=cmd.data.get("notes"),
-                        )
+                    raw_index = cmd.data.get("index")
+                    if isinstance(raw_index, list):
+                        resolved = [
+                            _resolve_step_index(plan, {**cmd.data, "index": value})
+                            for value in raw_index
+                        ]
+                        resolved = [idx for idx in resolved if idx is not None]
+                        for step_idx in resolved:
+                            plan.update_step(
+                                step_idx,
+                                status=cmd.data.get("status"),
+                                notes=cmd.data.get("notes"),
+                            )
+                        if not resolved:
+                            logger.warning(
+                                "plan update: no indices resolved, data=%r, steps=%d",
+                                cmd.data,
+                                len(plan.steps),
+                            )
                     else:
-                        logger.warning(
-                            "plan update: step not resolved, data=%r, steps=%d",
-                            cmd.data,
-                            len(plan.steps),
-                        )
+                        step_idx = _resolve_step_index(plan, cmd.data)
+                        if step_idx is not None:
+                            plan.update_step(
+                                step_idx,
+                                status=cmd.data.get("status"),
+                                notes=cmd.data.get("notes"),
+                            )
+                        else:
+                            logger.warning(
+                                "plan update: step not resolved, data=%r, steps=%d",
+                                cmd.data,
+                                len(plan.steps),
+                            )
 
             elif cmd.action == "add_step":
                 title = cmd.data.get("title", "")
@@ -502,7 +601,13 @@ def apply_plan_commands(
                         elif 0 <= idx <= len(plan.steps):
                             insert_index = idx
                 if title:
-                    plan.add_step(title, index=insert_index)
+                    plan.add_step(
+                        title,
+                        index=insert_index,
+                        status=cmd.data.get("status"),
+                        notes=cmd.data.get("notes", ""),
+                    )
+                    plan.ensure_progress(preferred_start=insert_index or 0)
 
             elif cmd.action == "remove_step":
                 step_idx = _resolve_remove_index(plan, cmd.data)
@@ -526,6 +631,8 @@ def render_plan_panel(
     *,
     focus_index: int | None = None,
     full: bool = True,
+    collapsed: bool = False,
+    hint: str = "Ctrl+O",
 ):
     """
     Рендерит план как Rich Panel.
@@ -533,6 +640,9 @@ def render_plan_panel(
     compact=True — для встраивания в Live-стрим (без лишних отступов).
     compact=False — для статичного вывода.
     full=False + focus_index — показывает окно: прошлый, изменённый, следующий.
+    collapsed=True (с full=False) — окно из ДВУХ шагов: текущий и следующий —
+    для свёрнутой живой панели в динамической зоне.
+    hint — подсказка в заголовке (Ctrl+O у статичных блоков, /plan у живых).
     Если глобальный compact_mode включён — возвращает Group без рамки.
     """
     lines = Text()
@@ -544,7 +654,10 @@ def render_plan_panel(
         if focus_index is None:
             focus_index = 0
         focus_index = max(0, min(int(focus_index), len(plan.steps) - 1))
-        indices = list(range(max(0, focus_index - 1), min(len(plan.steps), focus_index + 2)))
+        if collapsed:
+            indices = list(range(focus_index, min(len(plan.steps), focus_index + 2)))
+        else:
+            indices = list(range(max(0, focus_index - 1), min(len(plan.steps), focus_index + 2)))
 
     last_visible_idx = indices[-1] if indices else -1
 
@@ -596,7 +709,7 @@ def render_plan_panel(
     header.append(title, style=f"bold {border_style}")
     if subtitle:
         header.append(f"  {subtitle}", style="dim")
-    header.append("  Ctrl+O", style="dim")
+    header.append(f"  {hint}", style="dim")
     return RGroup(header, lines)
 
 

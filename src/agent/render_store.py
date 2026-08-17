@@ -75,6 +75,9 @@ def _serialize_tool_result(result: tools.ToolResult) -> dict:
     ls = getattr(result, "line_starts", None)
     if ls:
         out["line_starts"] = list(ls)
+    patch_changes = getattr(result, "patch_changes", None)
+    if patch_changes:
+        out["patch_changes"] = [dict(change) for change in patch_changes if isinstance(change, dict)]
     return out
 
 
@@ -117,6 +120,12 @@ def _deserialize_tool_result(d: dict) -> tools.ToolResult:
             r.line_starts = [int(x) for x in ls]
         except Exception:
             logger.debug("render_store: line_starts deserialize failed", exc_info=True)
+    patch_changes = d.get("patch_changes")
+    if isinstance(patch_changes, list):
+        try:
+            r.patch_changes = [dict(change) for change in patch_changes if isinstance(change, dict)]
+        except Exception:
+            logger.debug("render_store: patch_changes deserialize failed", exc_info=True)
     return r
 
 
@@ -129,8 +138,10 @@ class RenderStore:
         self.items.append(item)
         return item
 
-    def add_user(self, text: str, status: str = "") -> RenderItem:
-        return self.add("user", {"text": text or "", "status": status or ""})
+    def add_user(self, text: str, status: str = "", time_str: str = "") -> RenderItem:
+        return self.add(
+            "user", {"text": text or "", "status": status or "", "time": time_str or ""}
+        )
 
     def add_assistant_block(
         self, text: str, subtitle: str = "", message_num: int = 0

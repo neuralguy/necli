@@ -20,6 +20,10 @@ class Limits:
     BG_SHELL_TIMEOUT = 3600
     MAX_SUBAGENT_ITERATIONS = 100
     MAX_SUBAGENT_CONTEXT_TOKENS = 1_000_000
+    # Общий wall-clock бюджет ОДНОГО субагента. Итерации и контекст уже
+    # ограничены, но висящий провайдер с ретраями может тянуть лимит итераций
+    # часами: это бюджет гарантирует завершение беглого зомби.
+    MAX_SUBAGENT_WALL_SEC = 7200
     MODEL_CALL_TIMEOUT = 240.0
     READ_CACHE_MAX_SESSIONS = 50
     STATIC_QUEUE_MAX = 500

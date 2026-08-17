@@ -14,6 +14,26 @@ from .submissions import SUBMIT_EOF, SUBMIT_INTERRUPT
 logger = logging.getLogger(__name__)
 
 
+def _cycle_completion(buf, *, previous: bool) -> None:
+    """Move through completions without exposing prompt_toolkit's empty slot.
+
+    prompt_toolkit intentionally cycles ``first -> None -> last`` (and the
+    reverse), where ``None`` means "restore the text before completion".  In
+    necli the menu is continuously visible while typing, so that intermediate
+    state feels like a dead key press.  Preserve the initial None -> first/last
+    behavior, but skip None when the user is already on a completion.
+    """
+    state = getattr(buf, "complete_state", None)
+    if state is None:
+        return
+    had_selection = getattr(state, "current_completion", None) is not None
+    move = buf.complete_previous if previous else buf.complete_next
+    move()
+    state = getattr(buf, "complete_state", None)
+    if had_selection and state is not None and getattr(state, "current_completion", None) is None:
+        move()
+
+
 class ShellKeyBindingMixin:
     def _build_keys(self) -> None:
         kb = KeyBindings()
@@ -55,7 +75,7 @@ class ShellKeyBindingMixin:
                 return
             buf = self.input_buffer
             if buf.complete_state:
-                buf.complete_previous()
+                _cycle_completion(buf, previous=True)
             elif not buf.text and self._queued_messages and self.on_edit_queued:
                 text = self.on_edit_queued()
                 if text is not None:
@@ -77,7 +97,7 @@ class ShellKeyBindingMixin:
                 self.invalidate()
                 return
             if buf.complete_state:
-                buf.complete_next()
+                _cycle_completion(buf, previous=False)
                 self.invalidate()
                 return
             # Вниз из пустого ввода — переход на строки субагентов. Если в
