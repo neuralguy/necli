@@ -18,19 +18,23 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
-import config.paths as paths
+from config import paths
 from config._atomic import atomic_write_json
 
 OAUTH_ISSUER = "https://auth.openai.com"
 OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OAUTH_CALLBACK_PORT = 1455
-OAUTH_SCOPES = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+OAUTH_SCOPES = (
+    "openid profile email offline_access api.connectors.read api.connectors.invoke"
+)
 CHATGPT_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 
 _AUTH_LOCK = threading.RLock()
 _REFRESH_LOCK = asyncio.Lock()
 _CALLBACK_LOCK = threading.RLock()
-_active_callback: tuple[ThreadingHTTPServer, threading.Thread, dict[str, str]] | None = None
+_active_callback: (
+    tuple[ThreadingHTTPServer, threading.Thread, dict[str, str]] | None
+) = None
 
 
 class ChatGPTAuthError(RuntimeError):
@@ -183,21 +187,28 @@ def _callback_server(expected_state: str) -> tuple[ThreadingHTTPServer, dict[str
             state = (params.get("state") or [""])[0]
             if not secrets.compare_digest(state, expected_state):
                 result["error"] = "OAuth state mismatch"
-                self._respond(400, "ChatGPT sign-in failed. Return to necli and try again.")
+                self._respond(
+                    400, "ChatGPT sign-in failed. Return to necli and try again."
+                )
                 return
             error = (params.get("error_description") or params.get("error") or [""])[0]
             code = (params.get("code") or [""])[0]
             if error:
                 result["error"] = error
-                self._respond(400, "ChatGPT sign-in was not completed. You may close this tab.")
+                self._respond(
+                    400, "ChatGPT sign-in was not completed. You may close this tab."
+                )
                 return
             if not code:
                 result["error"] = "Authorization callback did not contain a code"
-                self._respond(400, "ChatGPT sign-in failed. Return to necli and try again.")
+                self._respond(
+                    400, "ChatGPT sign-in failed. Return to necli and try again."
+                )
                 return
             result["code"] = code
             self._respond(
-                200, "ChatGPT sign-in complete. You can close this tab and return to necli."
+                200,
+                "ChatGPT sign-in complete. You can close this tab and return to necli.",
             )
 
         def _respond(self, status: int, message: str) -> None:
@@ -233,10 +244,16 @@ async def _token_request(data: dict[str, str]) -> dict[str, Any]:
     if response.status_code != 200:
         try:
             payload = response.json()
-            detail = payload.get("error_description") or payload.get("error") or response.text
+            detail = (
+                payload.get("error_description")
+                or payload.get("error")
+                or response.text
+            )
         except (ValueError, AttributeError):
             detail = response.text
-        raise ChatGPTAuthError(f"ChatGPT authentication failed ({response.status_code}): {detail}")
+        raise ChatGPTAuthError(
+            f"ChatGPT authentication failed ({response.status_code}): {detail}"
+        )
     try:
         payload = response.json()
     except ValueError as exc:
@@ -250,19 +267,26 @@ def _stored_tokens(
     payload: dict[str, Any], previous: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     previous = previous or {}
-    access_token = str(payload.get("access_token") or previous.get("access_token") or "")
+    access_token = str(
+        payload.get("access_token") or previous.get("access_token") or ""
+    )
     id_token = str(payload.get("id_token") or previous.get("id_token") or "")
-    refresh_token = str(payload.get("refresh_token") or previous.get("refresh_token") or "")
+    refresh_token = str(
+        payload.get("refresh_token") or previous.get("refresh_token") or ""
+    )
     expires_in = float(payload.get("expires_in") or 3600)
     id_claims = _decode_jwt_claims(id_token)
     access_claims = _decode_jwt_claims(access_token)
     exp = access_claims.get("exp")
-    expires_at = float(exp) if isinstance(exp, int | float) else time.time() + expires_in
+    expires_at = (
+        float(exp) if isinstance(exp, int | float) else time.time() + expires_in
+    )
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "id_token": id_token,
-        "account_id": _account_id(id_token, access_token) or str(previous.get("account_id") or ""),
+        "account_id": _account_id(id_token, access_token)
+        or str(previous.get("account_id") or ""),
         "email": str(id_claims.get("email") or previous.get("email") or ""),
         "expires_at": expires_at,
     }
@@ -288,7 +312,9 @@ async def login_chatgpt(*, open_browser: bool = True, timeout: float = 300.0) ->
         _active_callback = (server, server_thread, result)
     try:
         if open_browser and not webbrowser.open(auth_url):
-            raise ChatGPTAuthError(f"Could not open a browser. Open this URL manually: {auth_url}")
+            raise ChatGPTAuthError(
+                f"Could not open a browser. Open this URL manually: {auth_url}"
+            )
 
         deadline = time.monotonic() + timeout
         while "code" not in result and "error" not in result:
@@ -322,21 +348,29 @@ async def login_chatgpt(*, open_browser: bool = True, timeout: float = 300.0) ->
 async def get_chatgpt_access(*, force_refresh: bool = False) -> tuple[str, str]:
     auth = load_chatgpt_auth()
     if not auth or not auth.get("access_token"):
-        raise ChatGPTAuthError("ChatGPT is not connected. Open /api and sign in with ChatGPT.")
+        raise ChatGPTAuthError(
+            "ChatGPT is not connected. Open /api and sign in with ChatGPT."
+        )
     if force_refresh or float(auth.get("expires_at") or 0) <= time.time() + 300:
         previous_access_token = str(auth.get("access_token") or "")
         async with _REFRESH_LOCK:
             current = load_chatgpt_auth()
             if not current:
-                raise ChatGPTAuthError("ChatGPT is not connected. Open /api and sign in again.")
-            token_is_stale = str(current.get("access_token") or "") == previous_access_token
+                raise ChatGPTAuthError(
+                    "ChatGPT is not connected. Open /api and sign in again."
+                )
+            token_is_stale = (
+                str(current.get("access_token") or "") == previous_access_token
+            )
             needs_refresh = (force_refresh and token_is_stale) or float(
                 current.get("expires_at") or 0
             ) <= time.time() + 300
             if needs_refresh:
                 refresh_token = str(current.get("refresh_token") or "")
                 if not refresh_token:
-                    raise ChatGPTAuthError("ChatGPT session expired. Sign in again from /api.")
+                    raise ChatGPTAuthError(
+                        "ChatGPT session expired. Sign in again from /api."
+                    )
                 payload = await _token_request(
                     {
                         "client_id": OAUTH_CLIENT_ID,

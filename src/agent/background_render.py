@@ -11,6 +11,7 @@ from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 
+from config.constants import Limits
 from config.i18n import format_duration
 from config.i18n import t as tr
 from config.themes import t
@@ -19,6 +20,7 @@ from ui.shell import Overlay, RowGroup, get_shell, visible_width
 _VIEWS: dict[str, BackgroundTaskView] = {}
 _VIEWS_LOCK = threading.RLock()
 _SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_INVALIDATE_INTERVAL = 0.1
 
 
 def _short(text: str, width: int) -> str:
@@ -50,6 +52,8 @@ class BackgroundTaskView:
         self.key = f"background-{job.id}"
         self.shell = None
         self.overlay_task: asyncio.Task | None = None
+        self._invalidate_pending = False
+        self._invalidate_lock = threading.Lock()
 
     def attach(self) -> None:
         with _VIEWS_LOCK:
@@ -81,11 +85,13 @@ class BackgroundTaskView:
         budget = max(12, 80 - visible_width(tail) - 8)
         if self.shell is not None:
             budget = max(12, self.shell._width() - visible_width(tail) - 8)
-        return f"{glyph} ⚙ {_short(self.job.command, budget)}  {tail}"
+        return f"{glyph} ⚙︎ {_short(self.job.command, budget)}  {tail}"
 
     def open(self) -> None:
         shell = self.shell
-        if shell is None or (self.overlay_task is not None and not self.overlay_task.done()):
+        if shell is None or (
+            self.overlay_task is not None and not self.overlay_task.done()
+        ):
             return
         self.overlay_task = asyncio.create_task(self._show(shell))
 
@@ -99,8 +105,28 @@ class BackgroundTaskView:
                 await ticker
 
     def invalidate(self) -> None:
-        if self.shell is not None:
-            self.shell.invalidate()
+        shell = self.shell
+        if shell is None:
+            return
+        loop = getattr(shell, "_loop", None)
+        if loop is None or not loop.is_running():
+            shell.invalidate()
+            return
+        with self._invalidate_lock:
+            if self._invalidate_pending:
+                return
+            self._invalidate_pending = True
+
+        def _invalidate() -> None:
+            with self._invalidate_lock:
+                self._invalidate_pending = False
+            if self.shell is shell:
+                shell.invalidate()
+
+        def _schedule_invalidate() -> None:
+            loop.call_later(_INVALIDATE_INTERVAL, _invalidate)
+
+        loop.call_soon_threadsafe(_schedule_invalidate)
 
 
 class BackgroundTaskOverlay(Overlay):
@@ -120,6 +146,8 @@ class BackgroundTaskOverlay(Overlay):
         return (getattr(self.job, "revision", 0), self.offset, self.follow, tick)
 
     def _lines(self, width: int) -> list[Text]:
+        from tools.background import snapshot_job_output
+
         inner = max(20, width - 6)
         lines = [Text("Command", style=f"bold {t('accent')}")]
         command = self.job.command or ""
@@ -129,7 +157,10 @@ class BackgroundTaskOverlay(Overlay):
                 raw = raw[inner:]
             lines.append(Text("  " + raw, style=t("fg_primary")))
         lines.extend([Text(""), Text("Output", style=f"bold {t('warning')}")])
-        output = self.job.output or ""
+        output = snapshot_job_output(
+            self.job,
+            max_chars=Limits.BG_SHELL_UI_OUTPUT_CHARS,
+        )
         if not output:
             lines.append(Text("  " + tr("background.no_output"), style="dim"))
         else:
@@ -149,7 +180,9 @@ class BackgroundTaskOverlay(Overlay):
         self.total = len(lines)
         self.page = max(1, budget - 4)
         max_offset = max(0, len(lines) - self.page)
-        self.offset = max_offset if self.follow else max(0, min(self.offset, max_offset))
+        self.offset = (
+            max_offset if self.follow else max(0, min(self.offset, max_offset))
+        )
         visible = lines[self.offset : self.offset + self.page]
         while len(visible) < self.page:
             visible.append(Text(""))

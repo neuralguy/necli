@@ -23,7 +23,11 @@ _TOGGLES = [
         "autoprune.round_compression",
         "autoprune.round_compression_hint",
     ),
-    ("autoprune_safety_compress", "autoprune.safety_compress", "autoprune.safety_compress_hint"),
+    (
+        "autoprune_safety_compress",
+        "autoprune.safety_compress",
+        "autoprune.safety_compress_hint",
+    ),
 ]
 
 # (ключ настройки, ключ label) — value-пункты меню.

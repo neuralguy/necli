@@ -92,7 +92,7 @@ def _run_pre_tool_hooks(call: ToolCall) -> ToolResult | None:
             return ToolResult(
                 name=call.tool_name,
                 status="error",
-                output=f"⛔ {reason}",
+                output=f"⚠︎ {reason}",
                 exit_code=2,
                 command=call.command,
             )
@@ -116,7 +116,10 @@ def _run_post_tool_hooks(call: ToolCall, result: ToolResult) -> None:
             {
                 "tool_name": call.tool_name,
                 "tool_input": _hook_tool_input(call),
-                "tool_response": {"status": result.status, "exit_code": result.exit_code},
+                "tool_response": {
+                    "status": result.status,
+                    "exit_code": result.exit_code,
+                },
             },
             working_dir=get_working_dir(),
         )
@@ -135,7 +138,9 @@ def get_disabled_tools() -> set[str]:
 
         value = get("disabled_tools", [])
         return (
-            {name for name in value if isinstance(name, str)} if isinstance(value, list) else set()
+            {name for name in value if isinstance(name, str)}
+            if isinstance(value, list)
+            else set()
         )
     except Exception:
         logger.debug("disabled_tools lookup failed", exc_info=True)
@@ -236,7 +241,9 @@ def execute_call(call: ToolCall) -> ToolResult:
         command=call.command,
     )
     if arg_error is not None:
-        logger.warning("execute_call: invalid args for {}: {}", call.tool_name, arg_error)
+        logger.warning(
+            "execute_call: invalid args for {}: {}", call.tool_name, arg_error
+        )
         return ToolResult(
             name=call.tool_name,
             status="error",
@@ -250,7 +257,7 @@ def execute_call(call: ToolCall) -> ToolResult:
     args_preview = {
         k: (v if not isinstance(v, str) or len(v) <= 120 else v[:120] + "…")
         for k, v in (call.args or {}).items()
-        if k not in ("content", "b64", "insert", "replace", "find", "patches")
+        if k not in ("content", "b64", "patches")
     }
     logger.debug("→ tool {} args={}", call.tool_name, args_preview)
     t0 = time.monotonic()
@@ -290,14 +297,18 @@ def execute_call(call: ToolCall) -> ToolResult:
     else:
         from logger import debug
 
-        debug("tool.success", tool=call.tool_name, output_chars=len(result.output or ""))
+        debug(
+            "tool.success", tool=call.tool_name, output_chars=len(result.output or "")
+        )
     # PostToolUse hooks: могут подмешать контекст в вывод.
     _run_post_tool_hooks(call, result)
     return result
 
 
 # Канонический набор — config.READ_ONLY_TOOLS.
-PLANNING_TOOLS = frozenset(_READ_ONLY_CANONICAL | {"poll", "skill", "web_search", "web_fetch"})
+PLANNING_TOOLS = frozenset(
+    _READ_ONLY_CANONICAL | {"poll", "skill", "web_search", "web_fetch"}
+)
 SWARM_TOOLS = frozenset(PLANNING_TOOLS | {"shell", "subagent"})
 
 

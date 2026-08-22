@@ -356,11 +356,7 @@ async def run_poll(steps: list[dict]) -> list[dict]:
         if not question:
             continue
 
-        multiple = bool(
-            step.get("multiple")
-            or step.get("multi_select")
-            or step.get("type") in ("multi", "multiple", "multi-select")
-        )
+        multiple = bool(step.get("multiple"))
         step_info = f"({i + 1}/{total})" if total > 1 else ""
         answer = await run_poll_step(question, options[:10], step_info, multiple)
         results.append({"question": question, "answer": answer})

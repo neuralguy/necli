@@ -135,7 +135,13 @@ def _normalize_model_id(model: str) -> str:
     """Убирает пробелы/дефисы/подчёркивания/точки и приводит к lower."""
     if not model:
         return ""
-    return model.lower().replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+    return (
+        model.lower()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(".", "")
+    )
 
 
 # Алиасы провайдерских id → канонический display name из _MODEL_ENCODING_MAP.

@@ -68,7 +68,9 @@ def resolve_path(path: str, *, extensions: tuple[str, ...] | None = None) -> Pat
         return candidate
 
     allowed_extensions = (
-        {extension.lower() for extension in extensions} if extensions is not None else None
+        {extension.lower() for extension in extensions}
+        if extensions is not None
+        else None
     )
     try:
         matches = [
@@ -76,7 +78,9 @@ def resolve_path(path: str, *, extensions: tuple[str, ...] | None = None) -> Pat
             for child in candidate.parent.iterdir()
             if child.is_file()
             and child.name.startswith(f"{candidate.name}.")
-            and (allowed_extensions is None or child.suffix.lower() in allowed_extensions)
+            and (
+                allowed_extensions is None or child.suffix.lower() in allowed_extensions
+            )
         ]
     except OSError:
         return candidate

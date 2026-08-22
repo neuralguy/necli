@@ -23,7 +23,7 @@ Live лезет в терминал курсором и дерётся с prompt
     <динамическая зона>          высота 0, когда нечего показывать
     <одна пустая строка>         между динамикой Working/ответом и вводом
     ─── статус ──────────────    верхняя линия рамки
-    🚀agent ❯ ввод             режим агента слева от стрелки ввода
+    ⇢ agent ❯ ввод            режим агента слева от стрелки ввода
     ─────────────────────────    нижняя линия рамки
     <меню автодополнения>        растёт вниз, сдвигая ввод не выше середины
     <до 4 агентов/фоновых задач> ИЛИ строка подсказок активного оверлея
@@ -363,7 +363,9 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
         self.submissions.put_nowait((kind, submitted))
         if kind == SUBMIT_USER:
             try:
-                latest = next(iter(self.input_buffer.history.load_history_strings()), None)
+                latest = next(
+                    iter(self.input_buffer.history.load_history_strings()), None
+                )
                 if latest != submitted:
                     self.input_buffer.history.append_string(submitted)
             except Exception:
@@ -453,8 +455,7 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
     def start(self) -> asyncio.Task:
         """Создать Application и запустить его как фоновую задачу."""
         from ui.focus import (
-            disable_focus_reporting,
-            enable_focus_reporting,
+            bind_focus_reporting_to_raw_mode,
             wrap_input_for_focus_tracking,
         )
 
@@ -463,6 +464,11 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
             from prompt_toolkit.input import create_input
 
             base_input = wrap_input_for_focus_tracking(create_input())
+            if base_input is not None:
+                # Включать CSI ?1004 сразу нельзя: терминал ответит \x1b[I,
+                # пока tty ещё в cooked-режиме с эхом, и в строке ввода
+                # появится мусорный `^[[I`. Привязываем к raw_mode.
+                bind_focus_reporting_to_raw_mode(base_input)
         except Exception:
             logger.debug("focus tracking input unavailable", exc_info=True)
         self.app = Application(
@@ -486,9 +492,6 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
         self._loop = asyncio.get_event_loop()
         self._ticker_task = asyncio.create_task(self._ticker(), name="shell-ticker")
         app_task = asyncio.create_task(self.app.run_async(), name="shell-app")
-        if base_input is not None:
-            enable_focus_reporting()
-            app_task.add_done_callback(lambda _: disable_focus_reporting())
         return app_task
 
     def print_exit_notice(self, text: str) -> None:
@@ -499,7 +502,12 @@ class Shell(ShellKeyBindingMixin, ShellLayoutMixin, ShellOutputMixin):
         поднимаемся на высоту кадра и очищаем всё до конца экрана.
         """
         try:
-            rows = self._input_height() + 2 * self._frame_height() + self._below_height() + 1
+            rows = (
+                self._input_height()
+                + 2 * self._frame_height()
+                + self._below_height()
+                + 1
+            )
             sys.__stdout__.write(f"\r\x1b[{max(1, rows)}A\x1b[J")
             sys.__stdout__.write(str(text) + "\n")
             sys.__stdout__.flush()

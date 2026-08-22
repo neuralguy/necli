@@ -52,7 +52,11 @@ def _is_allowed_git_command(command: str) -> bool:
         tokens = list(lexer)
     except ValueError:
         return False
-    if len(tokens) < 2 or tokens[0] != "git" or tokens[1] not in _ALLOWED_GIT_SUBCOMMANDS:
+    if (
+        len(tokens) < 2
+        or tokens[0] != "git"
+        or tokens[1] not in _ALLOWED_GIT_SUBCOMMANDS
+    ):
         return False
     if any(token in _SHELL_OPERATOR_TOKENS for token in tokens):
         return False
@@ -103,7 +107,11 @@ def _build_task_prompt(hint: str) -> str:
 
 
 async def _call_model(
-    session: ApiSession, provider_id: str, model_id: str, use_native: bool, schemas: list[dict]
+    session: ApiSession,
+    provider_id: str,
+    model_id: str,
+    use_native: bool,
+    schemas: list[dict],
 ) -> tuple[str, list[dict]]:
     llm = get_provider(provider_id, model_id)
     want_tools = use_native and bool(schemas)
@@ -153,7 +161,9 @@ def _execute(calls: list, working_dir: str) -> list[tools.ToolResult]:
             try:
                 r = execute_call(call)
             except Exception as e:
-                logger.error("commit-agent tool %s crashed: %s", call.tool_name, e, exc_info=True)
+                logger.error(
+                    "commit-agent tool %s crashed: %s", call.tool_name, e, exc_info=True
+                )
                 r = tools.ToolResult(
                     name=call.tool_name,
                     status="error",
@@ -191,11 +201,19 @@ async def _run_commit_agent_impl(
     from logger import bind, info
 
     bind(subagent="commit-agent")
-    info("commit_agent.start", provider=provider_id, model=model_id, working_dir=working_dir)
+    info(
+        "commit_agent.start",
+        provider=provider_id,
+        model=model_id,
+        working_dir=working_dir,
+    )
     start_time = time.monotonic()
 
     logger.info(
-        "commit-agent start: provider=%s model=%s wd=%s", provider_id, model_id, working_dir
+        "commit-agent start: provider=%s model=%s wd=%s",
+        provider_id,
+        model_id,
+        working_dir,
     )
     session = ApiSession(provider_id, model_id)
     use_native = bool(getattr(session, "use_native_tools", False))
@@ -213,7 +231,11 @@ async def _run_commit_agent_impl(
     )
 
     # Только shell нужен commit-агенту.
-    schemas = [s for s in get_tool_schemas("agent") if s.get("function", {}).get("name") == "shell"]
+    schemas = [
+        s
+        for s in get_tool_schemas("agent")
+        if s.get("function", {}).get("name") == "shell"
+    ]
 
     session.messages.append(SystemMessage(content=system))
     session.messages.append(HumanMessage(content=_build_task_prompt(hint)))
@@ -240,9 +262,15 @@ async def _run_commit_agent_impl(
             calls = parse_tool_calls(raw_text)
         calls = [c for c in calls if c.tool_name != "think"]
 
-        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(last_tool_name, calls)
+        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(
+            last_tool_name, calls
+        )
         if not calls:
-            info("commit_agent.end", iterations=iteration, duration=time.monotonic() - start_time)
+            info(
+                "commit_agent.end",
+                iterations=iteration,
+                duration=time.monotonic() - start_time,
+            )
             return strip_tool_calls(raw_text).strip()
 
         # execute_call(shell) is synchronous and may block up to the shell
@@ -280,7 +308,9 @@ async def _run_commit_agent_impl(
                 result_msg += "\n\n" + repeat_tool_notice
             session.messages.append(HumanMessage(content=result_msg))
 
-    logger.warning("commit-agent stopped after %s iterations", _MAX_COMMIT_AGENT_ITERATIONS)
+    logger.warning(
+        "commit-agent stopped after %s iterations", _MAX_COMMIT_AGENT_ITERATIONS
+    )
     return f"[Commit agent stopped after {_MAX_COMMIT_AGENT_ITERATIONS} iterations]"
 
 
@@ -303,7 +333,9 @@ async def run_commit_agent(
         try:
             close_pending_native_tool_calls()
         except Exception:
-            logger.debug("commit-agent: close pending native calls failed", exc_info=True)
+            logger.debug(
+                "commit-agent: close pending native calls failed", exc_info=True
+            )
         # Cancellation is control flow. Swallowing it makes shutdown believe the
         # task completed normally and can leave callers waiting on owned work.
         raise

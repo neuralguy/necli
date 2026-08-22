@@ -17,8 +17,7 @@ def format_relative(ts: float) -> str:
 
     now = time.time()
     diff = now - ts
-    if diff < 0:
-        diff = 0
+    diff = max(diff, 0)
 
     if diff < 60:
         return "just now"

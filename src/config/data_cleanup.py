@@ -88,9 +88,13 @@ def _clean_empty_sessions() -> int:
     base = BASE_DIR / "sessions"
     if not base.is_dir():
         return 0
+    pinned = _pinned_session_ids()
+    if pinned is None:
+        logger.warning("data_cleanup: skipped empty-session cleanup because pins are unreadable")
+        return 0
     freed = 0
     for child in base.iterdir():
-        if not child.is_dir():
+        if not child.is_dir() or child.name in pinned:
             continue
         if _is_empty_session_dir(child):
             logger.info("data_cleanup: removing empty session dir {}", child.name[:20])
@@ -113,7 +117,9 @@ def _is_empty_session_dir(path: Path) -> bool:
     except (json.JSONDecodeError, OSError) as exc:
         # A corrupt/unreadable history is data to preserve for recovery, not
         # evidence that the session is empty. Deleting it here loses user data.
-        logger.warning("data_cleanup: preserving unreadable session {}: {}", path.name, exc)
+        logger.warning(
+            "data_cleanup: preserving unreadable session {}: {}", path.name, exc
+        )
         return False
 
 
@@ -122,6 +128,9 @@ def _clean_sessions() -> int:
     if not base.is_dir():
         return 0
     pinned = _pinned_session_ids()
+    if pinned is None:
+        logger.warning("data_cleanup: skipped session cleanup because pins are unreadable")
+        return 0
     entries = []
     for child in base.iterdir():
         if not child.is_dir():
@@ -147,18 +156,24 @@ def _clean_sessions() -> int:
     return freed
 
 
-def _pinned_session_ids() -> set[str]:
+def _pinned_session_ids() -> set[str] | None:
+    """Return pins, or None when their state is unreadable and deletion is unsafe."""
     path = BASE_DIR / "pinned_sessions.json"
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, list):
-            return {str(x) for x in data}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            logger.warning(
+                "data_cleanup: preserving sessions because %s is not a JSON array", path
+            )
+            return None
+        return {str(item) for item in data}
     except FileNotFoundError:
         return set()
-    except Exception as e:
-        logger.debug("data_cleanup: read pinned failed: {}", e, exc_info=True)
-    return set()
+    except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+        logger.warning(
+            "data_cleanup: preserving sessions because pins are unreadable: {}", e
+        )
+        return None
 
 
 # ── subagents ────────────────────────────────────────────────────────────────

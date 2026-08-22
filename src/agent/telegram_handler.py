@@ -217,8 +217,6 @@ class TelegramEventHandler:
         for i, step in enumerate(plan.steps):
             icon = icons.get(step.status, "•")
             line = f"{icon} <b>{i}.</b> {_html_escape(_trunc(step.title, 200))}"
-            if step.notes:
-                line += f" — <i>{_html_escape(_trunc(step.notes, 100))}</i>"
             lines.append(line)
         self._send("\n".join(lines))
 

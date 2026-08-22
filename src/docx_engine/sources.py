@@ -40,7 +40,9 @@ def parse_sources_xml(xml: str) -> list[SourceInfo]:
                 author=author,
                 title=fld("Title") or "",
                 year=fld("Year") or "",
-                publisher=fld("Publisher") or fld("JournalName") or fld("InternetSiteTitle"),
+                publisher=fld("Publisher")
+                or fld("JournalName")
+                or fld("InternetSiteTitle"),
                 url=fld("URL"),
             )
         )
@@ -49,7 +51,11 @@ def parse_sources_xml(xml: str) -> list[SourceInfo]:
 
 def _source_xml(s: SourceInfo) -> str:
     def t(tag, v):
-        return f"<b:{tag}>{escape_xml_text(str(v))}</b:{tag}>" if v is not None and v != "" else ""
+        return (
+            f"<b:{tag}>{escape_xml_text(str(v))}</b:{tag}>"
+            if v is not None and v != ""
+            else ""
+        )
 
     comma = s.author.find(",")
     last = s.author if comma == -1 else s.author[:comma].strip()

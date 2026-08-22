@@ -25,7 +25,7 @@ def show_subagent_start(
     model_label: str = "",
 ):
     """Показывает панель запуска субагента."""
-    mode_icon = ui.get("subagent.header_emoji", "\U0001f916")
+    mode_icon = ui.get("subagent.header_emoji", "◉")
     mode_label = "agent"
     short_prompt = prompt[:120] + ("..." if len(prompt) > 120 else "")
     text = Text()
@@ -43,7 +43,7 @@ def show_subagent_start(
 
 def show_subagent_status(index: int, message: str):
     """Показывает обновление статуса субагента."""
-    icon = ui.get("subagent.header_emoji", "\U0001f916")
+    icon = ui.get("subagent.header_emoji", "◉")
     console.print(
         f"  [dim {t('magenta')}]{icon} Subagent {index + 1}: {message}[/dim {t('magenta')}]",
     )
@@ -54,7 +54,7 @@ def show_subagent_done(index: int, result=None):
     if result is None:
         return
     pad = tuple(ui.get("paddings.subagent_panel", [0, 1]))
-    err_emoji = ui.get("subagent.error_emoji", "\u2717")
+    err_emoji = ui.get("subagent.error_emoji", "×")
     done_emoji = ui.get("subagent.done_emoji", "\u2713")
     if result.error:
         text = Text()
@@ -62,18 +62,26 @@ def show_subagent_done(index: int, result=None):
         text.append(f"FAILED: {result.error[:200]}", style=t("error"))
         console.print(Panel(text, border_style=t("error"), padding=pad, width=_w()))
     else:
-        elapsed = format_duration(result.elapsed, decimal_seconds=True) if result.elapsed else ""
+        elapsed = (
+            format_duration(result.elapsed, decimal_seconds=True)
+            if result.elapsed
+            else ""
+        )
         iters = f"{result.iterations} iter" if result.iterations else ""
         stats = ", ".join(filter(None, [iters, elapsed]))
         text = Text()
-        text.append(f"  {done_emoji} Subagent {index + 1} ", style=f"bold {t('success')}")
+        text.append(
+            f"  {done_emoji} Subagent {index + 1} ", style=f"bold {t('success')}"
+        )
         text.append(f"[{result.mode}]", style=t("purple"))
         model_label = getattr(result, "model_label", "") or ""
         if model_label:
             text.append(f" · {model_label}", style="dim")
         if stats:
             text.append(f" ({stats})", style="dim")
-        response_preview = result.response[:200] + ("..." if len(result.response) > 200 else "")
+        response_preview = result.response[:200] + (
+            "..." if len(result.response) > 200 else ""
+        )
         text.append(f"\n  {response_preview}", style="")
         console.print(
             Panel(text, border_style=t("success"), padding=pad, width=_w()),

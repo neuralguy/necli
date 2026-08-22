@@ -114,7 +114,9 @@ def paint(text: str, role: str = "", *, bold: bool = False, dim: bool = False) -
     """Покрасить кусок текста в цвет роли темы и закрыть стиль."""
     if not text:
         return ""
-    prefix = (BOLD if bold else "") + (DIM if dim else "") + (role_fg(role) if role else "")
+    prefix = (
+        (BOLD if bold else "") + (DIM if dim else "") + (role_fg(role) if role else "")
+    )
     return f"{prefix}{text}{RESET}" if prefix else text
 
 
@@ -235,7 +237,9 @@ def spacer() -> str:
     return ""
 
 
-def section(title: str, *, right: str = "", width: int = 0, indent: int = INDENT) -> str:
+def section(
+    title: str, *, right: str = "", width: int = 0, indent: int = INDENT
+) -> str:
     """Приглушённый заголовок группы. Ни линий, ни фона — только тон."""
     left = " " * indent + DIM + title + RESET
     if not right:
@@ -281,7 +285,9 @@ def input_line(
     text_width = max(1, field_width - cell_width(prefix) - 1)
     surface = bg(t("bg_code"))
 
-    def styled(text: str, role: str = "", *, bold: bool = False, dim: bool = False) -> str:
+    def styled(
+        text: str, role: str = "", *, bold: bool = False, dim: bool = False
+    ) -> str:
         sgr = surface
         if bold:
             sgr += BOLD
@@ -772,7 +778,9 @@ class TextOverlay(Overlay):
         self.error: str | None = None
 
     def render(self, width: int) -> str:
-        cursor = self.shell.overlay_buffer.cursor_position if self.shell else len(self.text)
+        cursor = (
+            self.shell.overlay_buffer.cursor_position if self.shell else len(self.text)
+        )
         out = [
             *title_lines(self.label, width),
             input_line(
@@ -838,7 +846,9 @@ async def select_menu(
         from ui.menu import select_menu as legacy
 
         return legacy(items, current, title, allow_back, allow_forward)
-    return await shell.run_overlay(SelectOverlay(items, current, title, allow_back, allow_forward))
+    return await shell.run_overlay(
+        SelectOverlay(items, current, title, allow_back, allow_forward)
+    )
 
 
 def refresh_active_panel() -> None:
@@ -910,7 +920,10 @@ async def ask_text(
 
 
 async def confirm(
-    question: str, yes_label: str | None = None, no_label: str | None = None, danger: bool = False
+    question: str,
+    yes_label: str | None = None,
+    no_label: str | None = None,
+    danger: bool = False,
 ) -> bool:
     """Подтверждение да/нет поверх нижней зоны.
 
@@ -918,7 +931,10 @@ async def confirm(
     язык переключается на ходу (`/lang`), и захешированный в дефолте аргумента
     перевод остался бы от старого языка до перезапуска.
     """
-    items = [{"label": yes_label or tr("common.yes")}, {"label": no_label or tr("common.no")}]
+    items = [
+        {"label": yes_label or tr("common.yes")},
+        {"label": no_label or tr("common.no")},
+    ]
     if danger:
         # Опасное действие: «да» красное, курсор стоит на «нет».
         items[0]["role"] = "error"

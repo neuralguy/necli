@@ -66,7 +66,9 @@ def normalize_task(
     return task
 
 
-def _item_context(item: Any, item_index: int, stage_index: int, phase: str = "") -> dict[str, Any]:
+def _item_context(
+    item: Any, item_index: int, stage_index: int, phase: str = ""
+) -> dict[str, Any]:
     if isinstance(item, (dict, list)):
         item_json = json.dumps(item, ensure_ascii=False, sort_keys=True)
     else:
@@ -150,12 +152,17 @@ def _pipeline_tasks(
             if not isinstance(stage, dict):
                 continue
             stage_name = (
-                _clean_str(stage.get("phase") or stage.get("name") or stage.get("title")) or phase
+                _clean_str(
+                    stage.get("phase") or stage.get("name") or stage.get("title")
+                )
+                or phase
             )
             template = _clean_str(stage.get("prompt") or stage.get("template"))
             if not template:
                 continue
-            prompt = render_template(template, item, item_index, stage_index, stage_name).strip()
+            prompt = render_template(
+                template, item, item_index, stage_index, stage_name
+            ).strip()
             if not prompt:
                 continue
 
@@ -207,9 +214,12 @@ def build_subagent_task_specs(args: dict[str, Any]) -> tuple[list[dict[str, Any]
             if isinstance(phase_tasks, list):
                 for raw in phase_tasks:
                     if not _append_task(
-                        tasks, normalize_task(raw, phase=phase_name, depends_on=phase_deps)
+                        tasks,
+                        normalize_task(raw, phase=phase_name, depends_on=phase_deps),
                     ):
-                        return tasks[:100], f"{name} · phases · {len(tasks[:100])} task(s)"
+                        return tasks[
+                            :100
+                        ], f"{name} · phases · {len(tasks[:100])} task(s)"
 
             if isinstance(phase_raw.get("items"), list) and isinstance(
                 phase_raw.get("stages"), list
@@ -221,7 +231,9 @@ def build_subagent_task_specs(args: dict[str, Any]) -> tuple[list[dict[str, Any]
                     base_index=len(tasks),
                 ):
                     if not _append_task(tasks, task):
-                        return tasks[:100], f"{name} · phases · {len(tasks[:100])} task(s)"
+                        return tasks[
+                            :100
+                        ], f"{name} · phases · {len(tasks[:100])} task(s)"
 
             previous_phase = list(range(start_len + 1, len(tasks) + 1))
             if len(tasks) >= 100:

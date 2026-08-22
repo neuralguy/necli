@@ -17,7 +17,12 @@ from .notes import NOTE_PART_PATH, parse_notes_xml
 from .scan import scan_body
 from .sources import parse_sources_xml
 from .symbol_fonts import decode_symbol_char, decode_symbol_text
-from .theme import THEME_PART_PATH, read_theme_colors, read_theme_fonts, resolve_theme_color
+from .theme import (
+    THEME_PART_PATH,
+    read_theme_colors,
+    read_theme_fonts,
+    resolve_theme_color,
+)
 from .watermark import read_watermark_text
 from .xml_utils import (
     attrs_of,
@@ -66,7 +71,7 @@ def _dec(text: str) -> str:
                 return m.group(0)
         return m.group(0)
 
-    text = re.sub(r"&#(?:x([0-9a-f]+)|([0-9]+));", num, text, flags=re.I)
+    text = re.sub(r"&#(?:x([0-9a-f]+)|([0-9]+));", num, text, flags=re.IGNORECASE)
     return (
         text.replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -265,7 +270,7 @@ def _raw_p_pr_of(xml: str):
         return None
     start = open_end
     depth = 0
-    for m in re.finditer(r"<w:pPr(?=[\s/>])|</w:pPr>", xml[start:], re.M):
+    for m in re.finditer(r"<w:pPr(?=[\s/>])|</w:pPr>", xml[start:], re.MULTILINE):
         pos = start + m.start()
         if m.group(0) == "</w:pPr>":
             depth -= 1
@@ -443,7 +448,13 @@ def _extract_runs(p_node, ctx, math_frags=None, ruby_frags=None) -> list[Run]:
         runs.append(run)
 
     def handle_run(node, link, rev):
-        nonlocal field_depth, field_instr, field_cached, field_separated, math_index, ruby_index
+        nonlocal \
+            field_depth, \
+            field_instr, \
+            field_cached, \
+            field_separated, \
+            math_index, \
+            ruby_index
         fld = find_child(node, "w:fldChar")
         if fld:
             t = attrs_of(fld).get("w:fldCharType")
@@ -465,7 +476,13 @@ def _extract_runs(p_node, ctx, math_frags=None, ruby_frags=None) -> list[Run]:
                         name = ref.group(1) or ref.group(2)
                         push(Run(text=field_cached or name, ref_field=name), rev)
                     elif SIMPLE_INLINE_FIELD_RE.match(field_instr):
-                        push(Run(text=field_cached or " ", instr_field=field_instr.strip()), rev)
+                        push(
+                            Run(
+                                text=field_cached or " ",
+                                instr_field=field_instr.strip(),
+                            ),
+                            rev,
+                        )
                     field_instr, field_separated, field_cached = "", False, ""
             return
         if field_depth > 0:
@@ -493,9 +510,13 @@ def _extract_runs(p_node, ctx, math_frags=None, ruby_frags=None) -> list[Run]:
                     rev,
                 )
             return
-        note_ref = find_child(node, "w:footnoteReference") or find_child(node, "w:endnoteReference")
+        note_ref = find_child(node, "w:footnoteReference") or find_child(
+            node, "w:endnoteReference"
+        )
         if note_ref:
-            kind = "footnote" if name_of(note_ref) == "w:footnoteReference" else "endnote"
+            kind = (
+                "footnote" if name_of(note_ref) == "w:footnoteReference" else "endnote"
+            )
             nid = attrs_of(note_ref).get("w:id")
             if nid:
                 num = ctx["noteNumbers"].get(f"{kind}:{nid}")
@@ -533,10 +554,17 @@ def _extract_runs(p_node, ctx, math_frags=None, ruby_frags=None) -> list[Run]:
                 omml = math_frags[math_index] if math_index < len(math_frags) else None
                 math_index += 1
                 if omml:
-                    push(Run(text="".join(math_tokens_of(omml)), math={"omml": omml}), rev)
+                    push(
+                        Run(text="".join(math_tokens_of(omml)), math={"omml": omml}),
+                        rev,
+                    )
             elif n == "w:hyperlink":
                 a = attrs_of(node)
-                r_id, anchor, tooltip = a.get("r:id"), a.get("w:anchor"), a.get("w:tooltip")
+                r_id, anchor, tooltip = (
+                    a.get("r:id"),
+                    a.get("w:anchor"),
+                    a.get("w:tooltip"),
+                )
                 href = (
                     ctx["rels"].get(r_id, {}).get("target", "")
                     if r_id
@@ -653,7 +681,9 @@ def _extract_image_sync(xml, ctx):
     rel = ctx["rels"].get(m.group(1))
     if not rel:
         return None
-    if rel.get("targetMode") == "External" or re.match(r"^https?://", rel["target"], re.I):
+    if rel.get("targetMode") == "External" or re.match(
+        r"^https?://", rel["target"], re.IGNORECASE
+    ):
         return rel["target"]
     path = _resolve_part_target("word", rel["target"])
     try:
@@ -686,7 +716,7 @@ def _only_xe_fields(xml):
 def _field_display_of(xml):
     m = re.search(r'<w:pStyle w:val="([^"]+)"', xml)
     style_id = m.group(1) if m else ""
-    toc = re.match(r"^TOC([1-9])$", style_id, re.I)
+    toc = re.match(r"^TOC([1-9])$", style_id, re.IGNORECASE)
     if toc:
         left = right = ""
         seen_tab = False
@@ -747,7 +777,9 @@ def _extract_cell(tc, ctx):
     tc_pr = find_child(tc, "w:tcPr")
     if tc_pr:
         try:
-            span = int(attrs_of(find_child(tc_pr, "w:gridSpan") or {}).get("w:val", "1"))
+            span = int(
+                attrs_of(find_child(tc_pr, "w:gridSpan") or {}).get("w:val", "1")
+            )
             if span > 1:
                 cell["colSpan"] = span
         except ValueError:
@@ -771,7 +803,9 @@ def _extract_cell(tc, ctx):
     for p in children_through_sdt(tc, "w:p"):
         cell["paras"].append(text_of(p))
         if "align" not in cell:
-            jc = attrs_of(find_child(find_child(p, "w:pPr") or {}, "w:jc") or {}).get("w:val")
+            jc = attrs_of(find_child(find_child(p, "w:pPr") or {}, "w:jc") or {}).get(
+                "w:val"
+            )
             if jc in ("center", "right", "left"):
                 cell["align"] = jc
             elif jc == "both":
@@ -796,7 +830,10 @@ def _extract_table(xml, ctx):
     grid = find_child(tbl, "w:tblGrid")
     col_pct = None
     if grid:
-        widths = [float(attrs_of(c).get("w:w", 0) or 0) for c in find_children(grid, "w:gridCol")]
+        widths = [
+            float(attrs_of(c).get("w:w", 0) or 0)
+            for c in find_children(grid, "w:gridCol")
+        ]
         total = sum(widths)
         if total > 0:
             col_pct = [w / total * 100 for w in widths]
@@ -807,7 +844,9 @@ def _extract_table(xml, ctx):
             cell = _extract_cell(tc, ctx)
             prev = cells[-1] if cells else None
             if cell.get("hMerge") == "continue" and prev:
-                prev["colSpan"] = (prev.get("colSpan") or 1) + (cell.get("colSpan") or 1)
+                prev["colSpan"] = (prev.get("colSpan") or 1) + (
+                    cell.get("colSpan") or 1
+                )
                 continue
             cells.append(cell)
         if cells:
@@ -884,15 +923,23 @@ def _build_block(el, index, xml, ctx) -> Block:
                     p_xml = inner[pm.start() : p_end]
                     shell = _sdt_meta(xml)
                     shell.update(
-                        {"openXml": xml[: content_open.end()], "closeXml": xml[close_idx:]}
+                        {
+                            "openXml": xml[: content_open.end()],
+                            "closeXml": xml[close_idx:],
+                        }
                     )
                     inner_block = _build_block(
-                        {"name": "w:p", "start": 0, "end": len(p_xml)}, index, p_xml, ctx
+                        {"name": "w:p", "start": 0, "end": len(p_xml)},
+                        index,
+                        p_xml,
+                        ctx,
                     )
                     inner_block.original_xml = xml
                     inner_block.sdt_shell = shell
                     if not inner_block.label:
-                        inner_block.label = shell["alias"] or shell["tag"] or "Content control"
+                        inner_block.label = (
+                            shell["alias"] or shell["tag"] or "Content control"
+                        )
                     return inner_block
         return Block(
             id=base["id"],
@@ -912,7 +959,9 @@ def _build_block(el, index, xml, ctx) -> Block:
             preview_text="",
         )
     detect = strip_ink_runs(
-        re.sub(r"<mc:Fallback>[\s\S]*?</mc:Fallback>", "", xml) if "<mc:Fallback" in xml else xml
+        re.sub(r"<mc:Fallback>[\s\S]*?</mc:Fallback>", "", xml)
+        if "<mc:Fallback" in xml
+        else xml
     )
     if "<w:sectPr" in detect:
         return Block(
@@ -973,7 +1022,9 @@ def _build_block(el, index, xml, ctx) -> Block:
             label="Revised paragraph",
             preview_text=_plain_text(detect),
         )
-    if "<m:oMath" in detect and ("<m:oMathPara" in detect or _plain_text(detect).strip() == ""):
+    if "<m:oMath" in detect and (
+        "<m:oMathPara" in detect or _plain_text(detect).strip() == ""
+    ):
         tokens = re.findall(r"<m:t(?:\s[^>]*)?>([\s\S]*?)</m:t>", detect)
         tokens = [_dec(t) for t in tokens]
         omml = "".join(omml_fragments_of(detect))
@@ -1110,11 +1161,15 @@ def _build_text_paragraph(base, xml, ctx) -> Block:
             preview_text=_plain_text(xml),
         )
     p_pr = find_child(p_node, "w:pPr")
-    style_id = attrs_of(find_child(p_pr, "w:pStyle") or {}).get("w:val") if p_pr else None
+    style_id = (
+        attrs_of(find_child(p_pr, "w:pStyle") or {}).get("w:val") if p_pr else None
+    )
     fmt = _extract_para_format(p_pr) if p_pr else None
     raw_p_pr = _raw_p_pr_of(xml)
     math_xml = _strip_textboxes(
-        re.sub(r"<mc:Fallback>[\s\S]*?</mc:Fallback>", "", xml) if "<mc:Fallback" in xml else xml
+        re.sub(r"<mc:Fallback>[\s\S]*?</mc:Fallback>", "", xml)
+        if "<mc:Fallback" in xml
+        else xml
     )
     runs = _extract_runs(p_node, ctx, omml_fragments_of(math_xml))
     bookmarks, hidden_bookmarks = _bookmark_names(_strip_textboxes(xml))
@@ -1149,7 +1204,9 @@ def _build_text_paragraph(base, xml, ctx) -> Block:
             except ValueError:
                 ilvl_i = 0
             return Block(
-                type="listItem", list={"kind": kind, "numId": num_id, "ilvl": ilvl_i}, **common
+                type="listItem",
+                list={"kind": kind, "numId": num_id, "ilvl": ilvl_i},
+                **common,
             )
     if style_id:
         info = ctx["styles"].get(style_id)
@@ -1161,12 +1218,18 @@ def _build_text_paragraph(base, xml, ctx) -> Block:
 def _hf_content(xml, kind, theme=None):
     has_page = bool(re.search(r"<w:instrText[^>]*>[^<]*\bPAGE\b", xml))
     cleaned = re.sub(
-        r'<w:fldChar w:fldCharType="separate"/>[\s\S]*?<w:fldChar w:fldCharType="end"/>', "", xml
+        r'<w:fldChar w:fldCharType="separate"/>[\s\S]*?<w:fldChar w:fldCharType="end"/>',
+        "",
+        xml,
     )
     cleaned = re.sub(
-        r"<w:instrText[^>]*>[^<]*\bNUMPAGES\b[^<]*</w:instrText>", "<w:t>\ue000</w:t>", cleaned
+        r"<w:instrText[^>]*>[^<]*\bNUMPAGES\b[^<]*</w:instrText>",
+        "<w:t>\ue000</w:t>",
+        cleaned,
     )
-    cleaned = re.sub(r"<w:instrText[^>]*>[^<]*\bPAGE\b[^<]*</w:instrText>", "<w:t>#</w:t>", cleaned)
+    cleaned = re.sub(
+        r"<w:instrText[^>]*>[^<]*\bPAGE\b[^<]*</w:instrText>", "<w:t>#</w:t>", cleaned
+    )
     return {
         "text": _plain_text(cleaned),
         "hasPageNumber": has_page,
@@ -1235,13 +1298,17 @@ def _parse_styles(zf, theme):
         name = attrs_of(find_child(style_node, "w:name") or {}).get("w:val") or sid
         heading_level = None
         if stype == "paragraph":
-            nm = re.match(r"^heading\s*([1-9])$", name, re.I) or re.match(r"^Heading([1-9])$", sid)
+            nm = re.match(r"^heading\s*([1-9])$", name, re.IGNORECASE) or re.match(
+                r"^Heading([1-9])$", sid
+            )
             if nm:
                 heading_level = int(nm.group(1))
             else:
                 pp = find_child(style_node, "w:pPr")
                 outline = (
-                    attrs_of(find_child(pp, "w:outlineLvl") or {}).get("w:val") if pp else None
+                    attrs_of(find_child(pp, "w:outlineLvl") or {}).get("w:val")
+                    if pp
+                    else None
                 )
                 if outline is not None:
                     try:
@@ -1253,7 +1320,12 @@ def _parse_styles(zf, theme):
         bo = attrs_of(find_child(style_node, "w:basedOn") or {}).get("w:val")
         if bo:
             based_on[sid] = bo
-        info = {"styleId": sid, "name": name, "type": stype, "headingLevel": heading_level}
+        info = {
+            "styleId": sid,
+            "name": name,
+            "type": stype,
+            "headingLevel": heading_level,
+        }
         if bool_prop(style_node, "w:semiHidden"):
             info["semiHidden"] = True
         if bool_prop(style_node, "w:qFormat"):
@@ -1306,10 +1378,16 @@ def _parse_numbering(zf):
                 continue
             start = 1
             with contextlib.suppress(ValueError):
-                start = int(attrs_of(find_child(lvl, "w:start") or {}).get("w:val", "1"))
+                start = int(
+                    attrs_of(find_child(lvl, "w:start") or {}).get("w:val", "1")
+                )
             levels[ilvl] = {
-                "numFmt": attrs_of(find_child(lvl, "w:numFmt") or {}).get("w:val", "decimal"),
-                "lvlText": attrs_of(find_child(lvl, "w:lvlText") or {}).get("w:val", ""),
+                "numFmt": attrs_of(find_child(lvl, "w:numFmt") or {}).get(
+                    "w:val", "decimal"
+                ),
+                "lvlText": attrs_of(find_child(lvl, "w:lvlText") or {}).get(
+                    "w:val", ""
+                ),
                 "start": start,
             }
         abs_levels[abs_id] = levels
@@ -1332,12 +1410,18 @@ def _parse_numbering(zf):
             lvl = find_child(over, "w:lvl")
             if lvl:
                 try:
-                    start = int(attrs_of(find_child(lvl, "w:start") or {}).get("w:val", "1"))
+                    start = int(
+                        attrs_of(find_child(lvl, "w:start") or {}).get("w:val", "1")
+                    )
                 except ValueError:
                     start = 1
                 levels[ilvl] = {
-                    "numFmt": attrs_of(find_child(lvl, "w:numFmt") or {}).get("w:val", "decimal"),
-                    "lvlText": attrs_of(find_child(lvl, "w:lvlText") or {}).get("w:val", ""),
+                    "numFmt": attrs_of(find_child(lvl, "w:numFmt") or {}).get(
+                        "w:val", "decimal"
+                    ),
+                    "lvlText": attrs_of(find_child(lvl, "w:lvlText") or {}).get(
+                        "w:val", ""
+                    ),
                     "start": start,
                 }
         defs[num_id] = {
@@ -1346,7 +1430,9 @@ def _parse_numbering(zf):
             "levels": levels,
             "startOverrides": overrides,
         }
-        formats[num_id] = "bullet" if levels.get(0, {}).get("numFmt") == "bullet" else "ordered"
+        formats[num_id] = (
+            "bullet" if levels.get(0, {}).get("numFmt") == "bullet" else "ordered"
+        )
     return formats, defs
 
 
@@ -1417,7 +1503,10 @@ def _parse_protection(zf):
     salt = re.search(r'w:salt="([^"]+)"', t)
     spin = re.search(r'w:cryptSpinCount="(\d+)"', t)
     sid = re.search(r'w:cryptAlgorithmSid="(\d+)"', t)
-    out = {"edit": edit.group(1), "enforced": enf.group(1) in ("1", "true") if enf else False}
+    out = {
+        "edit": edit.group(1),
+        "enforced": enf.group(1) in ("1", "true") if enf else False,
+    }
     if h:
         out["hash"] = h.group(1)
     if salt:
@@ -1470,7 +1559,9 @@ def parse_docx(data: bytes) -> ParsedDoc:
     for info in styles.values():
         if info.get("headingLevel") and info["headingLevel"] not in heading_style_ids:
             heading_style_ids[info["headingLevel"]] = info["styleId"]
-        if not list_paragraph_style_id and re.match(r"^listparagraph$", info["styleId"], re.I):
+        if not list_paragraph_style_id and re.match(
+            r"^listparagraph$", info["styleId"], re.IGNORECASE
+        ):
             list_paragraph_style_id = info["styleId"]
     rels = _parse_rels(zf, "word/_rels/document.xml.rels")
     num_formats, numbering = _parse_numbering(zf)
@@ -1523,16 +1614,23 @@ def parse_docx(data: bytes) -> ParsedDoc:
                     children = []
                     depth, start, name = 0, -1, ""
                     for m in re.finditer(
-                        r"<(/?)([A-Za-z0-9:._-]+)((?:\"[^\"]*\"|'[^']*'|[^\"'>])*)>", inner
+                        r"<(/?)([A-Za-z0-9:._-]+)((?:\"[^\"]*\"|'[^']*'|[^\"'>])*)>",
+                        inner,
                     ):
                         if m.group(1) == "/":
                             depth -= 1
                             if depth == 0:
-                                children.append({"name": name, "start": start, "end": m.end()})
+                                children.append(
+                                    {"name": name, "start": start, "end": m.end()}
+                                )
                         elif m.group(3).endswith("/"):
                             if depth == 0:
                                 children.append(
-                                    {"name": m.group(2), "start": m.start(), "end": m.end()}
+                                    {
+                                        "name": m.group(2),
+                                        "start": m.start(),
+                                        "end": m.end(),
+                                    }
                                 )
                         else:
                             if depth == 0:
@@ -1547,9 +1645,12 @@ def parse_docx(data: bytes) -> ParsedDoc:
                             i = len(elements)
                             p_start = el["start"] + content_open.end() + c["start"]
                             p_end = el["start"] + content_open.end() + c["end"]
-                            elements.append({"name": c["name"], "start": p_start, "end": p_end})
+                            elements.append(
+                                {"name": c["name"], "start": p_start, "end": p_end}
+                            )
                             child_xml = xml[
-                                content_open.end() + c["start"] : content_open.end() + c["end"]
+                                content_open.end() + c["start"] : content_open.end()
+                                + c["end"]
                             ]
                             block = _build_block(
                                 {"name": c["name"], "start": 0, "end": len(child_xml)},
@@ -1562,10 +1663,14 @@ def parse_docx(data: bytes) -> ParsedDoc:
                                 **meta,
                                 "group": group,
                                 "openXml": xml[: content_open.end()] if k == 0 else "",
-                                "closeXml": xml[close_idx:] if k == len(parts) - 1 else "",
+                                "closeXml": xml[close_idx:]
+                                if k == len(parts) - 1
+                                else "",
                             }
                             if not block.label:
-                                block.label = meta["alias"] or meta["tag"] or "Content control"
+                                block.label = (
+                                    meta["alias"] or meta["tag"] or "Content control"
+                                )
                             blocks.append(block)
                         continue
         i = len(elements)

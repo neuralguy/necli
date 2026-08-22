@@ -51,10 +51,18 @@ async def permissions_interactive():
         items = [_tool_item(tool) for tool in tools_list]
         items.append({"label": _("perms.allow_all_title"), "skip": True})
         items.append(
-            {"label": _("perms.allow_all"), "hint": _("perms.allow_all_hint"), "action": True}
+            {
+                "label": _("perms.allow_all"),
+                "hint": _("perms.allow_all_hint"),
+                "action": True,
+            }
         )
         items.append(
-            {"label": _("perms.reset_all"), "hint": _("perms.reset_all_hint"), "action": True}
+            {
+                "label": _("perms.reset_all"),
+                "hint": _("perms.reset_all_hint"),
+                "action": True,
+            }
         )
 
         allow_idx = len(items) - 2
@@ -81,9 +89,18 @@ async def permissions_interactive():
 
         if choice == allow_idx:
             scope_items = [
-                {"label": _("perms.scope_session"), "hint": _("perms.scope_session_hint")},
-                {"label": _("perms.scope_process"), "hint": _("perms.scope_process_hint")},
-                {"label": _("perms.scope_forever"), "hint": _("perms.scope_forever_hint")},
+                {
+                    "label": _("perms.scope_session"),
+                    "hint": _("perms.scope_session_hint"),
+                },
+                {
+                    "label": _("perms.scope_process"),
+                    "hint": _("perms.scope_process_hint"),
+                },
+                {
+                    "label": _("perms.scope_forever"),
+                    "hint": _("perms.scope_forever_hint"),
+                },
                 {"label": _("perms.cancel")},
             ]
             c = await card_menu(scope_items, title=_("perms.allow_all_title"))
@@ -142,7 +159,11 @@ async def _tool_detail_menu(tool: str):
         title=tool,
         status=dec,
         status_style=_DECISION_STYLE.get(dec, "dim"),
-        facts=[facts_line(_("perms.detail_title", name=tool), _scope_hint(scope) if scope else "")],
+        facts=[
+            facts_line(
+                _("perms.detail_title", name=tool), _scope_hint(scope) if scope else ""
+            )
+        ],
     )
     if c is None or c == 6:
         return

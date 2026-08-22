@@ -17,15 +17,15 @@ EMU_PER_PT = 12700
 EMU_PER_PX_96 = 9525
 
 
-def emu_to_px(value: int | float, scale: float = 1.0) -> float:
+def emu_to_px(value: float, scale: float = 1.0) -> float:
     return float(value) / EMU_PER_PX_96 * scale
 
 
-def pt_to_px(value: int | float, scale: float = 1.0) -> float:
+def pt_to_px(value: float, scale: float = 1.0) -> float:
     return float(value) * 96.0 / 72.0 * scale
 
 
-def rot_to_deg(value: int | float) -> float:
+def rot_to_deg(value: float) -> float:
     return float(value) / 60000.0
 
 
@@ -79,7 +79,10 @@ def _text_layout(
         return None
     inset = body.insets or {"l": 91440, "t": 45720, "r": 91440, "b": 45720}
     left, top = emu_to_px(inset.get("l", 0), scale), emu_to_px(inset.get("t", 0), scale)
-    right, bottom = emu_to_px(inset.get("r", 0), scale), emu_to_px(inset.get("b", 0), scale)
+    right, bottom = (
+        emu_to_px(inset.get("r", 0), scale),
+        emu_to_px(inset.get("b", 0), scale),
+    )
     lines: list[dict[str, Any]] = []
     cursor = top
     available = max(1, width - left - right)
@@ -164,7 +167,9 @@ def _text_layout(
     }
 
 
-def _node(element: Element, viewport: dict[str, float], document: PptxDocument) -> dict[str, Any]:
+def _node(
+    element: Element, viewport: dict[str, float], document: PptxDocument
+) -> dict[str, Any]:
     scale = viewport["scale"]
     rect = element.transform.offset
     box = {
@@ -202,7 +207,9 @@ def _node(element: Element, viewport: dict[str, float], document: PptxDocument) 
             }
         )
     elif element.type == "group":
-        node["children"] = [_node(child, viewport, document) for child in element.children]
+        node["children"] = [
+            _node(child, viewport, document) for child in element.children
+        ]
     elif element.type == "table":
         node["columns"] = [emu_to_px(v, scale) for v in element.col_widths]
         node["rows"] = [emu_to_px(v, scale) for v in element.row_heights]
@@ -210,7 +217,11 @@ def _node(element: Element, viewport: dict[str, float], document: PptxDocument) 
         for row_index, row in enumerate(element.rows):
             rendered_row = []
             for column_index, cell in enumerate(row):
-                width = node["columns"][column_index] if column_index < len(node["columns"]) else 0
+                width = (
+                    node["columns"][column_index]
+                    if column_index < len(node["columns"])
+                    else 0
+                )
                 height = node["rows"][row_index] if row_index < len(node["rows"]) else 0
                 rendered_row.append(
                     {
@@ -220,9 +231,15 @@ def _node(element: Element, viewport: dict[str, float], document: PptxDocument) 
                         "fill": _fill(cell.get("fill"))
                         if isinstance(cell, dict)
                         else {"type": "none"},
-                        "merged": bool(cell.get("merged")) if isinstance(cell, dict) else False,
-                        "grid_span": cell.get("grid_span", 1) if isinstance(cell, dict) else 1,
-                        "row_span": cell.get("row_span", 1) if isinstance(cell, dict) else 1,
+                        "merged": bool(cell.get("merged"))
+                        if isinstance(cell, dict)
+                        else False,
+                        "grid_span": cell.get("grid_span", 1)
+                        if isinstance(cell, dict)
+                        else 1,
+                        "row_span": cell.get("row_span", 1)
+                        if isinstance(cell, dict)
+                        else 1,
                     }
                 )
             cells.append(rendered_row)
@@ -266,7 +283,9 @@ def _data_uri(document: PptxDocument, media_ref: str | None) -> str | None:
     return f"data:{mime};base64,{b64encode(data).decode('ascii')}"
 
 
-def _svg_style(fill: dict[str, Any], stroke: dict[str, Any] | None, opacity: float) -> str:
+def _svg_style(
+    fill: dict[str, Any], stroke: dict[str, Any] | None, opacity: float
+) -> str:
     if fill.get("type") == "solid":
         style = f'fill="{escape(fill.get("color", "#000000"))}"'
     elif fill.get("type") == "none":
@@ -274,9 +293,13 @@ def _svg_style(fill: dict[str, Any], stroke: dict[str, Any] | None, opacity: flo
     else:
         style = f'fill="{escape(fill.get("bg", "#FFFFFF"))}"'
     if stroke:
-        style += f' stroke="{escape(stroke["color"])}" stroke-width="{stroke["width"]:.2f}"'
+        style += (
+            f' stroke="{escape(stroke["color"])}" stroke-width="{stroke["width"]:.2f}"'
+        )
         if stroke.get("dash"):
-            dash = {"dash": "6 3", "dot": "2 3", "dashDot": "6 3 2 3"}.get(stroke["dash"], "")
+            dash = {"dash": "6 3", "dot": "2 3", "dashDot": "6 3 2 3"}.get(
+                stroke["dash"], ""
+            )
             if dash:
                 style += f' stroke-dasharray="{dash}"'
     else:
@@ -298,7 +321,9 @@ def _shape_svg(node: dict[str, Any], definitions: list[str]) -> str:
     if node.get("rotation") or node.get("flip_h") or node.get("flip_v"):
         extras = []
         if node.get("rotation"):
-            extras.append(f"rotate({node['rotation']:.3f} {x + w / 2:.3f} {y + h / 2:.3f})")
+            extras.append(
+                f"rotate({node['rotation']:.3f} {x + w / 2:.3f} {y + h / 2:.3f})"
+            )
         if node.get("flip_h"):
             extras.append(f"translate({2 * x + w:.3f} 0) scale(-1 1)")
         if node.get("flip_v"):
@@ -315,10 +340,18 @@ def _shape_svg(node: dict[str, Any], definitions: list[str]) -> str:
         definitions.append(
             f'<linearGradient id="{gradient_id}" gradientTransform="rotate({float(fill.get("angle", 0)):.2f})">{stops}</linearGradient>'
         )
-        style = _svg_style({"type": "solid", "color": f"url(#{gradient_id})"}, stroke, opacity)
+        style = _svg_style(
+            {"type": "solid", "color": f"url(#{gradient_id})"}, stroke, opacity
+        )
     if geometry in {"ellipse", "arc", "pie", "chord"}:
         element = f'<ellipse cx="{x + w / 2:.3f}" cy="{y + h / 2:.3f}" rx="{w / 2:.3f}" ry="{h / 2:.3f}" {style}/>'
-    elif geometry in {"roundRect", "round1Rect", "round2SameRect", "snip1Rect", "snip2SameRect"}:
+    elif geometry in {
+        "roundRect",
+        "round1Rect",
+        "round2SameRect",
+        "snip1Rect",
+        "snip2SameRect",
+    }:
         radius = min(w, h) * 0.12
         element = f'<rect x="{x:.3f}" y="{y:.3f}" width="{w:.3f}" height="{h:.3f}" rx="{radius:.3f}" {style}/>'
     elif geometry in {"triangle", "rtTriangle"}:
@@ -328,7 +361,9 @@ def _shape_svg(node: dict[str, Any], definitions: list[str]) -> str:
     elif geometry in {"diamond"}:
         element = f'<path d="M {x + w / 2:.3f} {y:.3f} L {x + w:.3f} {y + h / 2:.3f} L {x + w / 2:.3f} {y + h:.3f} L {x:.3f} {y + h / 2:.3f} Z" {style}/>'
     else:
-        element = f'<rect x="{x:.3f}" y="{y:.3f}" width="{w:.3f}" height="{h:.3f}" {style}/>'
+        element = (
+            f'<rect x="{x:.3f}" y="{y:.3f}" width="{w:.3f}" height="{h:.3f}" {style}/>'
+        )
     texts = _text_svg(node.get("text"), x, y, w)
     return f"<g{transform}>{element}{texts}</g>"
 
@@ -372,7 +407,11 @@ def _picture_svg(node: dict[str, Any]) -> str:
 
 def _table_svg(node: dict[str, Any]) -> str:
     box = node["box"]
-    cols, heights, cells = node.get("columns", []), node.get("rows", []), node.get("cells", [])
+    cols, heights, cells = (
+        node.get("columns", []),
+        node.get("rows", []),
+        node.get("cells", []),
+    )
     out = []
     y = box["y"]
     for r, height in enumerate(heights):
@@ -381,7 +420,11 @@ def _table_svg(node: dict[str, Any]) -> str:
             cell = cells[r][c] if r < len(cells) and c < len(cells[r]) else {}
             if not cell.get("merged"):
                 fill = cell.get("fill", {"type": "solid", "color": "#FFFFFF"})
-                colour = fill.get("color", "#FFFFFF") if fill.get("type") == "solid" else "#FFFFFF"
+                colour = (
+                    fill.get("color", "#FFFFFF")
+                    if fill.get("type") == "solid"
+                    else "#FFFFFF"
+                )
                 out.append(
                     f'<rect x="{x:.3f}" y="{y:.3f}" width="{width:.3f}" height="{height:.3f}" fill="{escape(colour)}" stroke="#6B7280" stroke-width="0.8"/>'
                 )
@@ -398,7 +441,9 @@ def _chart_svg(node: dict[str, Any]) -> str:
     out = [
         f'<rect x="{box["x"]:.3f}" y="{box["y"]:.3f}" width="{box["width"]:.3f}" height="{box["height"]:.3f}" fill="#FFFFFF" stroke="#A0A0A0"/>'
     ]
-    values = [v for s in series for v in s.get("values", []) if isinstance(v, (int, float))]
+    values = [
+        v for s in series for v in s.get("values", []) if isinstance(v, (int, float))
+    ]
     max_value = max(values, default=1) or 1
     if chart.get("title"):
         out.append(
@@ -417,7 +462,9 @@ def _chart_svg(node: dict[str, Any]) -> str:
     return "".join(out)
 
 
-def render_svg(document: PptxDocument, slide_index: int, fit_width_px: int = 1280) -> str:
+def render_svg(
+    document: PptxDocument, slide_index: int, fit_width_px: int = 1280
+) -> str:
     tree = build_render_slide(document, slide_index, fit_width_px)
     defs: list[str] = []
     background = (
@@ -425,7 +472,9 @@ def render_svg(document: PptxDocument, slide_index: int, fit_width_px: int = 128
         if tree["background"].get("type") == "solid"
         else "#FFFFFF"
     )
-    content: list[str] = [f'<rect width="100%" height="100%" fill="{escape(background)}"/>']
+    content: list[str] = [
+        f'<rect width="100%" height="100%" fill="{escape(background)}"/>'
+    ]
     for node in tree["nodes"]:
         if node["type"] in {"shape", "text"}:
             content.append(_shape_svg(node, defs))
@@ -491,7 +540,9 @@ def render_png(
     canvas.convert("RGB").save(output_path, "PNG")
 
 
-def _draw_node(draw: ImageDraw.ImageDraw, canvas: Image.Image, node: dict[str, Any]) -> None:
+def _draw_node(
+    draw: ImageDraw.ImageDraw, canvas: Image.Image, node: dict[str, Any]
+) -> None:
     box = node["box"]
     xy = (
         round(box["x"]),
@@ -501,12 +552,21 @@ def _draw_node(draw: ImageDraw.ImageDraw, canvas: Image.Image, node: dict[str, A
     )
     if node["type"] in {"shape", "text"}:
         fill = node.get("fill", {})
-        color = fill.get("color", "#FFFFFF") if fill.get("type") == "solid" else "#FFFFFF"
+        color = (
+            fill.get("color", "#FFFFFF") if fill.get("type") == "solid" else "#FFFFFF"
+        )
         outline = node.get("stroke", {}).get("color") if node.get("stroke") else None
-        width = max(1, round(node.get("stroke", {}).get("width", 1))) if node.get("stroke") else 1
+        width = (
+            max(1, round(node.get("stroke", {}).get("width", 1)))
+            if node.get("stroke")
+            else 1
+        )
         if node.get("geometry") == "ellipse":
             draw.ellipse(
-                xy, fill=hex_to_rgba(color, node.get("opacity", 1)), outline=outline, width=width
+                xy,
+                fill=hex_to_rgba(color, node.get("opacity", 1)),
+                outline=outline,
+                width=width,
             )
         elif node.get("geometry") == "triangle":
             draw.polygon(
@@ -529,9 +589,15 @@ def _draw_node(draw: ImageDraw.ImageDraw, canvas: Image.Image, node: dict[str, A
         node.get("media_ref")
         # node does not own document; PNG path is deliberately safe fallback if image bytes aren't opened by caller.
         draw.rectangle(xy, fill=(229, 231, 235, 255), outline=(156, 163, 175, 255))
-        draw.text((xy[0] + 6, xy[1] + 6), "Image", fill=(55, 65, 81, 255), font=_font(14))
+        draw.text(
+            (xy[0] + 6, xy[1] + 6), "Image", fill=(55, 65, 81, 255), font=_font(14)
+        )
     elif node["type"] == "table":
-        cols, rows, cells = node.get("columns", []), node.get("rows", []), node.get("cells", [])
+        cols, rows, cells = (
+            node.get("columns", []),
+            node.get("rows", []),
+            node.get("cells", []),
+        )
         y = box["y"]
         for ri, height in enumerate(rows):
             x = box["x"]
@@ -553,7 +619,10 @@ def _draw_node(draw: ImageDraw.ImageDraw, canvas: Image.Image, node: dict[str, A
 
 
 def _draw_text(
-    draw: ImageDraw.ImageDraw, layout: dict[str, Any] | None, origin_x: float, origin_y: float
+    draw: ImageDraw.ImageDraw,
+    layout: dict[str, Any] | None,
+    origin_x: float,
+    origin_y: float,
 ) -> None:
     if not layout:
         return

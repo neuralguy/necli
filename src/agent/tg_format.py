@@ -49,6 +49,11 @@ def _esc(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def _esc_attr(text: str) -> str:
+    """Escape untrusted text used inside a generated HTML attribute."""
+    return html.escape(text, quote=True)
+
+
 def _inline(text: str) -> str:
     """Применяет inline-markdown к строке (text НЕ экранирован на входе)."""
     # 1. Вырезаем `code`-фрагменты в плейсхолдеры, чтобы внутри не сработали bold/italic.
@@ -92,7 +97,7 @@ def _inline(text: str) -> str:
     def _restore_link(m: re.Match) -> str:
         idx = int(m.group(1))
         label, url = links[idx]
-        return f'<a href="{_esc(url)}">{_esc(label)}</a>'
+        return f'<a href="{_esc_attr(url)}">{_esc(label)}</a>'
 
     text = re.sub(
         f"{_PLACEHOLDER_OPEN}L(\\d+){_PLACEHOLDER_CLOSE}",
@@ -127,7 +132,7 @@ def md_to_tg_html(text: str) -> str:
                 code = _esc("\n".join(fence_buf))
                 if fence_lang:
                     out.append(
-                        f'<pre><code class="language-{_esc(fence_lang)}">{code}</code></pre>'
+                        f'<pre><code class="language-{_esc_attr(fence_lang)}">{code}</code></pre>'
                     )
                 else:
                     out.append(f"<pre>{code}</pre>")

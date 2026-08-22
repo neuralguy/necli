@@ -114,7 +114,9 @@ def apply_emoji_width_patch() -> None:
 
     orig_get_size = rc.get_character_cell_size
 
-    def patched_get_character_cell_size(character: str, unicode_version: str = "auto") -> int:
+    def patched_get_character_cell_size(
+        character: str, unicode_version: str = "auto"
+    ) -> int:
         if character and _is_emoji_codepoint(ord(character)):
             return 1
         try:

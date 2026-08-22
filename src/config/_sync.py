@@ -24,7 +24,9 @@ def synchronized(lock: Any) -> Callable[[Callable[P, R]], Callable[P, R]]:
     return decorate
 
 
-def set_enabled(items: Sequence[MutableMapping[str, Any]], item_id: str, enabled: bool) -> bool:
+def set_enabled(
+    items: Sequence[MutableMapping[str, Any]], item_id: str, enabled: bool
+) -> bool:
     """Set an item's enabled flag, returning whether an item with the id existed."""
     for item in items:
         if item.get("id") == item_id:

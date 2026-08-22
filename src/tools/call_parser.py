@@ -131,7 +131,7 @@ def _parse_attrs(header):
 
 
 _SECTION_LINE_RE = re.compile(
-    r"^[ \t]*---[ \t]+(FIND|REPLACE|INSERT)[ \t]+---[ \t]*$",
+    r"^[ \t]*---[ \t]+(FIND|REPLACE)[ \t]+---[ \t]*$",
     re.MULTILINE,
 )
 
@@ -199,8 +199,7 @@ def _split_patch_sections(body):
         end_m = _END_MARKER_RE.search(content)
         if end_m:
             content = content[: end_m.start()]
-        if content.endswith("\n"):
-            content = content[:-1]
+        content = content.removesuffix("\n")
         sections.append((kind, content))
     # Отбрасываем висячий пустой маркер в конце: модель иногда дублирует
     # '--- REPLACE ---' / '--- FIND ---' после контента (по инерции). Такая
@@ -216,17 +215,7 @@ def _build_patch_args(body, attrs):
     args = {}
     if "path" in attrs:
         args["path"] = attrs["path"]
-    if "delete_lines" in attrs:
-        args["delete_lines"] = attrs["delete_lines"]
-
     sections = _split_patch_sections(body)
-
-    insert_section = next((c for k, c in sections if k == "INSERT"), None)
-    if insert_section is not None:
-        args["insert"] = _maybe_unescape_html(insert_section)
-        if "line" in attrs:
-            args["line"] = attrs["line"]
-        return args if args else None
 
     pairs = []
     pending_find = None
@@ -244,17 +233,17 @@ def _build_patch_args(body, attrs):
             )
             pending_find = None
 
-    if len(pairs) == 1:
-        args["find"] = pairs[0]["find"]
-        args["replace"] = pairs[0]["replace"]
-    elif len(pairs) > 1:
+    if pairs:
+        # patch_file has one canonical edit contract: even a single
+        # FIND/REPLACE pair is represented as a patches list.  Keeping one
+        # shape prevents models from oscillating between two equivalent APIs.
         args["patches"] = pairs
 
     return args if args else None
 
 
 def _strip_one_trailing_newline(s):
-    return s[:-1] if s.endswith("\n") else s
+    return s.removesuffix("\n")
 
 
 def _parse_content_tool(body, attrs):
@@ -372,18 +361,26 @@ def parse_call_block(tool_name, attrs_header, body, raw):
                     merged.update({k: v for k, v in attrs.items() if k != "path"})
                     args = merged
     elif tool_name in _PATCH_TOOLS:
-        args = _build_patch_args(body, attrs)
-        if args is None and "path" in attrs:
-            args = dict(attrs)
-        if args is None or "path" not in args:
+        section_args = _build_patch_args(body, attrs)
+        if isinstance(section_args, dict) and section_args.get("patches"):
+            args = section_args
+        else:
+            # Canonical native/fenced JSON is accepted too.  Try JSON whenever
+            # there were no FIND/REPLACE pairs, even when path lives in attrs;
+            # the old parser used to discard such a body and emit only {path}.
             json_args = _parse_json_body(body)
-            if isinstance(json_args, dict) and "path" in json_args:
+            if isinstance(json_args, dict):
+                args = dict(json_args)
                 if attrs:
-                    merged = dict(json_args)
-                    merged.update({k: v for k, v in attrs.items() if k != "path"})
+                    merged = dict(args)
+                    merged.update(attrs)
                     args = merged
-                else:
-                    args = json_args
+            elif attrs:
+                # Preserve malformed attrs so central validation can return an
+                # actionable "patches required / unexpected parameter" error.
+                args = dict(attrs)
+            else:
+                args = None
     else:
         json_args = _parse_json_body(body)
         if json_args is None:
@@ -429,7 +426,10 @@ def parse_call_block(tool_name, attrs_header, body, raw):
         elif "paths" in args:
             pv = args["paths"]
             if isinstance(pv, list):
-                names = [str(p) if isinstance(p, str) else str(p.get("path", p)) for p in pv[:5]]
+                names = [
+                    str(p) if isinstance(p, str) else str(p.get("path", p))
+                    for p in pv[:5]
+                ]
                 ps = ", ".join(names)
                 if len(pv) > 5:
                     ps += ", …"

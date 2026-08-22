@@ -5,6 +5,7 @@ from __future__ import annotations
 from commands.menus._style import card_menu, facts_line
 from config.display import get_full_blocks, set_full_blocks
 from config.i18n import t as _
+from config.ui import ui
 from tools.registry import list_tools
 
 _THOUGHT_BLOCKS = ("think", "reasoning")
@@ -35,8 +36,27 @@ async def _choose_mode(*, compact: bool) -> None:
             return
         choice, checked = result
         if choice is None or choice == len(blocks):
-            set_full_blocks(compact=compact, blocks={blocks[i] for i in checked if i < len(blocks)})
+            set_full_blocks(
+                compact=compact, blocks={blocks[i] for i in checked if i < len(blocks)}
+            )
             return
+
+
+async def _choose_patch_diff() -> None:
+    current = str(ui.get("diff.mode", "inline") or "inline")
+    choice = await card_menu(
+        [
+            {"label": _("display.diff_inline"), "active": current == "inline"},
+            {
+                "label": _("display.diff_side_by_side"),
+                "active": current == "side_by_side",
+            },
+            {"label": _("common.back")},
+        ],
+        title=_("display.patch_diff"),
+    )
+    if choice is not None and choice < 2:
+        ui.set("diff.mode", ("inline", "side_by_side")[choice])
 
 
 async def display_interactive() -> None:
@@ -45,15 +65,41 @@ async def display_interactive() -> None:
         full_blocks = get_full_blocks(compact=False)
         compact = "all" if "*" in compact_blocks else str(len(compact_blocks))
         full = "all" if "*" in full_blocks else str(len(full_blocks))
+        diff_mode = str(ui.get("diff.mode", "inline") or "inline")
         choice = await card_menu(
             [
-                {"label": _("display.compact"), "hint": f"{len(get_full_blocks(compact=True))}"},
-                {"label": _("display.full"), "hint": f"{len(get_full_blocks(compact=False))}"},
+                {
+                    "label": _("display.compact"),
+                    "hint": f"- {len(get_full_blocks(compact=True))}",
+                },
+                {
+                    "label": _("display.full"),
+                    "hint": f"- {len(get_full_blocks(compact=False))}",
+                },
+                {
+                    "label": _("display.patch_diff"),
+                    "hint": f"- {diff_mode.replace('_', ' ')}",
+                },
+                {
+                    "label": _("display.ui_customization"),
+                    "hint": f"- {_('display.ui_customization_hint')}",
+                },
                 {"label": _("common.back")},
             ],
             title=_("display.title"),
-            facts=[facts_line(_("display.compact"), str(compact), _("display.full"), str(full))],
+            facts=[
+                facts_line(
+                    _("display.compact"), str(compact), _("display.full"), str(full)
+                )
+            ],
         )
-        if choice is None or choice == 2:
+        if choice is None or choice == 4:
             return
-        await _choose_mode(compact=choice == 0)
+        if choice in (0, 1):
+            await _choose_mode(compact=choice == 0)
+        elif choice == 2:
+            await _choose_patch_diff()
+        elif choice == 3:
+            from commands.menus.ui_customization import ui_customization_interactive
+
+            await ui_customization_interactive()

@@ -19,7 +19,9 @@ def _para_slices(xml: str):
                 continue
             depth -= 1
             if depth == 0 and start != -1:
-                out.append({"start": start, "end": m.end(), "xml": xml[start : m.end()]})
+                out.append(
+                    {"start": start, "end": m.end(), "xml": xml[start : m.end()]}
+                )
                 start = -1
         elif tok.endswith("/>"):
             if depth == 0:
@@ -105,7 +107,9 @@ def _patch_one(para_xml: str, new_text: str, skip_leading: bool):
     return out
 
 
-def patch_paragraph_texts(entry_xml: str, new_text: str, strip_first_leading_space=False):
+def patch_paragraph_texts(
+    entry_xml: str, new_text: str, strip_first_leading_space=False
+):
     paras = _para_slices(entry_xml)
     if not paras:
         return None
@@ -126,7 +130,9 @@ def patch_paragraph_texts(entry_xml: str, new_text: str, strip_first_leading_spa
         if old_texts[i] == new_paras[i]:
             out += p["xml"]
         else:
-            patched = _patch_one(p["xml"], new_paras[i], i == 0 and strip_first_leading_space)
+            patched = _patch_one(
+                p["xml"], new_paras[i], i == 0 and strip_first_leading_space
+            )
             if patched is None:
                 return None
             out += patched

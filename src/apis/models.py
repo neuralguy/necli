@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from models import DEFAULT_CONTEXT_LIMIT
+
 
 @dataclass(frozen=True)
 class ApiModelInfo:
@@ -11,7 +13,7 @@ class ApiModelInfo:
 
     id: str  # model id для API (e.g. "gpt-4o")
     display_name: str  # имя для UI (e.g. "GPT-4o")
-    context_window: int = 128_000
+    context_window: int = DEFAULT_CONTEXT_LIMIT
     input_price: float = 0.0  # per 1M tokens
     output_price: float = 0.0  # per 1M tokens
 

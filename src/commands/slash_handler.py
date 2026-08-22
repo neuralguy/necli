@@ -5,7 +5,6 @@ from rich.console import Console
 
 import agent as gsagent
 import config
-import session.storage as storage
 from commands.helpers import (
     _print_response_separator,
     _run_with_interrupt,
@@ -15,7 +14,7 @@ from commands.slash import SlashResult
 from config.i18n import t as tr
 from config.themes import t
 from logger import logger
-from session import Session
+from session import Session, storage
 from skills import reset_active_skills
 
 console = Console()
@@ -34,7 +33,9 @@ def _busy(label: str):
 
     shell = get_shell()
     if shell is None:
-        with console.status(f"[bold {t('info')}]{label}[/bold {t('info')}]", spinner="dots"):
+        with console.status(
+            f"[bold {t('info')}]{label}[/bold {t('info')}]", spinner="dots"
+        ):
             yield
         return
     from rich.spinner import Spinner
@@ -205,6 +206,7 @@ async def _handle_compress(state: InteractiveState) -> None:
 
         state.pending_context = None
         state.msg_num = 0
+
     except Exception as e:
         logger.error("compress failed: {}", e, exc_info=True)
 
@@ -235,7 +237,9 @@ def _handle_commit(act: SlashResult, state: InteractiveState) -> None:
 
     workdir = state.workdir
     hint = act.commit_hint or ""
-    logger.info("commit-agent dispatch: api={} model={} wd={}", api_id, model_id, workdir)
+    logger.info(
+        "commit-agent dispatch: api={} model={} wd={}", api_id, model_id, workdir
+    )
 
     from agent.commit_agent import run_commit_agent
 
@@ -284,6 +288,10 @@ async def _handle_new_chat(state: InteractiveState) -> None:
         set_session_terminal_title(state.session)
     except Exception:
         logger.debug("new chat terminal title update failed", exc_info=True)
+
+    from agent.render_replay import print_history_cleared_marker
+
+    state.history_cleared_at = print_history_cleared_marker()
 
 
 async def _handle_branch(state: InteractiveState) -> None:

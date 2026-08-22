@@ -347,7 +347,9 @@ class _ApiSubagentRunner:
             mode_block += f"\n━━━ ROLE ━━━\n{role_desc}\n"
 
         if self.preset:
-            mode_block += f"\n━━━ AGENT PRESET: {self.preset.name} ━━━\n{self.preset.body}\n"
+            mode_block += (
+                f"\n━━━ AGENT PRESET: {self.preset.name} ━━━\n{self.preset.body}\n"
+            )
 
         proj_ctx = _project_context(self.working_dir)
         if proj_ctx:
@@ -418,7 +420,9 @@ class _ApiSubagentRunner:
 
         schemas = get_tool_schemas("agent", set(_SK))
         return [
-            s for s in schemas if s.get("function", {}).get("name") not in _BLOCKED_FOR_SUBAGENTS
+            s
+            for s in schemas
+            if s.get("function", {}).get("name") not in _BLOCKED_FOR_SUBAGENTS
         ]
 
     def _bind_llm(self, use_tools: bool) -> tuple:
@@ -601,7 +605,9 @@ class _ApiSubagentRunner:
         if len(text) <= limit:
             return text
         half = limit // 2
-        return text[:half] + f"\n... [{len(text)} chars, truncated] ...\n" + text[-half:]
+        return (
+            text[:half] + f"\n... [{len(text)} chars, truncated] ...\n" + text[-half:]
+        )
 
     def _append_tool_results_native(
         self,
@@ -674,7 +680,9 @@ class _ApiSubagentRunner:
 
         iterations = 0
         try:
-            self.session.messages.append(SystemMessage(content=self._build_system_prompt()))
+            self.session.messages.append(
+                SystemMessage(content=self._build_system_prompt())
+            )
             self.session.messages.append(HumanMessage(content=self.prompt))
 
             raw_text = ""
@@ -756,7 +764,9 @@ class _ApiSubagentRunner:
                         self._spent_tokens,
                     )
                     final = strip_tool_calls(raw_text).strip()
-                    final = (final + "\n\n[Subagent stopped: context size limit reached]").strip()
+                    final = (
+                        final + "\n\n[Subagent stopped: context size limit reached]"
+                    ).strip()
                     # NB: iterations уже инкрементирован на входе в итерацию.
                     if self.buffer:
                         self.buffer.on_done(final)
@@ -849,7 +859,9 @@ class _ApiSubagentRunner:
                 if self.buffer:
                     self.buffer.in_tool_thread = True
                 try:
-                    results = await asyncio.to_thread(self._execute_tool_calls, all_calls)
+                    results = await asyncio.to_thread(
+                        self._execute_tool_calls, all_calls
+                    )
                 finally:
                     if self.buffer:
                         self.buffer.in_tool_thread = False
@@ -902,7 +914,8 @@ def _looks_like_progress_only(text: str) -> bool:
 
 def _commit_message_for(task_prompt: str) -> str:
     """Делает короткий commit-msg из первой строки prompt'а."""
-    first = (task_prompt or "").strip().splitlines()[0] if task_prompt else ""
+    lines = (task_prompt or "").strip().splitlines()
+    first = lines[0] if lines else ""
     if len(first) > 80:
         first = first[:77] + "..."
     return f"subagent: {first}" if first else "subagent: task"
@@ -930,7 +943,9 @@ def _resolve_dependencies(tasks: list) -> tuple[list[list[int]], str | None]:
             if idx == i:
                 errors.append(f"task {i + 1}: depends_on references itself")
             elif not 0 <= idx < n:
-                errors.append(f"task {i + 1}: depends_on references missing task {dep_num}")
+                errors.append(
+                    f"task {i + 1}: depends_on references missing task {dep_num}"
+                )
             else:
                 ok.add(idx)
         deps.append(ok)
@@ -1026,7 +1041,10 @@ async def _append_progress(run_dir: str | None, result, total: int) -> None:
     phase = f" [{result.phase}]" if getattr(result, "phase", "") else ""
     label = f" {result.label}" if getattr(result, "label", "") else ""
     if result.error:
-        block = [f"## Subagent {n}/{total}{phase}{label} [{result.mode}] — ERROR", result.error]
+        block = [
+            f"## Subagent {n}/{total}{phase}{label} [{result.mode}] — ERROR",
+            result.error,
+        ]
         if getattr(result, "branch", ""):
             block.append(f"branch: {result.branch}")
             if getattr(result, "has_changes", False):

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import re
-import xml.parsers.expat as expat
+from xml.parsers import expat
 
 XNode = dict  # {name: [child,...], ':@': {attrs}}  либо {'#text': str}
 
-ILLEGAL_XML_CHARS = re.compile(r"[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]")
+ILLEGAL_XML_CHARS = re.compile(
+    r"[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]"
+)
 
 
 def parse(xml: str) -> list[XNode]:
@@ -151,7 +153,9 @@ def _validated_xml_text(text: str) -> str:
     text = str(text)
     m = ILLEGAL_XML_CHARS.search(text)
     if m:
-        raise ValueError(f"text contains XML-illegal control character U+{ord(m.group(0)):04X}")
+        raise ValueError(
+            f"text contains XML-illegal control character U+{ord(m.group(0)):04X}"
+        )
     return text
 
 
@@ -178,7 +182,9 @@ def serialize_xnode(node: XNode) -> str:
     n = name_of(node)
     if not n:
         return ""
-    attrs = "".join(f' {k}="{escape_xml_attr(str(v))}"' for k, v in attrs_of(node).items())
+    attrs = "".join(
+        f' {k}="{escape_xml_attr(str(v))}"' for k, v in attrs_of(node).items()
+    )
     inner = "".join(serialize_xnode(c) for c in children_of(node))
     if inner == "":
         return f"<{n}{attrs}/>"

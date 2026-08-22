@@ -47,7 +47,9 @@ async def skills_interactive():
             }
             for s in all_skills
         ]
-        items.append({"label": _("skills.create"), "hint": str(get_skills_dir()), "action": True})
+        items.append(
+            {"label": _("skills.create"), "hint": str(get_skills_dir()), "action": True}
+        )
 
         choice = await card_menu(
             items,
@@ -78,7 +80,9 @@ async def _skill_detail_menu(skill):
         actions = [
             {
                 "label": toggle,
-                "hint": _("skills.toggle_hint_off") if active else _("skills.toggle_hint_on"),
+                "hint": _("skills.toggle_hint_off")
+                if active
+                else _("skills.toggle_hint_on"),
                 "icon": "○" if active else "●",
                 "icon_style": "warning" if active else "success",
                 "action": True,

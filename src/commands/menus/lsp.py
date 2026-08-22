@@ -57,7 +57,9 @@ async def lsp_interactive():
                     "icon": icon,
                     "icon_style": role,
                     "label": sid,
-                    "hint": facts_line(cfg.get("command", ""), " ".join(cfg.get("extensions", []))),
+                    "hint": facts_line(
+                        cfg.get("command", ""), " ".join(cfg.get("extensions", []))
+                    ),
                     "badge": status_str,
                     "badge_style": role,
                 }
@@ -104,13 +106,16 @@ async def _detail(sid: str):
         from apis.lsp_client import LSPManager
 
         live_for_cfg = [
-            v for v in LSPManager.instance().list_servers_info() if v["id"].startswith(f"{sid}@")
+            v
+            for v in LSPManager.instance().list_servers_info()
+            if v["id"].startswith(f"{sid}@")
         ]
 
         enabled = cfg.get("enabled", True)
         facts = [
             facts_line(
-                f"{_('lsp.label_command')} {cfg.get('command', '')}", " ".join(cfg.get("args", []))
+                f"{_('lsp.label_command')} {cfg.get('command', '')}",
+                " ".join(cfg.get("args", [])),
             ),
             f"{_('lsp.label_extensions')} {', '.join(cfg.get('extensions', []))}",
         ]

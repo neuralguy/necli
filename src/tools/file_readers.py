@@ -49,7 +49,9 @@ def _rows_to_markdown(rows: list[list[str]], total: int) -> str:
 
     truncated = total > _TABLE_TRUNCATE_THRESHOLD
     display_rows: list = (
-        [*rows[: _TABLE_HEAD_ROWS + 1], None, *rows[-_TABLE_TAIL_ROWS:]] if truncated else rows
+        [*rows[: _TABLE_HEAD_ROWS + 1], None, *rows[-_TABLE_TAIL_ROWS:]]
+        if truncated
+        else rows
     )
 
     md_lines: list[str] = []
@@ -233,7 +235,10 @@ def _read_pdf(path: Path) -> str:
                     continue
                 md_rows: list[str] = [f"\n### Table {page_idx + 1}.{t_idx}"]
                 norm = [
-                    [(cell if cell is not None else "").replace("\n", " ").strip() for cell in row]
+                    [
+                        (cell if cell is not None else "").replace("\n", " ").strip()
+                        for cell in row
+                    ]
                     for row in table
                 ]
                 if not norm or not norm[0]:

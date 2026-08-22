@@ -168,13 +168,13 @@ def _pptx_operation_schema() -> dict[str, Any]:
             },
             "element_id": {
                 "type": "string",
-                "description": "Stable id from read/inspect on slide_index.",
+                "description": "Stable id from read/inspect."
             },
             "element_ids": {
                 "type": "array",
                 "items": {"type": "string"},
                 "minItems": 2,
-                "description": "At least two top-level element ids for group.",
+                "description": "At least two top-level ids."
             },
             "text": {"type": "string"},
             "name": {"type": "string"},
@@ -219,12 +219,12 @@ def _pptx_operation_schema() -> dict[str, Any]:
             "from_index": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Existing zero-based source slide for move_slide.",
+                "description": "Source slide index for move_slide."
             },
             "to_index": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Existing zero-based destination slide for move_slide.",
+                "description": "Destination slide index for move_slide."
             },
             "cx": {"type": "integer"},
             "cy": {"type": "integer"},
@@ -239,22 +239,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "shell",
             "description": (
-                "Run a shell command (git, pip, make, tests, etc.). "
-                "Do NOT use for file operations (cat/echo/tee/heredoc/sed for writes) — use create_file/patch_file. "
-                "cd /any/path && cmd applies only within this single call. "
+                "Run a shell command"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Shell command to execute."},
+                    "command": {"type": "string", "description": "Shell command"},
                     "background": {
                         "type": "boolean",
                         "description": (
-                            "Run the command in the background for heavy/long tasks. "
-                            "Returns a job-id at once; output arrives as a notification "
-                            "when it finishes. Do NOT call poll just to wait for it; "
-                            "wait for the automatic completion notification. "
-                            "Foreground (default) times out at 60s."
+                            "Run the command in the background for heavy/long tasks"
                         ),
                     },
                 },
@@ -268,15 +262,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "read",
             "description": (
                 "Read a single file or directory. "
-                "takes one path, optional line limit and offset. "
-                "Supports images, .docx, .pptx, .csv/.tsv, Excel."
+                "Supports images, .docx, .pptx, .csv/.tsv"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "The absolute path to the file or directory to read",
+                        "description": "The absolute path to the file or directory",
                     },
                     "limit": {"type": "number", "description": "Max lines to read (default 1000)"},
                     "offset": {"type": "number", "description": "Starting line number (1-indexed)"},
@@ -291,7 +284,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "grep",
             "description": (
                 "Search file contents with a regular expression or list files by include globs. "
-                "Path may be a file or directory; directories are searched recursively while automatically excluding hidden directories, dependencies, caches, "
+                "Path may be a file or directory. Directories are searched recursively while automatically excluding hidden directories, dependencies, caches, "
                 "build output, and other project junk."
             ),
             "parameters": {
@@ -311,7 +304,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                     "case_sensitive": {
                         "type": "boolean",
-                        "description": "Match case exactly; default false",
+                        "description": "Match case exactly, default false",
                     },
                     "max_results": {
                         "type": "integer",
@@ -328,44 +321,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "patch_file",
             "description": (
-                "Atomic targeted file edit. Prefer a small unique FIND copied from the current file; "
-                "whitespace differences and small unambiguous stale-context drift are tolerated. "
-                "If any match fails, nothing from that call is written: re-read the affected lines and retry. "
-                "Use patches for multiple find/replace edits, insert+line for insertion, or delete_lines for line removal."
+                "Atomic targeted file edits. "
+                "Each patch is applied sequentially and the whole call rolls back if any match fails"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "find": {"type": "string", "description": "Text to find"},
-                    "replace": {"type": "string", "description": "Replacement text"},
-                    "insert": {
-                        "type": "string",
-                        "description": "Text to insert before the 1-based `line`.",
-                    },
-                    "line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "1-based insertion line; len(file)+1 appends.",
-                    },
-                    "delete_lines": {
-                        "oneOf": [{"type": "integer"}, {"type": "string"}],
-                        "description": "1-based line or ranges to remove, e.g. 4, '4-7', or '2,5-7'.",
-                    },
                     "patches": {
                         "type": "array",
+                        "minItems": 1,
+                        "description": "FIND/REPLACE list",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "find": {"type": "string"},
                                 "replace": {"type": "string"},
                             },
-                            "required": ["find"],
+                            "required": ["find", "replace"],
+                            "additionalProperties": False,
                         },
-                        "description": "Multiple find/replace pairs applied sequentially as one atomic edit",
                     },
                 },
-                "required": ["path"],
+                "required": ["path", "patches"],
+                "additionalProperties": False,
             },
         },
     },
@@ -374,8 +353,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "create_file",
             "description": (
-                "Create a new file or fully overwrite an existing one. "
-                "For editing existing files use patch_file"
+                "Create a new file or fully overwrite an existing one"
             ),
             "parameters": {
                 "type": "object",
@@ -392,55 +370,51 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "docx",
             "description": (
-                "Native DOCX tool. read(path) gives a compact one-line-per-block view with current bN ids. "
-                "create uses blocks; edit batches ops; inspect targets exact blocks (or metadata when target is omitted); "
-                "help returns uncommon syntax. Common blocks: p,h1..h9,li,table,math,image,chart,pageBreak,toc,caption. "
-                "Common run fields: text,bold,italic,underline,strike,color,size,font,highlight,link,latex. "
-                "Edit ops: insert,replace,delete,set. No HTML/Pandoc/raw OOXML."
+                "Native DOCX tool. Use help for uncommon syntax"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["create", "edit", "inspect", "help"]},
-                    "path": {"type": "string", "description": "DOCX path; except help."},
+                    "path": {"type": "string"},
                     "topic": {
                         "type": "string",
                         "enum": ["blocks", "runs", "edit", "options"],
-                        "description": "help only.",
+                        "description": "help only."
                     },
                     "out": {
                         "type": "string",
-                        "description": "edit output; default overwrites path.",
+                        "description": "Output path"
                     },
                     "blocks": {
                         "type": "array",
                         "items": {"anyOf": [{"type": "object"}, {"type": "string"}]},
-                        "description": "create blocks; string = paragraph.",
+                        "description": "Strings are paragraphs"
                     },
                     "ops": {
                         "type": "array",
                         "items": {"type": "object"},
-                        "description": "edit ops; targets are current bN ids.",
+                        "description": "Targets use current bN ids."
                     },
-                    "target": {"description": "inspect bN/index or array; omit = metadata."},
+                    "target": {"description": "Block id/index or array; omit for metadata"},
                     "options": {
                         "type": "object",
-                        "description": "native document options; use help/options for syntax.",
+                        "description": "Document options"
                     },
                     "includeRaw": {
                         "type": "boolean",
-                        "description": "inspect raw OOXML; expensive.",
+                        "description": "Expensive raw OOXML inspection"
                     },
                     "includeMedia": {
                         "type": "boolean",
-                        "description": "inspect image data; very expensive.",
+                        "description": "Expensive media inspection"
                     },
                     "includeMeta": {
                         "type": "boolean",
-                        "description": "include metadata with targeted inspect.",
+                        "description": "Include metadata"
                     },
-                    "overwrite": {"type": "boolean", "description": "Default true."},
-                    "eastAsiaFont": {"type": "string", "description": "create East Asia font."},
+                    "overwrite": {"type": "boolean"},
+                    "eastAsiaFont": {"type": "string"},
                 },
                 "required": ["action"],
             },
@@ -451,10 +425,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "pptx",
             "description": (
-                "Native PPTX tool. read(path) gives a compact slide/element view with stable element ids. "
-                "create builds a presentation; edit applies atomic operations; inspect returns exact slide data; "
-                "render creates SVG/PNG/render-tree previews; validate checks the OOXML package; help lists operations. "
-                "Coordinates and sizes are EMU. No Office, browser automation, or raw OOXML editing."
+                "Native PPTX tool. Use read/inspect for stable element ids"
             ),
             "parameters": {
                 "type": "object",
@@ -463,43 +434,43 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "enum": ["create", "edit", "inspect", "render", "validate", "help"],
                     },
-                    "path": {"type": "string", "description": "PPTX path; except help."},
-                    "out": {"type": "string", "description": "Edit or render output path."},
+                    "path": {"type": "string"},
+                    "out": {"type": "string"},
                     "operations": {
                         "type": "array",
                         "items": _pptx_operation_schema(),
-                        "description": "Atomic PPTX operation batch. Every item requires op; use pptx help or the pptx-mastery skill for examples.",
+                        "description": "Each operation requires op"
                     },
                     "slide": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "Zero-based slide index.",
+                        "description": "Zero-based slide index",
                     },
                     "format": {
                         "type": "string",
                         "enum": ["svg", "png", "json"],
-                        "description": "Render format.",
+                        "description": "Render format",
                     },
                     "width": {
                         "type": "integer",
-                        "description": "Create width in EMU, or render width in pixels.",
+                        "description": "EMU for create, pixels for render"
                     },
-                    "height": {"type": "integer", "description": "Create height in EMU."},
+                    "height": {"type": "integer", "description": "Create height in EMU"},
                     "atomic": {
                         "type": "boolean",
-                        "description": "Edit operations are atomic by default.",
+                        "description": "Atomic by default"
                     },
                     "includeXml": {
                         "type": "boolean",
-                        "description": "Inspect original OOXML; expensive.",
+                        "description": "Expensive raw OOXML inspection"
                     },
                     "fullModel": {
                         "type": "boolean",
-                        "description": "Inspect complete engine model; very expensive.",
+                        "description": "Expensive complete model inspection"
                     },
                     "overwrite": {
                         "type": "boolean",
-                        "description": "Create overwrite; default true.",
+                        "description": "Overwrite by default"
                     },
                 },
                 "required": ["action"],
@@ -511,11 +482,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "poll",
             "description": (
-                "Ask user a question with options. Use instead of plain text questions "
-                "when uncertain. Single step: {question, options}. "
-                "Multi-step: {steps: [{question, options, multiple}, ...]}. "
-                "Max 10 steps. Each step is single-select by default; set "
-                "multiple=true (or multi_select=true/type='multi') for multi-select."
+                "Ask the user a question with options. Use steps for one or more questions; "
+                "set multiple=true on a step to allow multiple selections. Max 10 steps."
             ),
             "parameters": {
                 "type": "object",
@@ -526,13 +494,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "items": {"type": "string"},
                         "maxItems": 10,
                     },
-                    "multiple": {"type": "boolean"},
-                    "multi_select": {"type": "boolean"},
-                    "type": {
-                        "type": "string",
-                        "enum": ["single", "multi", "multiple", "multi-select"],
-                    },
-                    "steps": {
+                                        "steps": {
                         "type": "array",
                         "maxItems": 10,
                         "items": {
@@ -544,12 +506,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                     "items": {"type": "string"},
                                     "maxItems": 10,
                                 },
-                                "multiple": {"type": "boolean"},
-                                "multi_select": {"type": "boolean"},
-                                "type": {
-                                    "type": "string",
-                                    "enum": ["single", "multi", "multiple", "multi-select"],
-                                },
+                        "multiple": {"type": "boolean"},
                             },
                         },
                     },
@@ -570,11 +527,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "items": {"type": "string"},
                         "minItems": 1,
                         "maxItems": 5,
-                        "description": "Search queries (1-5). Each query is searched separately",
+                        "description": "Search queries",
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Max results per query (default 5)",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Max results per query, default 5",
                     },
                 },
                 "required": ["queries"],
@@ -585,14 +544,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "web_fetch",
-            "description": ("Fetch content from one or more URLs"),
+            "description": ("Fetch content from URLs"),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "urls": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "One or more URLs to fetch",
+                        "description": "URLs to fetch",
                     },
                     "raw": {
                         "type": "boolean",
@@ -608,8 +567,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "image_search",
             "description": (
-                "Search for images on the web. Useful for finding pictures for "
-                "websites, mockups, docs, etc. Searches and downloads images to assets/images"
+                "Search for images on the web. Searches and downloads images to assets/images"
             ),
             "parameters": {
                 "type": "object",
@@ -619,11 +577,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "items": {"type": "string"},
                         "minItems": 1,
                         "maxItems": 5,
-                        "description": "Search queries (1-5). Each query is searched separately",
+                        "description": "Search queries",
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Max images to return per query (default 10)",
+                        "description": "Max images to return per query, default 10",
                     },
                     "size": {
                         "type": "string",
@@ -643,7 +601,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "expand_tool_result",
             "description": (
-                "Returns the FULL text of a previously truncated tool output. "
+                "Returns the full text of a previously truncated tool output. "
                 "Use when you see the marker "
                 '\'expand via call expand_tool_result {"id": "..."}\' '
                 "in a result and need the full text"
@@ -653,7 +611,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "Identifier from the marker in the truncated output",
+                        "description": "Id from the marker",
                     },
                 },
                 "required": ["id"],
@@ -665,15 +623,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "memory",
             "description": (
-                "Manage persistent memory. action=write saves or updates a fact; "
-                "action=list lists project and global memories; action=read reads "
-                "one memory; action=delete removes an obsolete memory. Only write "
-                "facts NOT derivable from code/git/AGENTS.md: "
-                "user preferences and role (type=user), feedback on how to work "
-                "(type=feedback), context of current tasks/goals/incidents "
-                "(type=project), external references/values (type=reference). "
-                "For write, name/body/type are required. For read/delete, name is "
-                "required. Convert relative dates to absolute (YYYY-MM-DD)."
+                "Manage persistent memory"
+                "For write, name,body,type are required. For read/delete, name is required"
             ),
             "parameters": {
                 "type": "object",
@@ -684,11 +635,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                     "name": {
                         "type": "string",
-                        "description": "Short memory file name, e.g. 'user-profile'.",
+                        "description": "Short memory file name",
                     },
                     "body": {
                         "type": "string",
-                        "description": "The fact content. For feedback, add 'Why:' and 'How to apply:'",
+                        "description": "The fact content",
                     },
                     "type": {
                         "type": "string",
@@ -700,8 +651,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "enum": ["project", "global"],
                         "description": (
                             "project (default) — memory of the current project. "
-                            "global — cross-project fact (about the user/general "
-                            "preferences), visible in all projects."
+                            "global — cross-project fact (about the user/general preferences), visible in all projects"
                         ),
                     },
                 },
@@ -869,7 +819,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "skill",
-            "description": "Load a skill from .data/skills by name",
+            "description": "Load a skill",
             "parameters": {
                 "type": "object",
                 "properties": {"name": {"type": "string"}},
@@ -882,8 +832,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "lsp_references",
             "description": (
-                "Find all references to a symbol via LSP. Use to locate every "
-                "usage of a function/class/variable across the project"
+                "Find all references to a symbol via LSP"
             ),
             "parameters": {
                 "type": "object",
@@ -901,8 +850,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "lsp_diagnostics",
             "description": (
-                "Get LSP diagnostics (errors, warnings, type problems) for a file. "
-                "Use after editing to catch type errors, undefined names, etc."
+                "Get LSP diagnostics (errors, warnings, type problems) for a file"
             ),
             "parameters": {
                 "type": "object",
@@ -918,16 +866,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "plan",
             "description": (
-                "Adaptive task plan: use it only when the task is genuinely multi-step, large, or uncertain — not as a mandatory ceremony. "
-                "Do not create a plan for a simple task, a small localized change, or work whose path is already obvious. "
-                "inspect first with read-only tools; create the plan only after reconnaissance shows that coordination is needed; "
-                "do not use a generic upfront checklist such as find/fix/test. "
-                "Make each step concrete and outcome-oriented: state WHAT result is required and HOW it will be achieved, "
-                "including exact paths, relevant symbols, interfaces, decisions, dependencies, and exact verification when known; explain how it will be done. "
-                "Use as many or as few steps as the work actually needs — Do not force a fixed number of steps. "
-                "Create once, then update it rather than recreating it. Exactly one unfinished step is kept in_progress automatically; "
-                "completing/removing it advances the next pending step. Actions: create, update (single index/title, index list, or updates[] batch), "
-                "add_step, remove_step. All steps must be done/skipped before the final reply."
+                "Use only when the task is genuinely multi-step. For unfamiliar code, inspect first "
+                "and base the plan on evidence. Do not create a plan for a simple task. Each step "
+                "should state what will change and how it will be done, including exact paths when "
+                "known. Do not force a fixed number of steps; use only as many as the task needs."
             ),
             "parameters": {
                 "type": "object",
@@ -935,45 +877,41 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "action": {"type": "string", "enum": ["create", "update", "add_step", "remove_step"]},
                     "goal": {
                         "type": "string",
-                        "description": "Single line — the goal of the entire task (for create).",
+                        "description": "Single line — the goal of the entire task (for create)",
                     },
                     "steps": {
                         "type": "array",
-                        "minItems": 2,
+                        "minItems": 3,
                         "items": {
                             "type": "object",
                             "properties": {
                                 "title": {
                                     "type": "string",
-                                    "description": "Concrete step describing the required result and the implementation approach, not a vague verb or generic phase.",
+                                    "description": "Concrete step",
                                 },
                                 "status": {"type": "string"},
                             },
                             "required": ["title"],
                         },
-                        "description": "Full list of concrete outcome-level steps for create (minimum 2). Each title must say what will be achieved and how, with exact paths/symbols or verification details when known; do not pad the list to a conventional step count.",
+                        "description": "Full list of concrete outcome-level steps for create",
                     },
                     "index": {
                         "oneOf": [
                             {"type": "integer"},
                             {"type": "array", "items": {"type": "integer"}, "minItems": 1},
                         ],
-                        "description": "1-based step index/list for update; single index also selects remove_step position.",
+                        "description": "1-based step index/list for update. Single index also selects remove_step position",
                     },
                     "title": {
                         "type": "string",
-                        "description": "Step title: for add_step or finding a step in update.",
+                        "description": "Step title: for add_step or finding a step in update",
                     },
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "done", "skipped"],
-                        "description": "New step status (for update/add_step).",
+                        "description": "New step status (for update/add_step)",
                     },
-                    "notes": {
-                        "type": "string",
-                        "description": "Optional implementation detail: exact files/symbols, approach, dependency, decision, or verification command.",
-                    },
-                    "updates": {
+                                        "updates": {
                         "type": "array",
                         "items": {
                             "type": "object",
@@ -984,11 +922,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                     "enum": ["pending", "in_progress", "done", "skipped"],
                                     "description": "New status",
                                 },
-                                "notes": {"type": "string", "description": "Note (optional)"},
                             },
                             "required": ["index"],
                         },
-                        "description": "List of changes for batch update: each object has an index and optionally status/notes.",
+                        "description": "List of changes for batch update: each object has an index and optionally a new status",
                     },
                 },
                 "required": ["action"],
@@ -1000,10 +937,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "think",
             "description": (
-                "Think out loud before acting. Does NOT execute code — displays "
-                "the thought in the UI. Used when think-mode is enabled: EXACTLY ONE call "
-                "to think before any other tools and before the final answer, "
-                "with one long thought covering all reasoning."
+                "Think tool"
             ),
             "parameters": {
                 "type": "object",
@@ -1044,6 +978,15 @@ def _resolve_think_for_schemas() -> bool:
         return False
 
 
+def _memory_enabled() -> bool:
+    try:
+        from config.settings import get
+
+        return bool(get("memory_enabled", True))
+    except Exception:
+        return True
+
+
 def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, Any]]:
     """Returns JSON schemas for tools matching the given mode.
 
@@ -1063,7 +1006,8 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
     from tools.registry import get_disabled_tools
 
     disabled = frozenset(get_disabled_tools())
-    cache_key = (mode, mcp_sig, think_on, disabled)
+    memory_on = _memory_enabled()
+    cache_key = (mode, mcp_sig, think_on, disabled, memory_on)
     with _SCHEMAS_LOCK:
         cached = _SCHEMAS_CACHE.get(cache_key)
         if cached is not None:
@@ -1078,7 +1022,11 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
             allowed = allowed | {"think"}
         base = []
         for schema in TOOL_SCHEMAS:
-            if schema["function"]["name"] not in allowed or schema["function"]["name"] in disabled:
+            if (
+                schema["function"]["name"] not in allowed
+                or schema["function"]["name"] in disabled
+                or (schema["function"]["name"] == "memory" and not memory_on)
+            ):
                 continue
             if schema["function"]["name"] == "memory":
                 schema = copy.deepcopy(schema)
@@ -1091,6 +1039,7 @@ def get_tool_schemas(mode: str = "agent", active_skills=None) -> list[dict[str, 
             for s in TOOL_SCHEMAS
             if (s["function"]["name"] != "think" or think_on)
             and s["function"]["name"] not in disabled
+            and (s["function"]["name"] != "memory" or memory_on)
         ]
         try:
             from apis.mcp_client import get_mcp_tool_schemas

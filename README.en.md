@@ -17,7 +17,7 @@ The project does not store API keys in its source code. Runtime state, sessions,
 |---|---|
 | Python | **3.10+** |
 | Environment manager | [uv](https://docs.astral.sh/uv/) |
-| API key | At least one compatible LLM provider |
+| LLM authentication | Browser sign-in with ChatGPT or an API key for a compatible provider |
 | Operating system | Linux, macOS, or Windows; the file descriptor limit is raised only on Unix |
 
 ## Installation
@@ -39,7 +39,7 @@ After synchronization, the CLI is available as `uv run necli`. Running the sourc
 
 ## First Run
 
-Start the interactive client and select a provider. API keys, models, and routers are configured through the built-in `/api` and `/models` menus, so secrets do not need to be passed as command-line arguments.
+Start the interactive client and select a provider. The first `/api` item signs in to ChatGPT through the browser and accepts the OAuth callback only on `localhost:1455`; tokens are refreshed automatically. ChatGPT uses SSE by default, while an experimental persistent WebSocket can be enabled with `extra.websocket: true` in the provider definition. API keys, models, and fallback routers are configured through `/api` and `/models`, so secrets do not need to be passed as command-line arguments.
 
 ```bash
 uv run necli cli
@@ -54,6 +54,8 @@ Main options for the interactive command:
 | `--workdir`, `-w` | Set the agent's working directory. |
 | `--resume`, `-r` | Resume a session by its ID or ID prefix. |
 
+Shell commands run from `--workdir`; a local `.venv` or `venv` is activated automatically for child processes. Under `/settings`, model parameters include the 1–3600 second stream-chunk timeout. The Model prompt page can preview, edit, enable, or disable custom role instructions, while Memory controls injection and project/global records. Interface settings expose full-block selection, patch-diff mode, and detailed `ui.json` customization.
+
 ## Headless Mode and CI
 
 The `run` command reads a prompt from stdin, writes the result to stdout, and returns an exit code. This makes it suitable for pipes, cron jobs, and CI.
@@ -63,7 +65,7 @@ printf 'Count the lines in the project Python files' \
   | uv run necli run --quiet --allow-all
 ```
 
-When the turn finishes, the short mode prints a `✓ Worked 2m ⎿ 5⟳ · 12🛠 · ↑12K ↓4K` summary to stderr (per-tool progress lines go there too), keeping stdout clean for the answer. Use `--json` for machine-readable output, or `--full-json` for a full report (every model response and tool call with args and output, each event once). Interactive actions that require user input are unavailable in headless mode.
+When the turn finishes, the short mode prints a `✓ Worked 2m ⎿ 5⟳ · 12⚒︎ · c8K ↑12K ↓4K` summary to stderr (per-tool progress lines go there too), keeping stdout clean for the answer. Use `--json` for machine-readable output, or `--full-json` for a full report (every model response and tool call with args and output, each event once). Interactive actions that require user input are unavailable in headless mode.
 
 ## Data and Security
 
@@ -73,6 +75,7 @@ When the turn finishes, the short mode prints a `✓ Worked 2m ⎿ 5⟳ · 12�
 |---|---|
 | `.data/config.json` | Main UI and agent-mode settings. |
 | `.data/apis.json` | Providers, keys, and fallback routers. |
+| `.data/chatgpt_auth.json` | ChatGPT OAuth tokens; created with `0600` permissions. |
 | `.data/sessions/` | Session history and statistics. |
 | `.data/memory/` | Project-scoped and global long-term memory. |
 | `.data/skills/` | User and built-in skills. |

@@ -50,11 +50,13 @@ DEFAULTS: dict[str, Any] = {
         "symbols.compact_separator_prefix": "Префикс под compact-заголовком (по умолчанию '└─').",
         "symbols.vertical_pipe": "Вертикальная разделительная палочка в diff.",
         "symbols.diff_separator": "Разделитель колонок в side-by-side diff ('  │  ').",
+        "symbols.patch_hunk_separator": "Маркер между независимыми hunks одного patch_file ('︙').",
+        "diff.mode": "Режим patch diff: inline или side_by_side.",
         "symbols.bullet_active": "Активный пункт списка / compact-заголовок ('● ').",
         "symbols.bullet_dim": "Неактивный пункт ('○ ').",
         "symbols.cursor": "Курсор в конце стримящегося текста ('▌').",
         "symbols.ellipsis": "Многоточие для усечения ('…').",
-        "symbols.thinking_emoji": "Эмодзи рядом с мыслями модели ('💭').",
+        "symbols.thinking_emoji": "Символ рядом с мыслями модели ('⋯').",
         "symbols.interrupt_marker": "Маркер перед 'Waiting for response' ('■ ').",
         "spinner.frames": "Кадры спиннера (рисуются по очереди). По умолчанию braille-точки.",
         "spinner.interval": "Интервал между кадрами в секундах (используется только некоторыми спиннерами).",
@@ -65,9 +67,9 @@ DEFAULTS: dict[str, Any] = {
         "diff_colors.prefix_delete": "Префикс удалённой строки ('- ' с пробелом).",
         "diff_colors.prefix_add": "Префикс добавленной строки ('+ ').",
         "diff_colors.prefix_equal": "Префикс неизменной строки (два пробела).",
-        "tools.<name>": "Display для каждого инструмента: label, emoji, color_role или color.",
+        "tools.<name>": "Display для каждого инструмента: label, символ, color_role или color.",
         "tools.<name>.label": "Название в заголовке панели.",
-        "tools.<name>.emoji": "Эмодзи перед label.",
+        "tools.<name>.emoji": "Символ перед label.",
         "tools.<name>.color_role": "Семантическая роль цвета (см. config/themes.py:ROLES): accent, success, warning, error, info, magenta, purple, muted и т.д. Цвет берётся из активной темы (меняется через /theme).",
         "tools.<name>.color": "ОПЦИОНАЛЬНО. Прямой HEX ('#ff8800') или имя ('bright_red') — перебивает color_role и не зависит от темы. Удобно когда хочешь конкретный цвет для одного инструмента.",
         "tools._default": "Fallback для незнакомых инструментов.",
@@ -88,9 +90,9 @@ DEFAULTS: dict[str, Any] = {
         "subagent.block_threshold": "Если активных субагентов БОЛЬШЕ этого числа — все рисуются однострочно (компактно), иначе каждый занимает многострочный блок. Защита от разрыва терминала при десятках агентов. 0 = всегда блочный вид.",
         "subagent.block_separator": "Символ горизонтальной линии-разделителя между блоками субагентов (по умолчанию '─').",
         "subagent.prompt_lines": "Сколько строк задачи (prompt) показывать в блоке субагента (с переносом по словам).",
-        "subagent.header_emoji": "Эмодзи в заголовке субагента ('🤖').",
-        "subagent.done_emoji": "Эмодзи успешного завершения ('✓').",
-        "subagent.error_emoji": "Эмодзи ошибки ('✗').",
+        "subagent.header_emoji": "Символ в заголовке субагента ('◉').",
+        "subagent.done_emoji": "Символ успешного завершения ('✓').",
+        "subagent.error_emoji": "Символ ошибки ('×').",
     },
     "limits": {
         "max_width": 100,
@@ -129,11 +131,12 @@ DEFAULTS: dict[str, Any] = {
         "compact_separator_prefix": "└─",
         "vertical_pipe": "│",
         "diff_separator": "  │  ",
+        "patch_hunk_separator": "︙",
         "bullet_active": "● ",
         "bullet_dim": "○ ",
         "cursor": "▌",
         "ellipsis": "…",
-        "thinking_emoji": "💭",
+        "thinking_emoji": "⋯",
         "interrupt_marker": "■ ",
     },
     "spinner": {
@@ -161,6 +164,9 @@ DEFAULTS: dict[str, Any] = {
             " ",
         ],
     },
+    "diff": {
+        "mode": "inline",
+    },
     "diff_colors": {
         # Цвета diff теперь берутся из темы (роли diff_del_*/diff_add_*);
         # здесь только символы-префиксы.
@@ -169,27 +175,35 @@ DEFAULTS: dict[str, Any] = {
         "prefix_equal": "  ",
     },
     "tools": {
-        "poll": {"label": "Poll", "emoji": "❓", "color_role": "accent"},
-        "shell": {"label": "Shell", "emoji": "⏺", "color_role": "warning"},
-        "read": {"label": "Read", "emoji": "📖", "color_role": "info"},
-        "grep": {"label": "Grep", "emoji": "🔎", "color_role": "info"},
-        "patch_file": {"label": "Patch", "emoji": "🔧", "color_role": "warning"},
-        "create_file": {"label": "Create", "emoji": "✨", "color_role": "success"},
-        "web_search": {"label": "Search", "emoji": "🌐", "color_role": "accent"},
-        "web_fetch": {"label": "Fetch", "emoji": "🌐", "color_role": "accent"},
-        "image_search": {"label": "Images", "emoji": "🖼 ", "color_role": "accent"},
-        "subagent": {"label": "Subagent", "emoji": "🤖", "color_role": "magenta"},
-        "plan": {"label": "Plan", "emoji": "📋", "color_role": "accent"},
-        "skill": {"label": "Skill", "emoji": "🎓", "color_role": "info"},
-        "docx": {"label": "DOCX", "emoji": "📄", "color_role": "success"},
-        "pptx": {"label": "PPTX", "emoji": "📊", "color_role": "success"},
-        "think": {"label": "Think", "emoji": "💭", "color_role": "purple"},
-        "lsp_references": {"label": "References", "emoji": "🔗", "color_role": "warning"},
-        "lsp_diagnostics": {"label": "Diagnostics", "emoji": "🩺", "color_role": "warning"},
-        "expand_tool_result": {"label": "Expand", "emoji": "🔍", "color_role": "info"},
-        "memory": {"label": "Memory", "emoji": "🧠", "color_role": "purple"},
-        "_default": {"label": "Tool", "emoji": "⏺", "color_role": "warning"},
-        "_mcp": {"label": "{server}.{tool}", "emoji": "🔌", "color_role": "magenta"},
+        "poll": {"label": "Poll", "emoji": "?", "color_role": "accent"},
+        "shell": {"label": "Shell", "emoji": "●", "color_role": "warning"},
+        "read": {"label": "Read", "emoji": "≡", "color_role": "info"},
+        "grep": {"label": "Grep", "emoji": "⌕", "color_role": "info"},
+        "patch_file": {"label": "Patch", "emoji": "⚒︎", "color_role": "warning"},
+        "create_file": {"label": "Create", "emoji": "✦", "color_role": "success"},
+        "web_search": {"label": "Search", "emoji": "◎", "color_role": "accent"},
+        "web_fetch": {"label": "Fetch", "emoji": "◎", "color_role": "accent"},
+        "image_search": {"label": "Images", "emoji": "▧ ", "color_role": "accent"},
+        "subagent": {"label": "Subagent", "emoji": "◉", "color_role": "magenta"},
+        "plan": {"label": "Plan", "emoji": "☷", "color_role": "accent"},
+        "skill": {"label": "Skill", "emoji": "◇", "color_role": "info"},
+        "docx": {"label": "DOCX", "emoji": "▱", "color_role": "success"},
+        "pptx": {"label": "PPTX", "emoji": "▥", "color_role": "success"},
+        "think": {"label": "Think", "emoji": "⋯", "color_role": "purple"},
+        "lsp_references": {
+            "label": "References",
+            "emoji": "↗",
+            "color_role": "warning",
+        },
+        "lsp_diagnostics": {
+            "label": "Diagnostics",
+            "emoji": "✚",
+            "color_role": "warning",
+        },
+        "expand_tool_result": {"label": "Expand", "emoji": "⌕", "color_role": "info"},
+        "memory": {"label": "Memory", "emoji": "◈", "color_role": "purple"},
+        "_default": {"label": "Tool", "emoji": "●", "color_role": "warning"},
+        "_mcp": {"label": "{server}.{tool}", "emoji": "⌁", "color_role": "magenta"},
     },
     "indicators": {
         "thinking_suffix": "thinking…",
@@ -210,9 +224,9 @@ DEFAULTS: dict[str, Any] = {
     },
     "subagent": {
         "max_width": 0,
-        "header_emoji": "🤖",
+        "header_emoji": "◉",
         "done_emoji": "✓",
-        "error_emoji": "✗",
+        "error_emoji": "×",
         "max_concurrency": 12,
         "block_threshold": 5,
         "block_separator": "─",
@@ -237,6 +251,7 @@ class UIConfig:
 
     def __init__(self) -> None:
         self._data: dict[str, Any] | None = None
+        self._load_failed = False
         self._lock = threading.RLock()
 
     def _ensure_loaded(self) -> dict[str, Any]:
@@ -248,6 +263,7 @@ class UIConfig:
             except Exception as e:
                 _log.warning("ui_config: failed to create BASE_DIR: %s", e)
 
+            self._load_failed = False
             if not UI_FILE.exists():
                 self._write_defaults()
                 self._data = deepcopy(DEFAULTS)
@@ -258,12 +274,16 @@ class UIConfig:
                     user_data = json.load(f)
                 if not isinstance(user_data, dict):
                     _log.warning("ui_config: %s is not a dict, using defaults", UI_FILE)
+                    self._load_failed = True
                     self._data = deepcopy(DEFAULTS)
                 else:
                     # Мержим, чтобы новые ключи из DEFAULTS подтянулись автоматически
                     self._data = _deep_merge(DEFAULTS, user_data)
             except (json.JSONDecodeError, OSError) as e:
-                _log.error("ui_config: failed to read %s: %s — using defaults", UI_FILE, e)
+                _log.error(
+                    "ui_config: failed to read %s: %s — using defaults", UI_FILE, e
+                )
+                self._load_failed = True
                 self._data = deepcopy(DEFAULTS)
             return self._data
 
@@ -274,7 +294,7 @@ class UIConfig:
             _log.error("ui_config: failed to write defaults to %s: %s", UI_FILE, e)
 
     def get(self, path: str, default: Any = None) -> Any:
-        """Dotted path: ui.get('tools.shell.emoji', '⏺')."""
+        """Dotted path: ui.get('tools.shell.emoji', '●')."""
         data = self._ensure_loaded()
         cur: Any = data
         for part in path.split("."):
@@ -282,6 +302,45 @@ class UIConfig:
                 return default
             cur = cur[part]
         return deepcopy(cur) if isinstance(cur, (dict, list, set)) else cur
+
+    def default(self, path: str, default: Any = None) -> Any:
+        """Return a value from built-in defaults by dotted path."""
+        cur: Any = DEFAULTS
+        for part in path.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                return default
+            cur = cur[part]
+        return deepcopy(cur) if isinstance(cur, (dict, list, set)) else cur
+
+    def set(self, path: str, value: Any) -> None:
+        """Persist one UI value and make it effective immediately."""
+        if not path or path.startswith("_"):
+            raise ValueError("invalid UI setting path")
+        with self._lock:
+            current = self._ensure_loaded()
+            if self._load_failed:
+                _log.error("refusing to overwrite unreadable UI config: %s", UI_FILE)
+                return
+            data = deepcopy(current)
+            parts = path.split(".")
+            cur = data
+            for part in parts[:-1]:
+                child = cur.get(part)
+                if not isinstance(child, dict):
+                    child = {}
+                    cur[part] = child
+                cur = child
+            cur[parts[-1]] = deepcopy(value)
+            atomic_write_json(UI_FILE, data)
+            self._data = data
+
+    def reset(self, path: str) -> None:
+        """Reset one UI value to the built-in default."""
+        marker = object()
+        value = self.default(path, marker)
+        if value is marker:
+            raise KeyError(path)
+        self.set(path, value)
 
     def tool(self, tool_name: str) -> dict[str, str]:
         """Возвращает {label, emoji, color_role} для инструмента."""
@@ -292,11 +351,15 @@ class UIConfig:
 
     def mcp_display(self, server: str, tool: str) -> dict[str, str]:
         """Возвращает display для MCP-инструмента (с подстановкой server/tool)."""
-        tpl = self._ensure_loaded().get("tools", {}).get("_mcp", DEFAULTS["tools"]["_mcp"])
+        tpl = (
+            self._ensure_loaded()
+            .get("tools", {})
+            .get("_mcp", DEFAULTS["tools"]["_mcp"])
+        )
         label = tpl.get("label", "{server}.{tool}").format(server=server, tool=tool)
         return {
             "label": label,
-            "emoji": tpl.get("emoji", "🔌"),
+            "emoji": tpl.get("emoji", "⌁"),
             "color_role": tpl.get("color_role", "magenta"),
         }
 

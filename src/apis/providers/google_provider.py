@@ -73,10 +73,16 @@ class GoogleGeminiProvider(BaseProvider):
                         if url.startswith("data:"):
                             try:
                                 header, b64 = url.split(",", 1)
-                                media = header.split(";")[0].replace("data:", "") or "image/png"
+                                media = (
+                                    header.split(";")[0].replace("data:", "")
+                                    or "image/png"
+                                )
                                 parts.append(
                                     {
-                                        "inline_data": {"mime_type": media, "data": b64},
+                                        "inline_data": {
+                                            "mime_type": media,
+                                            "data": b64,
+                                        },
                                     }
                                 )
                             except ValueError:
@@ -127,7 +133,9 @@ class GoogleGeminiProvider(BaseProvider):
             if isinstance(msg, ToolMessage):
                 try:
                     response_obj: Any = (
-                        json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                        json.loads(msg.content)
+                        if isinstance(msg.content, str)
+                        else msg.content
                     )
                 except json.JSONDecodeError:
                     response_obj = {"result": msg.content}
@@ -149,7 +157,9 @@ class GoogleGeminiProvider(BaseProvider):
                 continue
 
             # fallback
-            contents.append({"role": "user", "parts": self._content_to_parts(msg.content)})
+            contents.append(
+                {"role": "user", "parts": self._content_to_parts(msg.content)}
+            )
 
         system_instruction = None
         if system_parts:
@@ -167,7 +177,8 @@ class GoogleGeminiProvider(BaseProvider):
             decl = {
                 "name": name,
                 "description": fn.get("description", "") or "",
-                "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+                "parameters": fn.get("parameters")
+                or {"type": "object", "properties": {}},
             }
             declarations.append(decl)
         if not declarations:
@@ -218,7 +229,9 @@ class GoogleGeminiProvider(BaseProvider):
         data = await self._http_post_raw(body, stream=False)
         return self._parse_gemini_response(data)
 
-    async def astream(self, messages: list[BaseMessage], **kwargs) -> AsyncIterator[AIMessageChunk]:
+    async def astream(
+        self, messages: list[BaseMessage], **kwargs
+    ) -> AsyncIterator[AIMessageChunk]:
         self._reset_api_credential_index()
         sys_inst, contents = self._convert_messages_gemini(messages)
         body: dict[str, Any] = {
@@ -251,6 +264,8 @@ class GoogleGeminiProvider(BaseProvider):
                         rate_limit_rotations,
                     )
                     continue
+                if yielded_any:
+                    raise
                 if attempt < self.max_retries - 1:
                     delay = self._calc_backoff(attempt)
                     logger.warning(
@@ -261,6 +276,8 @@ class GoogleGeminiProvider(BaseProvider):
                 attempt += 1
             except (asyncio.TimeoutError, httpx.TimeoutException) as e:
                 last_error = TimeoutError(f"Stream timeout: {e}")
+                if yielded_any:
+                    raise last_error from e
                 if attempt < self.max_retries - 1:
                     delay = self._calc_backoff(attempt)
                     logger.warning(
@@ -269,7 +286,11 @@ class GoogleGeminiProvider(BaseProvider):
                     )
                     await asyncio.sleep(delay)
                 attempt += 1
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ProtocolError) as e:
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.ProtocolError,
+            ) as e:
                 # Сервер оборвал SSE-стрим. Если уже наpyield'или часть —
                 # повтор приведёт к дублированию, поэтому пробрасываем выше.
                 if yielded_any:
@@ -293,10 +314,14 @@ class GoogleGeminiProvider(BaseProvider):
             f"{self._provider_name} stream error after {self.max_retries} attempts: {last_error}"
         )
 
-    async def _astream_gemini(self, body: dict[str, Any]) -> AsyncIterator[AIMessageChunk]:
+    async def _astream_gemini(
+        self, body: dict[str, Any]
+    ) -> AsyncIterator[AIMessageChunk]:
         proxy = self._get_proxy() or None
         dynamic_timeout = self._calc_timeout({"messages": body.get("contents", [])})
-        client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(dynamic_timeout, connect=30.0)}
+        client_kwargs: dict[str, Any] = {
+            "timeout": httpx.Timeout(dynamic_timeout, connect=30.0)
+        }
         if proxy:
             client_kwargs["proxy"] = proxy
 
@@ -306,7 +331,9 @@ class GoogleGeminiProvider(BaseProvider):
         await self._throttle_rpm()
         client_kwargs.setdefault(
             "limits",
-            httpx.Limits(max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0),
+            httpx.Limits(
+                max_connections=5, max_keepalive_connections=2, keepalive_expiry=5.0
+            ),
         )
         async with (
             httpx.AsyncClient(**client_kwargs) as client,
@@ -330,6 +357,8 @@ class GoogleGeminiProvider(BaseProvider):
                 )
 
             line_buffer = ""
+            saw_terminal = False
+            latest_usage: dict[str, Any] = {}
             async for raw_bytes in resp.aiter_bytes():
                 line_buffer += raw_bytes.decode("utf-8", errors="ignore")
                 while "\n" in line_buffer:
@@ -345,9 +374,30 @@ class GoogleGeminiProvider(BaseProvider):
                     except json.JSONDecodeError:
                         continue
 
+                    error = event.get("error")
+                    if isinstance(error, dict):
+                        raw_code = error.get("code")
+                        try:
+                            code = int(raw_code)
+                        except (TypeError, ValueError):
+                            code = None
+                        message = error.get("message") or str(error)
+                        if code in self._RETRYABLE_STATUS_CODES:
+                            raise _RetryableStreamError(
+                                code,
+                                f"{self._provider_name} stream error: {message}",
+                            )
+                        raise ValueError(
+                            f"{self._provider_name} stream error: {message}"
+                        )
+
                     candidates = event.get("candidates") or []
+                    finish_reason = None
                     if candidates:
                         cand = candidates[0]
+                        finish_reason = cand.get("finishReason")
+                        if finish_reason:
+                            saw_terminal = True
                         content = cand.get("content") or {}
                         for part in content.get("parts") or []:
                             if not isinstance(part, dict):
@@ -367,7 +417,9 @@ class GoogleGeminiProvider(BaseProvider):
                                             "index": tc_index,
                                             "id": f"call_gemini_{tc_index}",
                                             "name": name,
-                                            "args": json.dumps(args_obj) if args_obj else "{}",
+                                            "args": json.dumps(args_obj)
+                                            if args_obj
+                                            else "{}",
                                         }
                                     ],
                                 )
@@ -375,12 +427,35 @@ class GoogleGeminiProvider(BaseProvider):
 
                     usage = event.get("usageMetadata")
                     if usage:
+                        latest_usage = self._convert_usage_gemini(usage)
+                    if usage or finish_reason:
                         yield AIMessageChunk(
                             content="",
-                            usage_metadata=self._convert_usage_gemini(usage),
+                            usage_metadata=latest_usage if usage else {},
+                            response_metadata=(
+                                {
+                                    "finish_reason": finish_reason,
+                                    "stream_complete": True,
+                                }
+                                if finish_reason
+                                else {}
+                            ),
                         )
 
-    async def _http_post_raw(self, body: dict[str, Any], stream: bool = False) -> dict[str, Any]:
+            if not saw_terminal:
+                yield AIMessageChunk(
+                    content="",
+                    usage_metadata=latest_usage,
+                    response_metadata={
+                        "finish_reason": None,
+                        "stream_complete": False,
+                        "stream_incomplete": True,
+                    },
+                )
+
+    async def _http_post_raw(
+        self, body: dict[str, Any], stream: bool = False
+    ) -> dict[str, Any]:
         name = self._provider_name
         url = self._endpoint(stream=stream)
         dynamic_timeout = self._calc_timeout({"messages": body.get("contents", [])})
@@ -417,7 +492,9 @@ class GoogleGeminiProvider(BaseProvider):
                             continue
                         break
                 if resp.status_code == 429:
-                    last_error = ValueError(f"{name} API Error {resp.status_code}: {resp.text}")
+                    last_error = ValueError(
+                        f"{name} API Error {resp.status_code}: {resp.text}"
+                    )
                     rate_limit_rotations = await self._handle_rate_limit(
                         resp.status_code,
                         last_error,
@@ -425,7 +502,9 @@ class GoogleGeminiProvider(BaseProvider):
                     )
                     continue
                 if resp.status_code in self._RETRYABLE_STATUS_CODES:
-                    last_error = ValueError(f"{name} API Error {resp.status_code}: {resp.text}")
+                    last_error = ValueError(
+                        f"{name} API Error {resp.status_code}: {resp.text}"
+                    )
                     delay = self._calc_backoff(attempt)
                     logger.warning(
                         f"{name} HTTP {resp.status_code} | "
@@ -456,7 +535,9 @@ class GoogleGeminiProvider(BaseProvider):
                 if attempt < self.max_retries:
                     await asyncio.sleep(delay)
 
-        raise ValueError(f"{name} API Error after {self.max_retries} attempts: {last_error}")
+        raise ValueError(
+            f"{name} API Error after {self.max_retries} attempts: {last_error}"
+        )
 
     def _parse_gemini_response(self, data: dict[str, Any]) -> AIMessage:
         candidates = data.get("candidates") or []

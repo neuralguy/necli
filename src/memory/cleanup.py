@@ -56,6 +56,13 @@ def _prompt(catalog: str) -> str:
 
 async def maybe_cleanup_memories(working_dir: str | None = None) -> int:
     """Run a best-effort cleanup at most once every three days."""
+    try:
+        from config.settings import get
+
+        if not bool(get("memory_enabled", True)):
+            return 0
+    except Exception:
+        pass
     if not cleanup_due():
         return 0
     catalog = _catalog(working_dir)

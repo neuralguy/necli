@@ -10,7 +10,11 @@ import re
 import zipfile
 
 from .blank import BLANK_NUMBERING_XML, abstract_num_xml
-from .chart import CHART_WORKBOOK_REL_TYPE, build_chart_part_xml, build_chart_workbook_xlsx
+from .chart import (
+    CHART_WORKBOOK_REL_TYPE,
+    build_chart_part_xml,
+    build_chart_workbook_xlsx,
+)
 from .generate import apply_image_wrap, generate_paragraph_xml, inline_runs_xml
 from .ink import (
     INK_MEDIA_PATH_RE,
@@ -31,8 +35,16 @@ from .models import (
     SourceInfo,
 )
 from .notes import NOTE_CONTENT_TYPE, NOTE_PART_PATH, NOTE_REL_TYPE, build_notes_xml
-from .section import apply_page_num_type, apply_section_settings, apply_section_start_type
-from .sources import CUSTOM_XML_REL_TYPE, build_sources_item_props_xml, build_sources_xml
+from .section import (
+    apply_page_num_type,
+    apply_section_settings,
+    apply_section_start_type,
+)
+from .sources import (
+    CUSTOM_XML_REL_TYPE,
+    build_sources_item_props_xml,
+    build_sources_xml,
+)
 from .text_patch import patch_paragraph_texts
 from .theme import (
     THEME_CONTENT_TYPE,
@@ -45,17 +57,31 @@ from .theme import (
 from .watermark import WATERMARK_NS, watermark_paragraph_xml
 from .xml_utils import escape_xml_attr, escape_xml_text
 
-HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
-IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+HYPERLINK_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+)
+IMAGE_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+)
 HF_REL_TYPE = {
     "header": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header",
     "footer": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer",
 }
-NUMBERING_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"
-COMMENTS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
-COMMENTS_EXT_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
-SETTINGS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
-CHART_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+NUMBERING_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"
+)
+COMMENTS_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+)
+COMMENTS_EXT_REL_TYPE = (
+    "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+)
+SETTINGS_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+)
+CHART_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+)
 CHART_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 CORE_PROPS_PATH = "docProps/core.xml"
@@ -182,7 +208,9 @@ def _build_comments_xml(comments, original_xml=None):
         paras = []
         for i, line in enumerate(lines):
             pid = (
-                f' w14:paraId="{escape_xml_attr(c_para)}"' if i == len(lines) - 1 and c_para else ""
+                f' w14:paraId="{escape_xml_attr(c_para)}"'
+                if i == len(lines) - 1 and c_para
+                else ""
             )
             paras.append(
                 f'<w:p{pid}><w:r><w:t xml:space="preserve">{escape_xml_text(line)}</w:t></w:r></w:p>'
@@ -241,7 +269,11 @@ def _header_footer_part_xml(kind, hf, watermark=None, original_xml=None):
     root = "w:hdr" if kind == "header" else "w:ftr"
 
     def text_run(t):
-        return f'<w:r><w:t xml:space="preserve">{escape_xml_text(t)}</w:t></w:r>' if t else ""
+        return (
+            f'<w:r><w:t xml:space="preserve">{escape_xml_text(t)}</w:t></w:r>'
+            if t
+            else ""
+        )
 
     page_field = (
         '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
@@ -256,22 +288,40 @@ def _header_footer_part_xml(kind, hf, watermark=None, original_xml=None):
         '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
     )
     text = hf.get("text", "") if isinstance(hf, dict) else hf.text
-    page_number = hf.get("pageNumber") if isinstance(hf, dict) else getattr(hf, "page_number", None)
+    page_number = (
+        hf.get("pageNumber")
+        if isinstance(hf, dict)
+        else getattr(hf, "page_number", None)
+    )
     paras = hf.get("paras") if isinstance(hf, dict) else getattr(hf, "paras", None)
     if paras:
         page_emitted = not page_number
         parts = []
         for para in paras:
-            align = para.get("align") if isinstance(para, dict) else getattr(para, "align", None)
+            align = (
+                para.get("align")
+                if isinstance(para, dict)
+                else getattr(para, "align", None)
+            )
             jc_val = "both" if align == "justify" else align
-            jc = f'<w:pPr><w:jc w:val="{escape_xml_attr(jc_val)}"/></w:pPr>' if jc_val else ""
+            jc = (
+                f'<w:pPr><w:jc w:val="{escape_xml_attr(jc_val)}"/></w:pPr>'
+                if jc_val
+                else ""
+            )
             runs_xml = ""
-            runs = para.get("runs", []) if isinstance(para, dict) else getattr(para, "runs", [])
+            runs = (
+                para.get("runs", [])
+                if isinstance(para, dict)
+                else getattr(para, "runs", [])
+            )
             for run in runs:
                 run_model = (
                     run
                     if isinstance(run, Run)
-                    else _coerce_generated_block({"type": "paragraph", "runs": [run]}).runs[0]
+                    else _coerce_generated_block(
+                        {"type": "paragraph", "runs": [run]}
+                    ).runs[0]
                 )
                 r_text = run_model.text
 
@@ -326,7 +376,9 @@ def _header_footer_part_xml(kind, hf, watermark=None, original_xml=None):
             if page_number:
                 runs.append(page_field)
         content = f'<w:p><w:pPr><w:jc w:val="center"/></w:pPr>{"".join(runs)}</w:p>'
-    watermark_xml = watermark_paragraph_xml(watermark) if kind == "header" and watermark else ""
+    watermark_xml = (
+        watermark_paragraph_xml(watermark) if kind == "header" and watermark else ""
+    )
     body = watermark_xml + content
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
@@ -363,14 +415,18 @@ def _apply_protection(xml, protection):
     if protection:
         edit = str(protection.get("edit", "readOnly"))
         if edit not in {"readOnly", "comments", "trackedChanges", "forms"}:
-            raise ValueError("protection edit must be readOnly, comments, trackedChanges, or forms")
+            raise ValueError(
+                "protection edit must be readOnly, comments, trackedChanges, or forms"
+            )
         crypt = ""
         if protection.get("hash"):
             try:
                 spin = int(protection.get("spinCount", 100000))
                 sid = int(protection.get("algorithmSid", 14))
             except (TypeError, ValueError) as exc:
-                raise ValueError("protection spinCount/algorithmSid must be integers") from exc
+                raise ValueError(
+                    "protection spinCount/algorithmSid must be integers"
+                ) from exc
             if not 0 <= spin <= 10_000_000:
                 raise ValueError("protection spinCount must be between 0 and 10000000")
             if sid < 0:
@@ -381,7 +437,9 @@ def _apply_protection(xml, protection):
                     try:
                         base64.b64decode(str(value), validate=True)
                     except Exception as exc:
-                        raise ValueError(f"protection {field} must be valid base64") from exc
+                        raise ValueError(
+                            f"protection {field} must be valid base64"
+                        ) from exc
             crypt = (
                 ' w:cryptProviderType="rsaAES" w:cryptAlgorithmClass="hash" w:cryptAlgorithmType="typeAny"'
                 f' w:cryptAlgorithmSid="{sid}"'
@@ -415,7 +473,11 @@ def _apply_title_pg(sect_pr_xml, on):
 
 def _apply_even_odd(xml, on):
     out = re.sub(r"<w:evenAndOddHeaders[^>]*/>", "", xml)
-    return re.sub(r"(<w:settings[^>]*>)", r"\1<w:evenAndOddHeaders/>", out, count=1) if on else out
+    return (
+        re.sub(r"(<w:settings[^>]*>)", r"\1<w:evenAndOddHeaders/>", out, count=1)
+        if on
+        else out
+    )
 
 
 def _apply_page_color(document_xml, color):
@@ -430,7 +492,9 @@ def _apply_page_color(document_xml, color):
             value = value.upper()
         xml = re.sub(
             r"(<w:document[^>]*>)",
-            lambda m: m.group(1) + f'<w:background w:color="{escape_xml_attr(value)}"/>',
+            lambda m: (
+                m.group(1) + f'<w:background w:color="{escape_xml_attr(value)}"/>'
+            ),
             xml,
             count=1,
         )
@@ -471,7 +535,9 @@ def _build_style_xml(up):
         if sp.get("spaceAfterTwips") is not None:
             attrs.append(f' w:after="{int(sp["spaceAfterTwips"])}"')
         if sp.get("lineSpacing") is not None:
-            attrs.append(f' w:line="{round(float(sp["lineSpacing"]) * 240)}" w:lineRule="auto"')
+            attrs.append(
+                f' w:line="{round(float(sp["lineSpacing"]) * 240)}" w:lineRule="auto"'
+            )
         p_pr.append(f"<w:spacing{''.join(attrs)}/>")
     if sp.get("align"):
         jc = "both" if sp["align"] == "justify" else sp["align"]
@@ -482,7 +548,11 @@ def _build_style_xml(up):
     return (
         f'<w:style w:type="{escape_xml_attr(style_type)}" w:styleId="{escape_xml_attr(up["styleId"])}" w:customStyle="1">'
         f'<w:name w:val="{escape_xml_attr(up["name"])}"/>'
-        + (f'<w:basedOn w:val="{escape_xml_attr(up["basedOn"])}"/>' if up.get("basedOn") else "")
+        + (
+            f'<w:basedOn w:val="{escape_xml_attr(up["basedOn"])}"/>'
+            if up.get("basedOn")
+            else ""
+        )
         + "<w:qFormat/>"
         + (f"<w:pPr>{''.join(p_pr)}</w:pPr>" if p_pr else "")
         + (f"<w:rPr>{''.join(r_pr)}</w:rPr>" if r_pr else "")
@@ -558,12 +628,16 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
     next_rel = _max_rel_id(rels_xml) + 1
 
     def alloc_hyperlink(href):
-        existing = next((r for r in new_rels if r["external"] and r["target"] == href), None)
+        existing = next(
+            (r for r in new_rels if r["external"] and r["target"] == href), None
+        )
         if existing:
             return existing["rId"]
         nonlocal_holder[0] += 1
         r_id = f"rId{nonlocal_holder[0]}"
-        new_rels.append({"rId": r_id, "type": HYPERLINK_REL_TYPE, "target": href, "external": True})
+        new_rels.append(
+            {"rId": r_id, "type": HYPERLINK_REL_TYPE, "target": href, "external": True}
+        )
         return r_id
 
     nonlocal_holder = [next_rel - 1]
@@ -619,7 +693,11 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
         cx = max(1, round(width_px * EMU_PER_PX))
         cy = max(1, round(height_px * EMU_PER_PX))
         doc_pr_id = 9000 + image_seq
-        p_pr = f'<w:pPr><w:jc w:val="{align}"/></w:pPr>' if align and align != "left" else ""
+        p_pr = (
+            f'<w:pPr><w:jc w:val="{align}"/></w:pPr>'
+            if align and align != "left"
+            else ""
+        )
         xml = (
             f'<w:p>{p_pr}<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
             f'<wp:extent cx="{cx}" cy="{cy}"/>'
@@ -664,7 +742,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             f'<Relationship Id="{wb_r_id}" Type="{CHART_WORKBOOK_REL_TYPE}" '
             f'Target="embeddings/workbook{n}.xlsx"/></Relationships>'
         )
-        new_chart_parts.append({"path": path, "xml": build_chart_part_xml(chart, wb_r_id)})
+        new_chart_parts.append(
+            {"path": path, "xml": build_chart_part_xml(chart, wb_r_id)}
+        )
         new_chart_wbs.append(
             {
                 "xlsxPath": f"word/charts/embeddings/workbook{n}.xlsx",
@@ -708,7 +788,11 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
         return anchored_ink_run_xml(ink, r_id, 9000 + ink_seq[0])
 
     sect_block = next(
-        (b for b in parsed.blocks if b.hidden and b.original_xml and "<w:sectPr" in b.original_xml),
+        (
+            b
+            for b in parsed.blocks
+            if b.hidden and b.original_xml and "<w:sectPr" in b.original_xml
+        ),
         None,
     )
     trailing_sect = sect_block.original_xml if sect_block else ""
@@ -722,7 +806,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
     hf_ref_tags = []
     hf_overrides = []
 
-    def plan_header_footer(kind, hf, watermark=None, hf_type="default", watermark_only=False):
+    def plan_header_footer(
+        kind, hf, watermark=None, hf_type="default", watermark_only=False
+    ):
         if hf is None and watermark is None and not watermark_only:
             return
         refs = re.findall(rf"<w:{kind}Reference[^>]*/>", trailing_sect)
@@ -737,7 +823,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             import posixpath
 
             path = posixpath.normpath(
-                target.lstrip("/") if target.startswith("/") else posixpath.join("word", target)
+                target.lstrip("/")
+                if target.startswith("/")
+                else posixpath.join("word", target)
             )
             try:
                 original_xml = zf.read(path).decode("utf-8")
@@ -767,20 +855,31 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             nonlocal_holder[0] += 1
             new_r_id = f"rId{nonlocal_holder[0]}"
             new_rels.append(
-                {"rId": new_r_id, "type": HF_REL_TYPE[kind], "target": filename, "external": False}
+                {
+                    "rId": new_r_id,
+                    "type": HF_REL_TYPE[kind],
+                    "target": filename,
+                    "external": False,
+                }
             )
             hf_parts.append({"path": f"word/{filename}", "xml": part_xml})
-            hf_ref_tags.append(f'<w:{kind}Reference w:type="{hf_type}" r:id="{new_r_id}"/>')
+            hf_ref_tags.append(
+                f'<w:{kind}Reference w:type="{hf_type}" r:id="{new_r_id}"/>'
+            )
             hf_overrides.append(
                 f'<Override PartName="/word/{filename}" '
                 f'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml"/>'
             )
 
     effective_watermark = (
-        options["watermark"] if options.get("watermark") is not None else parsed.watermark_text
+        options["watermark"]
+        if options.get("watermark") is not None
+        else parsed.watermark_text
     )
     if options.get("header") is not None:
-        plan_header_footer("header", options["header"], effective_watermark, "default", False)
+        plan_header_footer(
+            "header", options["header"], effective_watermark, "default", False
+        )
     elif options.get("watermark") is not None:
         plan_header_footer("header", None, effective_watermark, "default", True)
     if options.get("footer") is not None:
@@ -797,9 +896,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
     numbering_path = "word/numbering.xml"
     numbering_out = None
     numbering_is_new = False
-    if (options.get("numbering") or {}).get("newDefs") or (options.get("numbering") or {}).get(
-        "restartNums"
-    ):
+    if (options.get("numbering") or {}).get("newDefs") or (
+        options.get("numbering") or {}
+    ).get("restartNums"):
         try:
             xml = zf.read(numbering_path).decode("utf-8")
         except KeyError:
@@ -825,7 +924,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             try:
                 num_id = int(d["numId"])
             except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError("numbering numId must be a non-negative integer") from exc
+                raise ValueError(
+                    "numbering numId must be a non-negative integer"
+                ) from exc
             if num_id < 0:
                 raise ValueError("numbering numId must be a non-negative integer")
             kind = str(d.get("kind", "ordered"))
@@ -844,16 +945,22 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
                     "restartNums numId/abstractNumId must be non-negative integers"
                 ) from exc
             if num_id < 0 or abstract_id < 0:
-                raise ValueError("restartNums numId/abstractNumId must be non-negative integers")
+                raise ValueError(
+                    "restartNums numId/abstractNumId must be non-negative integers"
+                )
             override_parts = []
             for ilvl, value in (r.get("startOverrides") or {}).items():
                 try:
                     ilvl_i = int(ilvl)
                     start_i = int(value)
                 except (TypeError, ValueError) as exc:
-                    raise ValueError("numbering override levels/starts must be integers") from exc
+                    raise ValueError(
+                        "numbering override levels/starts must be integers"
+                    ) from exc
                 if not 0 <= ilvl_i <= 8 or start_i < 0:
-                    raise ValueError("numbering override level must be 0..8 and start non-negative")
+                    raise ValueError(
+                        "numbering override level must be 0..8 and start non-negative"
+                    )
                 override_parts.append(
                     f'<w:lvlOverride w:ilvl="{ilvl_i}"><w:startOverride w:val="{start_i}"/></w:lvlOverride>'
                 )
@@ -865,7 +972,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             if re.search(r"<w:num[\s>]", xml):
                 xml = re.sub(r"<w:num[\s>]", "".join(abs_xmls) + r"\g<0>", xml, count=1)
             else:
-                xml = xml.replace("</w:numbering>", "".join(abs_xmls) + "</w:numbering>", 1)
+                xml = xml.replace(
+                    "</w:numbering>", "".join(abs_xmls) + "</w:numbering>", 1
+                )
         xml = xml.replace("</w:numbering>", "".join(num_xmls) + "</w:numbering>", 1)
         numbering_out = xml
 
@@ -885,7 +994,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
                 rf'<w:style [^>]*w:styleId="{re.escape(up["styleId"])}"[\s\S]*?</w:style>'
             )
             if existing.search(xml):
-                xml = existing.sub(lambda m, _style_xml=style_xml: _style_xml, xml, count=1)
+                xml = existing.sub(
+                    lambda m, _style_xml=style_xml: _style_xml, xml, count=1
+                )
             else:
                 xml = xml.replace("</w:styles>", style_xml + "</w:styles>", 1)
         styles_out = xml
@@ -934,7 +1045,8 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
                 }
             )
         need_ext = comments_ext_path in zf.namelist() or any(
-            getattr(c, "parent_id", None) is not None or getattr(c, "done", False) for c in with_ids
+            getattr(c, "parent_id", None) is not None or getattr(c, "done", False)
+            for c in with_ids
         )
         if need_ext:
             comments_ext_xml = _build_comments_extended(with_ids)
@@ -1015,7 +1127,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
                 if "Sources" in xml:
                     existing = name
                     break
-        xml = build_sources_xml(source_models, zf.read(existing).decode() if existing else None)
+        xml = build_sources_xml(
+            source_models, zf.read(existing).decode() if existing else None
+        )
         if existing:
             n = re.search(r"item(\d+)\.xml$", existing).group(1)
             sources_part = {
@@ -1057,7 +1171,11 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             theme_part = {
                 "xml": build_theme_xml(
                     options.get("themeFonts")
-                    or {"major": "Times New Roman", "minor": "Times New Roman", "eastAsia": ""},
+                    or {
+                        "major": "Times New Roman",
+                        "minor": "Times New Roman",
+                        "eastAsia": "",
+                    },
                     options.get("themeColors") or {},
                 ),
                 "isNew": True,
@@ -1110,7 +1228,11 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
                 attrs = (
                     f' w:id="{escape_xml_attr(rev.get("id") or "0")}"'
                     f' w:author="{escape_xml_attr(rev.get("author") or "")}"'
-                    + (f' w:date="{escape_xml_attr(rev["date"])}"' if rev.get("date") else "")
+                    + (
+                        f' w:date="{escape_xml_attr(rev["date"])}"'
+                        if rev.get("date")
+                        else ""
+                    )
                 )
                 xml = f"<w:{rev_kind}{attrs}>{xml}</w:{rev_kind}>"
         parts.append(xml)
@@ -1126,16 +1248,24 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
                     xml = apply_section_start_type(xml, options["sectionStartType"])
                 if options.get("pgNumType") is not None:
                     xml = apply_page_num_type(
-                        xml, options["pgNumType"].get("fmt"), options["pgNumType"].get("start")
+                        xml,
+                        options["pgNumType"].get("fmt"),
+                        options["pgNumType"].get("start"),
                     )
                 if options.get("titlePg") is not None:
                     xml = _apply_title_pg(xml, options["titlePg"])
                 if hf_ref_tags:
-                    xml = re.sub(r"(<w:sectPr[^>]*>)", r"\1" + "".join(hf_ref_tags), xml, count=1)
+                    xml = re.sub(
+                        r"(<w:sectPr[^>]*>)", r"\1" + "".join(hf_ref_tags), xml, count=1
+                    )
             parts.append(xml)
 
-    new_document_xml = document_xml[:body_start] + "".join(parts) + document_xml[body_end:]
-    if "<m:" in new_document_xml and not re.search(r"<w:document[^>]*xmlns:m=", new_document_xml):
+    new_document_xml = (
+        document_xml[:body_start] + "".join(parts) + document_xml[body_end:]
+    )
+    if "<m:" in new_document_xml and not re.search(
+        r"<w:document[^>]*xmlns:m=", new_document_xml
+    ):
         new_document_xml = new_document_xml.replace(
             "<w:document ",
             '<w:document xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" ',
@@ -1171,7 +1301,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             )
         touched = False
         if options.get("pageColor") and "<w:displayBackgroundShape" not in xml:
-            xml = re.sub(r"(<w:settings[^>]*>)", r"\1<w:displayBackgroundShape/>", xml, count=1)
+            xml = re.sub(
+                r"(<w:settings[^>]*>)", r"\1<w:displayBackgroundShape/>", xml, count=1
+            )
             touched = True
         if options.get("protection") is not None:
             xml = _apply_protection(xml, options["protection"])
@@ -1228,14 +1360,20 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             if not re.search(rf'Extension="{ext}"', content_types_xml):
                 mime = IMAGE_CONTENT_TYPE.get(ext)
                 if not mime:
-                    raise ValueError(f"no content type registered for image extension: {ext}")
+                    raise ValueError(
+                        f"no content type registered for image extension: {ext}"
+                    )
                 content_types_xml = content_types_xml.replace(
-                    "</Types>", f'<Default Extension="{ext}" ContentType="{mime}"/></Types>', 1
+                    "</Types>",
+                    f'<Default Extension="{ext}" ContentType="{mime}"/></Types>',
+                    1,
                 )
         for override in hf_overrides:
             pn = re.search(r'PartName="([^"]+)"', override).group(1)
             if f'PartName="{pn}"' not in content_types_xml:
-                content_types_xml = content_types_xml.replace("</Types>", override + "</Types>", 1)
+                content_types_xml = content_types_xml.replace(
+                    "</Types>", override + "</Types>", 1
+                )
         if comments_is_new:
             add_override(
                 "/word/comments.xml",
@@ -1302,7 +1440,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
             elif name == styles_path and styles_out is not None:
                 oz.writestr(name, styles_out)
             elif any(p["path"] == name for p in notes_parts):
-                oz.writestr(name, next(p["xml"] for p in notes_parts if p["path"] == name))
+                oz.writestr(
+                    name, next(p["xml"] for p in notes_parts if p["path"] == name)
+                )
             elif sources_part and name == sources_part["path"]:
                 oz.writestr(name, sources_part["xml"])
             elif theme_part and name == THEME_PART_PATH:
@@ -1344,7 +1484,9 @@ def save_docx(parsed, final_blocks: list[dict], options: dict | None = None) -> 
         if sources_part and sources_part["isNew"]:
             oz.writestr(sources_part["path"], sources_part["xml"])
             oz.writestr(sources_part["propsPath"], build_sources_item_props_xml())
-            rels_name = sources_part["path"].replace("customXml/", "", 1).replace(".xml", "")
+            rels_name = (
+                sources_part["path"].replace("customXml/", "", 1).replace(".xml", "")
+            )
             oz.writestr(
                 f"customXml/_rels/{rels_name}.xml.rels",
                 '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
@@ -1391,7 +1533,9 @@ def _coerce_generated_block(d: dict) -> GeneratedBlock:
                     color=r.get("color"),
                     size_half_points=pick(r, "size_half_points", "sizeHalfPoints"),
                     font=r.get("font"),
-                    char_spacing_twips=pick(r, "char_spacing_twips", "charSpacingTwips"),
+                    char_spacing_twips=pick(
+                        r, "char_spacing_twips", "charSpacingTwips"
+                    ),
                     char_scale_pct=pick(r, "char_scale_pct", "charScalePct"),
                     highlight=r.get("highlight"),
                     vert_align=pick(r, "vert_align", "vertAlign"),

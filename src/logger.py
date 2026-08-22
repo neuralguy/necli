@@ -16,6 +16,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -117,8 +118,12 @@ def bind(**fields: Any) -> None:
         session_id=fields.get("session", ctx.session_id) or ctx.session_id,
         turn=fields.get("turn", ctx.turn) if "turn" in fields else ctx.turn,
         round=fields.get("round", ctx.round) if "round" in fields else ctx.round,
-        request=fields.get("request", ctx.request) if "request" in fields else ctx.request,
-        subagent=fields.get("subagent", ctx.subagent) if "subagent" in fields else ctx.subagent,
+        request=fields.get("request", ctx.request)
+        if "request" in fields
+        else ctx.request,
+        subagent=fields.get("subagent", ctx.subagent)
+        if "subagent" in fields
+        else ctx.subagent,
         tool_call=fields.get("tool_call", ctx.tool_call)
         if "tool_call" in fields
         else ctx.tool_call,
@@ -127,7 +132,8 @@ def bind(**fields: Any) -> None:
             **{
                 k: v
                 for k, v in fields.items()
-                if k not in ("session", "turn", "round", "request", "subagent", "tool_call")
+                if k
+                not in ("session", "turn", "round", "request", "subagent", "tool_call")
             },
         },
     )
@@ -220,7 +226,9 @@ def _format_human(event_name: str, fields: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _emit_event(level: str, event_name: str, depth: int, fields: dict[str, Any]) -> None:
+def _emit_event(
+    level: str, event_name: str, depth: int, fields: dict[str, Any]
+) -> None:
     data = _build_fields(event_name, **fields)
     msg = _format_human(event_name, data)
     _loguru_logger.opt(depth=depth).bind(structured=data).log(level.upper(), msg)
@@ -259,13 +267,37 @@ def should_log_payloads() -> bool:
     return _LOG_PAYLOADS
 
 
+_SECRET_HEADER_RE = re.compile(
+    r"(?im)^(\s*(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*)[^\r\n]*"
+)
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)((?:[\"']?)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|"
+    r"password|passwd|proxy[_-]?password|secret)(?:[\"']?)\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;}]*)"
+)
+_PROXY_PASSWORD_RE = re.compile(
+    r"(?i)(\b[a-z][a-z0-9+.-]*://[^\s/:@]+:)[^\s/@]+(@)"
+)
+_OPENAI_STYLE_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{20,}\b")
+
+
+def _redact_sensitive_text(text: str) -> str:
+    """Best-effort secret redaction for opt-in payload previews."""
+    text = _SECRET_HEADER_RE.sub(r"\1<redacted>", text)
+    text = _SECRET_ASSIGNMENT_RE.sub(r"\1<redacted>", text)
+    text = _PROXY_PASSWORD_RE.sub(r"\1<redacted>\2", text)
+    text = _OPENAI_STYLE_KEY_RE.sub("<redacted>", text)
+    return _TELEGRAM_BOT_TOKEN_RE.sub("<redacted>", text)
+
+
 def payload_preview(text: Any, max_chars: int = 200) -> str:
-    """Return safe preview of payload. Returns '<payload hidden>' unless NECLI_LOG_PAYLOADS=1."""
+    """Return an opt-in payload preview with credentials always redacted."""
     if not _LOG_PAYLOADS:
         return "<payload hidden>"
     if text is None:
         return ""
-    s = str(text)
+    s = _redact_sensitive_text(str(text))
     if len(s) <= max_chars:
         return s
     return s[:max_chars] + f"...({len(s) - max_chars} more)"
@@ -286,7 +318,9 @@ _SPAN_THRESHOLDS: dict[str, float] = {
 
 
 @contextmanager
-def log_span(name: str, slow_threshold: float | None = None, **fields: Any) -> Iterator[None]:
+def log_span(
+    name: str, slow_threshold: float | None = None, **fields: Any
+) -> Iterator[None]:
     """Time a block and emit DEBUG perf.<name>.start/end + WARNING if slow.
 
     Args:
@@ -303,9 +337,13 @@ def log_span(name: str, slow_threshold: float | None = None, **fields: Any) -> I
         data = {"duration": duration, **fields}
         debug(f"{name}.end", **data)
 
-        threshold = slow_threshold if slow_threshold is not None else _SPAN_THRESHOLDS.get(name)
+        threshold = (
+            slow_threshold if slow_threshold is not None else _SPAN_THRESHOLDS.get(name)
+        )
         if threshold is not None and duration > threshold:
-            warning(f"perf.{name}.slow", duration=duration, threshold=threshold, **fields)
+            warning(
+                f"perf.{name}.slow", duration=duration, threshold=threshold, **fields
+            )
 
 
 # ───────────────────── Event loop stall detector ─────────────────────

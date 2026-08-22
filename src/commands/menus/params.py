@@ -1,4 +1,4 @@
-"""Меню /params: temperature, max_tokens, reasoning effort.
+"""Меню /params: параметры генерации и ожидания stream-чанков.
 
 Текущие значения показываются в шапке виджета и в колонке значений, а не
 печатаются в scrollback перед каждым показом меню. Факт изменения живёт в
@@ -40,6 +40,10 @@ def _fmt_reasoning_effort(v: str) -> str:
     }.get(v, _("params.default_provider"))
 
 
+def _fmt_timeout(v: int) -> str:
+    return f"{v}s"
+
+
 def _validate_temp(raw: str) -> str | None:
     """Проверка живёт в оверлее, а не после него: пользователь видит ошибку
     прямо в поле и правит значение, вместо того чтобы меню закрылось."""
@@ -66,10 +70,21 @@ def _validate_max_tokens(raw: str) -> str | None:
     return None
 
 
+def _validate_timeout(raw: str) -> str | None:
+    try:
+        val = int(raw)
+    except ValueError:
+        return _("params.invalid_int")
+    if val < 1 or val > 3600:
+        return _("params.out_of_range_timeout")
+    return None
+
+
 async def params_interactive() -> None:
     while True:
         temp = config.get("temperature", 0.7)
         max_tok = int(config.get("max_tokens", 0) or 0)
+        idle_timeout = int(config.get("stream_idle_timeout", 180) or 180)
         effort = str(config.get("reasoning_effort", "") or "")
 
         items = [
@@ -84,6 +99,13 @@ async def params_interactive() -> None:
                 "label": _("params.max_tokens"),
                 "hint": _("params.max_tokens_hint"),
                 "badge": _fmt_max_tokens(max_tok),
+                "badge_style": "warning",
+                "action": True,
+            },
+            {
+                "label": _("params.stream_idle_timeout"),
+                "hint": _("params.stream_idle_timeout_hint"),
+                "badge": _fmt_timeout(idle_timeout),
                 "badge_style": "warning",
                 "action": True,
             },
@@ -104,11 +126,12 @@ async def params_interactive() -> None:
                     _("params.header"),
                     f"temperature={_fmt_temp(temp)}",
                     f"max_tokens={_fmt_max_tokens(max_tok)}",
+                    f"idle_timeout={_fmt_timeout(idle_timeout)}",
                     f"effort={_fmt_reasoning_effort(effort)}",
                 )
             ],
         )
-        if choice is None or choice == 3:
+        if choice is None or choice == 4:
             return
 
         if choice == 0:
@@ -142,6 +165,18 @@ async def params_interactive() -> None:
             continue
 
         if choice == 2:
+            raw = await overlays.ask_text(
+                f"{_('params.new_stream_idle_timeout')} "
+                f"({_fmt_timeout(idle_timeout)}):",
+                validate=_validate_timeout,
+            )
+            if not raw:
+                continue
+            config.set_value("stream_idle_timeout", int(raw))
+            invalidate_api_llm()
+            continue
+
+        if choice == 3:
             vals = ["", "low", "medium", "high", "xhigh", "max"]
             items_effort = [
                 {

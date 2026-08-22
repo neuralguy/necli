@@ -60,8 +60,7 @@ def format_session_notes_block(session_dir: str | Path | None) -> str:
         return ""
     if not text or text.strip() == _TEMPLATE.strip():
         return ""
-    if len(text) > _MAX_NOTE_CHARS:
-        text = text[:6000] + "\n\n[... session notes truncated ...]\n\n" + text[-5000:]
+    text = _truncate_notes(text)
     return (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "SESSION NOTES (continuity for long tasks)\n"
@@ -80,7 +79,7 @@ def save_session_notes(session: Any) -> None:
         user_messages[0].content[:80] if user_messages else "Untitled session"
     )
     current = _trim(assistant_messages[-1].content if assistant_messages else "")
-    task_spec = _trim(user_messages[-1].content if user_messages else "")
+    task_spec = _task_spec(user_messages)
     worklog = []
     for msg in messages[-12:]:
         role = getattr(msg, "role", "")
@@ -137,7 +136,28 @@ _Checks run, verifier verdicts, remaining gaps._
 _Step-by-step terse worklog._
 {chr(10).join(worklog) or "(empty)"}
 """
-    atomic_write_text(path, text[-_MAX_NOTE_CHARS:])
+    atomic_write_text(path, _truncate_notes(text))
+
+
+def _truncate_notes(text: str) -> str:
+    """Keep stable task context and the newest worklog when notes exceed the cap."""
+    if len(text) <= _MAX_NOTE_CHARS:
+        return text
+    marker = "\n\n[... session notes truncated ...]\n\n"
+    head = 6000
+    tail = max(_MAX_NOTE_CHARS - head - len(marker), 0)
+    return text[:head].rstrip() + marker + text[-tail:].lstrip()
+
+
+def _task_spec(user_messages: list[Any]) -> str:
+    """Preserve the original task while still recording the latest user correction."""
+    if not user_messages:
+        return ""
+    initial = _trim(getattr(user_messages[0], "content", ""))
+    latest = _trim(getattr(user_messages[-1], "content", ""))
+    if not latest or latest == initial:
+        return initial
+    return f"{initial}\n\nLatest user update: {latest}"
 
 
 def _trim(text: str, limit: int = _MAX_MESSAGE_CHARS) -> str:
@@ -152,7 +172,9 @@ def _extract_file_mentions(text: str) -> list[str]:
 
     seen = set()
     out = []
-    for match in re.findall(r"\b(?:src|tests|docs|scripts)/[A-Za-z0-9_./-]+\.[A-Za-z0-9_]+", text):
+    for match in re.findall(
+        r"\b(?:src|tests|docs|scripts)/[A-Za-z0-9_./-]+\.[A-Za-z0-9_]+", text
+    ):
         if match not in seen:
             seen.add(match)
             out.append(match)

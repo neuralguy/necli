@@ -73,10 +73,14 @@ def copy_to_clipboard(text: str) -> str | None:
                         with contextlib.suppress(Exception):
                             proc.kill()
                     continue
-                logger.info("clipboard.copy: {} ok detached ({} bytes)", name, len(data))
+                logger.info(
+                    "clipboard.copy: {} ok detached ({} bytes)", name, len(data)
+                )
                 return None
             else:
-                r = subprocess.run(cmd, input=data, env=env, capture_output=True, timeout=5)
+                r = subprocess.run(
+                    cmd, input=data, env=env, capture_output=True, timeout=5
+                )
                 if r.returncode == 0:
                     logger.info("clipboard.copy: {} ok ({} bytes)", name, len(data))
                     return None

@@ -26,7 +26,8 @@ def _element_text(element) -> str:
     if element.text is None:
         return ""
     return " / ".join(
-        "".join(run.text for run in paragraph.runs) for paragraph in element.text.paragraphs
+        "".join(run.text for run in paragraph.runs)
+        for paragraph in element.text.paragraphs
     )
 
 
@@ -96,7 +97,9 @@ def _element_json(
     return result
 
 
-def _inspect(document: PptxDocument, slide_index: int | None, include_xml: bool) -> dict[str, Any]:
+def _inspect(
+    document: PptxDocument, slide_index: int | None, include_xml: bool
+) -> dict[str, Any]:
     indexed_slides = (
         list(enumerate(document.deck.slides))
         if slide_index is None
@@ -145,7 +148,9 @@ def _help_text() -> str:
 
 
 def _result(call: ToolCall, output: str) -> ToolResult:
-    return ToolResult(name="pptx", status="ok", output=output, exit_code=0, command=call.command)
+    return ToolResult(
+        name="pptx", status="ok", output=output, exit_code=0, command=call.command
+    )
 
 
 def _operation_batch(args: dict[str, Any], *, required: bool) -> list[dict[str, Any]]:
@@ -203,11 +208,16 @@ def pptx(call: ToolCall) -> ToolResult:
                 int(args.get("height", _DEFAULT_HEIGHT)),
             )
             operations = _operation_batch(args, required=False)
-            results = apply_operations(document, operations, atomic=True) if operations else []
+            results = (
+                apply_operations(document, operations, atomic=True)
+                if operations
+                else []
+            )
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(document.to_bytes())
             return _result(
-                call, f"Created {path} ({len(document.deck.slides)} slides, {len(results)} ops)"
+                call,
+                f"Created {path} ({len(document.deck.slides)} slides, {len(results)} ops)",
             )
 
         document = PptxDocument.open_bytes(path.read_bytes())
@@ -221,28 +231,37 @@ def pptx(call: ToolCall) -> ToolResult:
                     int(slide) if slide is not None else None,
                     bool(args.get("includeXml", False)),
                 )
-            return _result(call, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return _result(
+                call, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            )
 
         if action == "validate":
             required = ["[Content_Types].xml", "_rels/.rels", "ppt/presentation.xml"]
-            missing = [part for part in required if part not in document.archive.entries]
+            missing = [
+                part for part in required if part not in document.archive.entries
+            ]
             payload = {
                 "ok": not missing,
                 "missingParts": missing,
                 "slideCount": len(document.deck.slides),
             }
-            return _result(call, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return _result(
+                call, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            )
 
         if action == "edit":
             operations = _operation_batch(args, required=True)
-            results = apply_operations(document, operations, atomic=bool(args.get("atomic", True)))
+            results = apply_operations(
+                document, operations, atomic=bool(args.get("atomic", True))
+            )
             out = resolve_path(str(args.get("out") or path), extensions=(".pptx",))
             if out.suffix.lower() != ".pptx":
                 out = out.with_suffix(".pptx")
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(document.to_bytes())
             return _result(
-                call, f"Edited {out} ({len(document.deck.slides)} slides, {len(results)} ops)"
+                call,
+                f"Edited {out} ({len(document.deck.slides)} slides, {len(results)} ops)",
             )
 
         slide = int(args.get("slide", 0))
@@ -253,9 +272,13 @@ def pptx(call: ToolCall) -> ToolResult:
             if args.get("out"):
                 out = resolve_path(str(args["out"]), extensions=(".json",))
                 out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(json.dumps(tree, ensure_ascii=False, indent=2), encoding="utf-8")
+                out.write_text(
+                    json.dumps(tree, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
                 return _result(call, f"Rendered slide {slide} to {out}")
-            return _result(call, json.dumps(tree, ensure_ascii=False, separators=(",", ":")))
+            return _result(
+                call, json.dumps(tree, ensure_ascii=False, separators=(",", ":"))
+            )
         if fmt not in {"svg", "png"} or not args.get("out"):
             raise PptxError("render svg/png requires format and out")
         out = resolve_path(str(args["out"]), extensions=(f".{fmt}",))

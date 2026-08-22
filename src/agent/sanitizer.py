@@ -110,7 +110,9 @@ _FAKE_RESULT_PATTERNS = [
     # имитировать в ответе — вырезаем целиком, как tool_result.
     re.compile(r"<tool_output[^>]*>.*?</tool_output>", re.DOTALL | re.IGNORECASE),
     # …без закрывающего тега (обрезанный реплей)
-    re.compile(r"<tool_output[^>]*>(?:(?!</tool_output>).)*$", re.DOTALL | re.IGNORECASE),
+    re.compile(
+        r"<tool_output[^>]*>(?:(?!</tool_output>).)*$", re.DOTALL | re.IGNORECASE
+    ),
     # Фейковые "File created successfully" строки
     re.compile(
         r"\n\s*(?:<[^>]*>)?\s*File (?:created|written|saved|updated|deleted|moved|copied|renamed)\s+successfully[^\n]*",
@@ -341,7 +343,11 @@ def strip_fake_tool_output(text: str) -> str:
                 return groups[0]
             return ""
 
-        result = pattern.sub(_replace, result) if pattern.groups > 0 else pattern.sub("", result)
+        result = (
+            pattern.sub(_replace, result)
+            if pattern.groups > 0
+            else pattern.sub("", result)
+        )
     return _restore_call_blocks(result, call_blocks)
 
 
@@ -400,7 +406,11 @@ def sanitize_response(text: str) -> str:
                 return groups[0]
             return ""
 
-        result = pattern.sub(_replace, result) if pattern.groups > 0 else pattern.sub("", result)
+        result = (
+            pattern.sub(_replace, result)
+            if pattern.groups > 0
+            else pattern.sub("", result)
+        )
 
     # Схлопываем пустые строки, пока тела tool-вызовов ещё защищены: формат
     # create_file и patch_file значим, его нельзя нормализовать.

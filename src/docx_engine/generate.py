@@ -144,7 +144,9 @@ def _format_children(fmt: ParaFormat | None):
         out.append(
             (
                 "w:widowControl",
-                "<w:widowControl/>" if fmt.widow_control else '<w:widowControl w:val="0"/>',
+                "<w:widowControl/>"
+                if fmt.widow_control
+                else '<w:widowControl w:val="0"/>',
             )
         )
     if fmt.borders:
@@ -241,7 +243,9 @@ def merge_p_pr_format(raw_p_pr: str, fmt: ParaFormat | None) -> str:
         return raw_p_pr
     m = re.match(r"<w:pPr(?: [^>]*)?>", raw_p_pr)
     fresh = _format_children(fmt)
-    fresh.sort(key=lambda c: PPR_CHILD_ORDER.index(c[0]) if c[0] in PPR_CHILD_ORDER else 99)
+    fresh.sort(
+        key=lambda c: PPR_CHILD_ORDER.index(c[0]) if c[0] in PPR_CHILD_ORDER else 99
+    )
     if not m:
         return f"<w:pPr>{''.join(x for _, x in fresh)}</w:pPr>" if fresh else ""
     open_tag = m.group(0)
@@ -347,9 +351,15 @@ def merge_p_pr_format(raw_p_pr: str, fmt: ParaFormat | None) -> str:
             first = int_attr(raw, "w:firstLine")
             hanging = int_attr(raw, "w:hanging")
             modeled_first = fmt.indent_first_line
-            raw_first = first if first is not None else (-hanging if hanging is not None else None)
+            raw_first = (
+                first
+                if first is not None
+                else (-hanging if hanging is not None else None)
+            )
             return (
-                left == fmt.indent_left and right == fmt.indent_right and raw_first == modeled_first
+                left == fmt.indent_left
+                and right == fmt.indent_right
+                and raw_first == modeled_first
             )
         if tag == "w:jc":
             raw_jc = attr(raw, "w:val")
@@ -389,7 +399,9 @@ def merge_p_pr_format(raw_p_pr: str, fmt: ParaFormat | None) -> str:
     changed = set()
     for tag in managed:
         raw = raw_of(tag)
-        if (raw is not None and not group_equal(tag, raw)) or (raw is None and tag in fresh_by):
+        if (raw is not None and not group_equal(tag, raw)) or (
+            raw is None and tag in fresh_by
+        ):
             changed.add(tag)
 
     kept = [(n, x) for n, x in raw_children if n not in changed]
@@ -397,7 +409,9 @@ def merge_p_pr_format(raw_p_pr: str, fmt: ParaFormat | None) -> str:
     combined = kept + replacements
     if not combined:
         return ""
-    combined.sort(key=lambda c: PPR_CHILD_ORDER.index(c[0]) if c[0] in PPR_CHILD_ORDER else 99)
+    combined.sort(
+        key=lambda c: PPR_CHILD_ORDER.index(c[0]) if c[0] in PPR_CHILD_ORDER else 99
+    )
     return f"{open_tag}{''.join(x for _, x in combined)}</w:pPr>"
 
 
@@ -421,7 +435,10 @@ def _model_rpr_children(run: Run, inside_link: bool):
     if run.font:
         f = escape_xml_attr(run.font)
         out.append(
-            ("w:rFonts", f'<w:rFonts w:ascii="{f}" w:eastAsia="{f}" w:hAnsi="{f}" w:cs="{f}"/>')
+            (
+                "w:rFonts",
+                f'<w:rFonts w:ascii="{f}" w:eastAsia="{f}" w:hAnsi="{f}" w:cs="{f}"/>',
+            )
         )
     if run.bold:
         out.append(("w:b", "<w:b/>"))
@@ -446,7 +463,9 @@ def _model_rpr_children(run: Run, inside_link: bool):
         out.append(("w:sz", f'<w:sz w:val="{size}"/>'))
         out.append(("w:szCs", f'<w:szCs w:val="{size}"/>'))
     if run.highlight:
-        out.append(("w:highlight", f'<w:highlight w:val="{escape_xml_attr(run.highlight)}"/>'))
+        out.append(
+            ("w:highlight", f'<w:highlight w:val="{escape_xml_attr(run.highlight)}"/>')
+        )
     if run.underline:
         out.append(("w:u", '<w:u w:val="single"/>'))
     if run.vert_align and run.vert_align in ("superscript", "subscript"):
@@ -491,7 +510,11 @@ def merge_r_pr_model(raw_r_pr: str, run: Run, inside_link: bool) -> str:
             return raw == modeled or (raw == "Hyperlink" and not modeled)
         if key == "rFonts":
             a = raw_of("w:rFonts")
-            raw = _raw_attr(a, "w:eastAsia") or _raw_attr(a, "w:ascii") or _raw_attr(a, "w:hAnsi")
+            raw = (
+                _raw_attr(a, "w:eastAsia")
+                or _raw_attr(a, "w:ascii")
+                or _raw_attr(a, "w:hAnsi")
+            )
             return raw == run.font
         if key == "bold":
             return _raw_bool(raw_of("w:b")) == bool(run.bold)
@@ -613,7 +636,11 @@ def _run_fragment_xml(run: Run, inside_link: bool) -> str:
     if run.ruby:
         return f"<w:r>{run.ruby['xml']}</w:r>"
     if run.note_ref:
-        tag = "w:footnoteReference" if run.note_ref["kind"] == "footnote" else "w:endnoteReference"
+        tag = (
+            "w:footnoteReference"
+            if run.note_ref["kind"] == "footnote"
+            else "w:endnoteReference"
+        )
         return (
             '<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr>'
             f'<{tag} w:id="{escape_xml_attr(run.note_ref["id"])}"/></w:r>'
@@ -797,7 +824,9 @@ def _runs_xml(runs: list[Run], allocate) -> str:
                             f'<w:hyperlink r:id="{escape_xml_attr(final)}"{tip_attr}>{inner}</w:hyperlink>'
                         )
                     else:
-                        parts.append("".join(_run_fragment_xml(r, False) for r in group))
+                        parts.append(
+                            "".join(_run_fragment_xml(r, False) for r in group)
+                        )
                 for j in range(group_start, i):
                     parts.append(ends_at(j))
             else:
@@ -836,7 +865,9 @@ def inline_runs_xml(runs: list[Run]) -> str:
     missing = [
         r.link.get("href")
         for r in runs
-        if r.link and not str(r.link.get("href", "")).startswith("#") and not r.link.get("rId")
+        if r.link
+        and not str(r.link.get("href", "")).startswith("#")
+        and not r.link.get("rId")
     ]
     if missing:
         raise ValueError("external hyperlink requires link.rId in inline_runs_xml")
@@ -849,7 +880,8 @@ def generate_paragraph_xml(block: GeneratedBlock, ctx: dict | None = None) -> st
         raise ValueError(f"unsupported paragraph block type: {block.type}")
     ctx = ctx or {}
     cross_starts = "".join(
-        f'<w:commentRangeStart w:id="{escape_xml_attr(i)}"/>' for i in block.comment_starts or []
+        f'<w:commentRangeStart w:id="{escape_xml_attr(i)}"/>'
+        for i in block.comment_starts or []
     )
     cross_ends = "".join(
         f'<w:commentRangeEnd w:id="{escape_xml_attr(i)}"/>'
@@ -873,7 +905,9 @@ def generate_paragraph_xml(block: GeneratedBlock, ctx: dict | None = None) -> st
     else:
         style_id = block.style_id
     if style_id:
-        children.append(("w:pStyle", f'<w:pStyle w:val="{escape_xml_attr(style_id)}"/>'))
+        children.append(
+            ("w:pStyle", f'<w:pStyle w:val="{escape_xml_attr(style_id)}"/>')
+        )
     if block.type == "listItem" and block.list:
         ilvl = min(max(int(block.list.get("ilvl", 0)), 0), 8)
         children.append(
@@ -886,7 +920,9 @@ def generate_paragraph_xml(block: GeneratedBlock, ctx: dict | None = None) -> st
             )
         )
     children.extend(_format_children(block.format))
-    children.sort(key=lambda c: PPR_CHILD_ORDER.index(c[0]) if c[0] in PPR_CHILD_ORDER else 99)
+    children.sort(
+        key=lambda c: PPR_CHILD_ORDER.index(c[0]) if c[0] in PPR_CHILD_ORDER else 99
+    )
     if block.raw_p_pr is not None:
         # Preserve unknown pPr children from the original document while
         # applying the modeled paragraph format. Style/list are replaced only
@@ -907,7 +943,11 @@ def generate_paragraph_xml(block: GeneratedBlock, ctx: dict | None = None) -> st
             parts = [(n, x) for n, x in parts if n != tag]
             if replacement:
                 parts.append((tag, replacement))
-            parts.sort(key=lambda c: PPR_CHILD_ORDER.index(c[0]) if c[0] in PPR_CHILD_ORDER else 99)
+            parts.sort(
+                key=lambda c: (
+                    PPR_CHILD_ORDER.index(c[0]) if c[0] in PPR_CHILD_ORDER else 99
+                )
+            )
             return f"{open_tag}{''.join(x for _, x in parts)}</w:pPr>" if parts else ""
 
         if style_id:
@@ -945,22 +985,30 @@ def generate_table_xml(rows: int, cols: int, header_row: bool = False) -> str:
 
     borders = (
         "<w:tblBorders>"
-        + "".join(border(n) for n in ("top", "left", "bottom", "right", "insideH", "insideV"))
+        + "".join(
+            border(n) for n in ("top", "left", "bottom", "right", "insideH", "insideV")
+        )
         + "</w:tblBorders>"
     )
     grid = "<w:tblGrid>" + f'<w:gridCol w:w="{cw}"/>' * cols + "</w:tblGrid>"
 
     def cell(header):
         shd = (
-            f'<w:shd w:val="clear" w:color="auto" w:fill="{TABLE_HEADER_FILL}"/>' if header else ""
+            f'<w:shd w:val="clear" w:color="auto" w:fill="{TABLE_HEADER_FILL}"/>'
+            if header
+            else ""
         )
         body = "<w:p><w:r><w:rPr><w:b/></w:rPr></w:r></w:p>" if header else "<w:p/>"
-        return f'<w:tc><w:tcPr><w:tcW w:w="{cw}" w:type="dxa"/>{shd}</w:tcPr>{body}</w:tc>'
+        return (
+            f'<w:tc><w:tcPr><w:tcW w:w="{cw}" w:type="dxa"/>{shd}</w:tcPr>{body}</w:tc>'
+        )
 
     def row(header):
         return f"<w:tr>{cell(header) * cols}</w:tr>"
 
-    body = (row(True) + row(False) * max(rows - 1, 0)) if header_row else row(False) * rows
+    body = (
+        (row(True) + row(False) * max(rows - 1, 0)) if header_row else row(False) * rows
+    )
     return (
         f'<w:tbl><w:tblPr><w:tblW w:w="{total}" w:type="dxa"/>{borders}'
         '<w:tblLayout w:type="fixed"/></w:tblPr>' + grid + body + "</w:tbl><w:p/>"
@@ -977,7 +1025,8 @@ def generate_table_model_xml(model: dict, original_table_xml=None) -> str:
             raise ValueError("table colSpan must be a positive integer") from exc
 
     col_count = max(
-        [1, len(model.get("colWidthsPct") or [])] + [sum(span_of(c) for c in row) for row in rows]
+        [1, len(model.get("colWidthsPct") or [])]
+        + [sum(span_of(c) for c in row) for row in rows]
     )
     try:
         pcts = (
@@ -994,7 +1043,9 @@ def generate_table_model_xml(model: dict, original_table_xml=None) -> str:
     except (TypeError, ValueError) as exc:
         raise ValueError("table column widths must be numeric") from exc
     if any(v < 0 for v in pcts) or total_pct <= 0:
-        raise ValueError("table percentage widths must be non-negative with positive total")
+        raise ValueError(
+            "table percentage widths must be non-negative with positive total"
+        )
     total_width = sum(widths)
 
     def border(n):
@@ -1002,10 +1053,16 @@ def generate_table_model_xml(model: dict, original_table_xml=None) -> str:
 
     borders = (
         "<w:tblBorders>"
-        + "".join(border(n) for n in ("top", "left", "bottom", "right", "insideH", "insideV"))
+        + "".join(
+            border(n) for n in ("top", "left", "bottom", "right", "insideH", "insideV")
+        )
         + "</w:tblBorders>"
     )
-    grid = "<w:tblGrid>" + "".join(f'<w:gridCol w:w="{w}"/>' for w in widths) + "</w:tblGrid>"
+    grid = (
+        "<w:tblGrid>"
+        + "".join(f'<w:gridCol w:w="{w}"/>' for w in widths)
+        + "</w:tblGrid>"
+    )
     rows_xml = []
     for _ri, row in enumerate(rows):
         gc, cells = 0, []
@@ -1020,7 +1077,8 @@ def generate_table_model_xml(model: dict, original_table_xml=None) -> str:
     orig_tbl_pr = None
     if original_table_xml:
         m = re.search(
-            r"<w:tblPr(?:\s[^>]*)?>[\s\S]*?</w:tblPr>|<w:tblPr(?:\s[^>]*)?/>", original_table_xml
+            r"<w:tblPr(?:\s[^>]*)?>[\s\S]*?</w:tblPr>|<w:tblPr(?:\s[^>]*)?/>",
+            original_table_xml,
         )
         orig_tbl_pr = m.group(0) if m else None
     tbl_pr = orig_tbl_pr or (
@@ -1224,7 +1282,9 @@ def patch_image_paragraph_xml(xml: str, patch: dict) -> str:
         cy = max(1, round(patch["heightPx"] * EMU_PER_PX))
 
         def resize(m):
-            return re.sub(r'cx="\d+"', f'cx="{cx}"', re.sub(r'cy="\d+"', f'cy="{cy}"', m.group(0)))
+            return re.sub(
+                r'cx="\d+"', f'cx="{cx}"', re.sub(r'cy="\d+"', f'cy="{cy}"', m.group(0))
+            )
 
         out = re.sub(r"<wp:extent[^>]*/?>", resize, out, count=1)
         out = re.sub(r"<a:ext[^>]*/>", resize, out, count=1)
@@ -1240,10 +1300,22 @@ def patch_image_paragraph_xml(xml: str, patch: dict) -> str:
             if m:
                 inner = m.group(2)
                 rpr_idx = inner.find("<w:rPr>")
-                patched = inner + jc if rpr_idx == -1 else inner[:rpr_idx] + jc + inner[rpr_idx:]
-                out = out[: m.start()] + m.group(1) + patched + "</w:pPr>" + out[m.end() :]
+                patched = (
+                    inner + jc
+                    if rpr_idx == -1
+                    else inner[:rpr_idx] + jc + inner[rpr_idx:]
+                )
+                out = (
+                    out[: m.start()]
+                    + m.group(1)
+                    + patched
+                    + "</w:pPr>"
+                    + out[m.end() :]
+                )
             else:
-                out = re.sub(r"(<w:p(?: [^>]*)?>)", r"\1<w:pPr>" + jc + "</w:pPr>", out, count=1)
+                out = re.sub(
+                    r"(<w:p(?: [^>]*)?>)", r"\1<w:pPr>" + jc + "</w:pPr>", out, count=1
+                )
     if patch.get("posOffsetX") is not None:
         out = re.sub(
             r"(<wp:positionH[^>]*>[\s\S]*?)<wp:posOffset>-?\d+</wp:posOffset>([\s\S]*?</wp:positionH>)",
@@ -1288,7 +1360,10 @@ def apply_image_wrap(xml: str, wrap, pos_offset=None, margin_align=None) -> str:
         if not has_anchor:
             return xml
         out = re.sub(
-            r"<wp:anchor[^>]*>", '<wp:inline distT="0" distB="0" distL="0" distR="0">', out, count=1
+            r"<wp:anchor[^>]*>",
+            '<wp:inline distT="0" distB="0" distL="0" distR="0">',
+            out,
+            count=1,
         )
         return out.replace("</wp:anchor>", "</wp:inline>", 1)
     behind = "1" if wrap == "behind" else "0"
@@ -1314,7 +1389,9 @@ def apply_image_wrap(xml: str, wrap, pos_offset=None, margin_align=None) -> str:
         )
     else:
         h_align = (
-            "right" if wrap.endswith("-right") else ("center" if wrap == "topBottom" else "left")
+            "right"
+            if wrap.endswith("-right")
+            else ("center" if wrap == "topBottom" else "left")
         )
         position = (
             '<wp:simplePos x="0" y="0"/>'
@@ -1403,7 +1480,9 @@ def generate_caption_xml(label: str, number: int, text: str) -> str:
         raise ValueError("caption number must be an integer") from exc
     label = str(label)
     text = str(text) if text is not None else ""
-    r_pr = '<w:rPr><w:color w:val="44546A"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>'
+    r_pr = (
+        '<w:rPr><w:color w:val="44546A"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>'
+    )
 
     def run(inner):
         return f"<w:r>{r_pr}{inner}</w:r>"
@@ -1418,7 +1497,11 @@ def generate_caption_xml(label: str, number: int, text: str) -> str:
         + run('<w:fldChar w:fldCharType="separate"/>')
         + run(f"<w:t>{number}</w:t>")
         + run('<w:fldChar w:fldCharType="end"/>')
-        + (run(f'<w:t xml:space="preserve"> {escape_xml_text(text)}</w:t>') if text else "")
+        + (
+            run(f'<w:t xml:space="preserve"> {escape_xml_text(text)}</w:t>')
+            if text
+            else ""
+        )
         + "</w:p>"
     )
 
@@ -1460,7 +1543,9 @@ def build_textbox_paragraph_xml(
     if width_emu <= 0 or height_emu <= 0 or id_ < 0:
         raise ValueError("textbox width/height must be positive and id non-negative")
     fill_hex, border_hex = str(fill_hex).upper(), str(border_hex).upper()
-    if not re.fullmatch(r"[0-9A-F]{6}", fill_hex) or not re.fullmatch(r"[0-9A-F]{6}", border_hex):
+    if not re.fullmatch(r"[0-9A-F]{6}", fill_hex) or not re.fullmatch(
+        r"[0-9A-F]{6}", border_hex
+    ):
         raise ValueError("textbox fill/border colors must be 6-digit RGB hex values")
     sp_pr = (
         f'<wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{width_emu}" cy="{height_emu}"/></a:xfrm>'
@@ -1561,15 +1646,17 @@ def build_word_art_paragraph_xml(
     if width_emu <= 0 or height_emu <= 0 or id_ < 0:
         raise ValueError("WordArt width/height must be positive and id non-negative")
     text = str(text)
-    preset = next((p for p in WORDART_PRESETS if p["id"] == word_art_id), WORDART_PRESETS[0])
+    preset = next(
+        (p for p in WORDART_PRESETS if p["id"] == word_art_id), WORDART_PRESETS[0]
+    )
     r_pr = (
         f'<w:rPr><w:b/><w:color w:val="{preset["colorHex"]}"/>'
         '<w:sz w:val="72"/><w:szCs w:val="72"/></w:rPr>'
     )
-    text_run = f'<w:r>{r_pr}<w:t xml:space="preserve">{escape_xml_text(text)}</w:t></w:r>'
-    txbx = (
-        f'<w:txbxContent><w:p><w:pPr><w:jc w:val="center"/></w:pPr>{text_run}</w:p></w:txbxContent>'
+    text_run = (
+        f'<w:r>{r_pr}<w:t xml:space="preserve">{escape_xml_text(text)}</w:t></w:r>'
     )
+    txbx = f'<w:txbxContent><w:p><w:pPr><w:jc w:val="center"/></w:pPr>{text_run}</w:p></w:txbxContent>'
     wsp = (
         '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
         '<wps:cNvSpPr txBox="1"/>'

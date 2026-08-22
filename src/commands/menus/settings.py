@@ -9,12 +9,29 @@ from __future__ import annotations
 
 import inspect
 
+from commands.menus._editor import open_in_editor
 from commands.menus._style import card_menu
 from config.i18n import t as tr
+from config.paths import USER_PROMPT_FILE
 from ui.overlays import clip, key_hints, paint, row, spacer
 from ui.shell import Overlay, get_shell
 
 _TRAILING_HINT_PUNCTUATION = ".。!;"
+
+
+def _item_text(label_key: str, hint_key: str) -> tuple[str, str]:
+    """Normalize settings rows and avoid label/hint duplication."""
+    label = tr(label_key).strip()
+    hint = tr(hint_key).strip().rstrip(_TRAILING_HINT_PUNCTUATION).strip()
+    folded_label = label.casefold().rstrip(":：")
+    folded_hint = hint.casefold()
+    if folded_hint == folded_label:
+        hint = ""
+    elif folded_hint.startswith(folded_label):
+        rest = hint[len(label) :].lstrip(" :：-—–·")
+        if rest:
+            hint = rest
+    return label, (f"- {hint}" if hint else "")
 
 
 _SECTIONS = (
@@ -24,6 +41,7 @@ _SECTIONS = (
         (
             ("helpers", "helpers.title", "help.helpers"),
             ("params", "params.title", "help.params"),
+            ("prompt", "prompt.title", "prompt.hint"),
         ),
     ),
     (
@@ -42,6 +60,11 @@ _SECTIONS = (
             ("notifications", "notifications.title", "help.notifications"),
             ("display", "display.title", "display.hint"),
         ),
+    ),
+    (
+        "memory",
+        "⋯",
+        (("memory", "memory.title", "memory.hint"),),
     ),
 )
 
@@ -63,7 +86,7 @@ class SettingsOverlay(Overlay):
         self.item = max(0, min(self.item, max(0, len(self._items()) - 1)))
 
     def render(self, width: int) -> str:
-        lines = [paint(f"⚙ {tr('settings.title')}", "accent", bold=True)]
+        lines = [paint(f"⚙︎ {tr('settings.title')}", "accent", bold=True)]
 
         tabs: list[str] = []
         for i, (key, icon, _items) in enumerate(_SECTIONS):
@@ -76,10 +99,11 @@ class SettingsOverlay(Overlay):
         lines.append(spacer())
 
         for i, (_action, label_key, hint_key) in enumerate(self._items()):
+            label, hint = _item_text(label_key, hint_key)
             lines.append(
                 row(
-                    tr(label_key),
-                    tr(hint_key).rstrip().rstrip(_TRAILING_HINT_PUNCTUATION),
+                    label,
+                    hint,
                     selected=self.focus == "content" and i == self.item,
                     width=width,
                 )
@@ -135,7 +159,20 @@ class SettingsOverlay(Overlay):
 
 
 async def _open_action(action: str) -> None:
-    if action == "helpers":
+    if action == "prompt":
+        from commands.menus.prompt import prompt_interactive
+
+        result = prompt_interactive()
+    elif action == "role_prompt":
+        USER_PROMPT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        USER_PROMPT_FILE.touch(exist_ok=True)
+        await open_in_editor(str(USER_PROMPT_FILE))
+        return
+    elif action == "memory":
+        from commands.menus.memory import memory_interactive
+
+        result = memory_interactive()
+    elif action == "helpers":
         from commands.menus.helpers import helpers_interactive
 
         result = helpers_interactive()
@@ -184,10 +221,10 @@ async def settings_interactive() -> None:
             if section_choice is None:
                 return
             section = section_choice
-            items = [
-                {"label": tr(label), "hint": tr(hint).rstrip().rstrip(_TRAILING_HINT_PUNCTUATION)}
-                for _action, label, hint in _SECTIONS[section][2]
-            ]
+            items = []
+            for _action, label_key, hint_key in _SECTIONS[section][2]:
+                label, hint = _item_text(label_key, hint_key)
+                items.append({"label": label, "hint": hint})
             item_choice = await card_menu(items, title=tr("settings.title"))
             if item_choice is None:
                 continue

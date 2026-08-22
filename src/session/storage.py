@@ -24,7 +24,10 @@ def _recalc_model_cost(model: str, mdata: dict) -> float:
     price_in, price_out = app_models.get_pricing(model)
     inp = mdata.get("input_tokens", 0)
     out = mdata.get("output_tokens", 0)
-    return inp * price_in / 1_000_000 + out * price_out / 1_000_000
+    cache_read = min(inp, max(0, mdata.get("cache_read_tokens", 0) or 0))
+    cache_billed = max(0, mdata.get("cache_read_billed_tokens", 0) or 0)
+    billed_input = inp - cache_read + cache_billed
+    return billed_input * price_in / 1_000_000 + out * price_out / 1_000_000
 
 
 def _compressed_total_cost(data: dict) -> float:
@@ -61,7 +64,9 @@ def save(session: Session):
             session.total_cost,
         )
     except Exception as e:
-        logger.opt(exception=True).error("session.save failed for {}: {}", session.id, e)
+        logger.opt(exception=True).error(
+            "session.save failed for {}: {}", session.id, e
+        )
         raise
 
 
@@ -126,7 +131,9 @@ def _load_from_dir(session_dir) -> Session | None:
         if not isinstance(data, dict):
             raise ValueError("history root must be a JSON object")
         raw_messages = data.get("messages", [])
-        if not isinstance(raw_messages, list) or not all(isinstance(m, dict) for m in raw_messages):
+        if not isinstance(raw_messages, list) or not all(
+            isinstance(m, dict) for m in raw_messages
+        ):
             raise ValueError("history.messages must be a list of objects")
     except (json.JSONDecodeError, OSError, ValueError) as e:
         logger.error("session.load: parse error in {}: {}", history_path, e)
@@ -148,7 +155,9 @@ def _load_from_dir(session_dir) -> Session | None:
         logger.error("session.load: invalid message in {}: {}", history_path, e)
         return None
     compressed_stats = data.get("compressed_stats")
-    session._compressed_stats = compressed_stats if isinstance(compressed_stats, dict) else None
+    session._compressed_stats = (
+        compressed_stats if isinstance(compressed_stats, dict) else None
+    )
 
     return session
 
@@ -177,7 +186,9 @@ def list_sessions(limit: int = 20, fast: bool = False) -> list[dict]:
             info = _read_summary_from_history(session_dir)
         if info and info.get("messages", 0) > 0:
             sessions.append(info)
-    sessions.sort(key=lambda s: s.get("updated_at", s.get("created_at", 0)), reverse=True)
+    sessions.sort(
+        key=lambda s: s.get("updated_at", s.get("created_at", 0)), reverse=True
+    )
     if limit > 0:
         sessions = sessions[:limit]
     for info in sessions:
@@ -211,7 +222,9 @@ def _get_context_tokens(summary_data: dict, session_dir) -> int:
             data = json.loads(history_path.read_text(encoding="utf-8"))
             return sum(m.get("tokens", 0) for m in data.get("messages", []))
         except Exception:
-            logger.debug("_get_context_tokens: read {} failed", history_path, exc_info=True)
+            logger.debug(
+                "_get_context_tokens: read {} failed", history_path, exc_info=True
+            )
     return summary_data.get("total_tokens", 0)
 
 
@@ -334,7 +347,9 @@ def _read_summary_from_history(session_dir) -> dict | None:
             "last_model": models[-1] if models else "",
         }
     except Exception:
-        logger.debug("_read_summary_from_history: parse {} failed", history_path, exc_info=True)
+        logger.debug(
+            "_read_summary_from_history: parse {} failed", history_path, exc_info=True
+        )
         return None
 
 
@@ -396,7 +411,9 @@ def _get_period_statistics_from_history(days: int) -> dict:
             continue
         try:
             data = json.loads(history_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or not isinstance(data.get("messages", []), list):
+            if not isinstance(data, dict) or not isinstance(
+                data.get("messages", []), list
+            ):
                 continue
         except Exception:
             continue
@@ -437,7 +454,12 @@ def _get_period_statistics_from_history(days: int) -> dict:
                 output_tokens = tokens
 
             price_in, price_out = app_models.get_pricing(model)
-            cost = input_tokens * price_in / 1_000_000 + output_tokens * price_out / 1_000_000
+            cost = app_models.input_cost_with_cache(
+                input_tokens,
+                price_in,
+                cache_read_tokens=int((usage or {}).get("cache_read") or 0),
+                cache_read_factor=(usage or {}).get("cache_read_factor", 0.1),
+            ) + output_tokens * price_out / 1_000_000
 
             model_stats = _ensure_model_stats(stats, model)
             model_stats["input_tokens"] += input_tokens

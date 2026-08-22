@@ -78,7 +78,9 @@ def _run_git(
             env=env,
         )
     except FileNotFoundError as e:
-        raise GitError("git CLI not found on system. Install git to use subagents.") from e
+        raise GitError(
+            "git CLI not found on system. Install git to use subagents."
+        ) from e
     except subprocess.TimeoutExpired as e:
         raise GitError(f"git {args[0]} timed out after {_GIT_TIMEOUT}s") from e
 
@@ -153,7 +155,11 @@ def ensure_git_repo(root: str) -> str:
 
 def _link_runtime_target(src: Path, dst: Path) -> bool:
     try:
-        os.symlink(os.path.join(str(src.parent), src.name), dst, target_is_directory=src.is_dir())
+        os.symlink(
+            os.path.join(str(src.parent), src.name),
+            dst,
+            target_is_directory=src.is_dir(),
+        )
         return True
     except OSError as e:
         if sys.platform != "win32" or not src.is_dir():
@@ -169,7 +175,9 @@ def _link_runtime_target(src: Path, dst: Path) -> bool:
         if r.returncode == 0:
             logger.debug("subagent_git: junction %s -> %s", dst, src)
             return True
-        logger.warning("subagent_git: junction %s failed: %s", dst, (r.stderr or r.stdout).strip())
+        logger.warning(
+            "subagent_git: junction %s failed: %s", dst, (r.stderr or r.stdout).strip()
+        )
     except Exception as e:
         logger.warning("subagent_git: junction %s failed: %s", dst, e)
     return False
@@ -298,15 +306,21 @@ def commit_worktree(handle: WorktreeHandle, message: str) -> None:
     if marker.is_file():
         try:
             names = [
-                n.strip() for n in marker.read_text(encoding="utf-8").splitlines() if n.strip()
+                n.strip()
+                for n in marker.read_text(encoding="utf-8").splitlines()
+                if n.strip()
             ]
         except OSError:
             names = []
         for n in names:
-            _run_git(["rm", "--cached", "-f", "--ignore-unmatch", n], cwd=wt, check=False)
+            _run_git(
+                ["rm", "--cached", "-f", "--ignore-unmatch", n], cwd=wt, check=False
+            )
         # сам marker тоже не нужен в коммите
         _run_git(
-            ["rm", "--cached", "-f", "--ignore-unmatch", ".necli_symlinks"], cwd=wt, check=False
+            ["rm", "--cached", "-f", "--ignore-unmatch", ".necli_symlinks"],
+            cwd=wt,
+            check=False,
         )
 
     # Проверяем именно STAGED изменения (что реально попадёт в коммит), а не
@@ -314,12 +328,15 @@ def commit_worktree(handle: WorktreeHandle, message: str) -> None:
     # который мы только что сняли из индекса (git rm --cached). У read-only
     # субагента индекс пуст, но untracked marker оставался бы в porcelain →
     # has_changes=True → git commit падает с "nothing to commit" (exit=1).
-    rc, out, _ = _run_git(
+    rc, out, err = _run_git(
         ["diff", "--cached", "--name-only"],
         cwd=wt,
         check=False,
     )
-    if rc != 0 or not out.strip():
+    if rc != 0:
+        detail = err or out or "unknown error"
+        raise GitError(f"git diff --cached --name-only failed (exit={rc}): {detail}")
+    if not out.strip():
         handle.has_changes = False
         logger.info(
             "subagent_git: sub=%d branch=%s — no changes",
@@ -388,7 +405,9 @@ def summarize_worktree_changes(handle: WorktreeHandle) -> None:
         if marker.is_file():
             try:
                 names = [
-                    n.strip() for n in marker.read_text(encoding="utf-8").splitlines() if n.strip()
+                    n.strip()
+                    for n in marker.read_text(encoding="utf-8").splitlines()
+                    if n.strip()
                 ]
             except OSError:
                 names = []
@@ -411,7 +430,9 @@ def summarize_worktree_changes(handle: WorktreeHandle) -> None:
         )
         if rc == 0:
             handle.files_changed = [ln for ln in out.splitlines() if ln.strip()]
-        rc, out, _ = _run_git(["diff", "--cached", "--stat"], cwd=wt, check=False, env_extra=env)
+        rc, out, _ = _run_git(
+            ["diff", "--cached", "--stat"], cwd=wt, check=False, env_extra=env
+        )
         if rc == 0:
             handle.diff_stat = out.strip()
         handle.has_changes = bool(handle.files_changed)
@@ -425,7 +446,11 @@ def _remove_windows_junctions(path: Path) -> None:
     if not marker.is_file():
         return
     try:
-        names = [n.strip() for n in marker.read_text(encoding="utf-8").splitlines() if n.strip()]
+        names = [
+            n.strip()
+            for n in marker.read_text(encoding="utf-8").splitlines()
+            if n.strip()
+        ]
     except OSError:
         return
     for name in names:
@@ -436,9 +461,13 @@ def _remove_windows_junctions(path: Path) -> None:
             if target.is_symlink():
                 target.unlink()
             elif target.is_dir():
-                subprocess.run(["cmd", "/c", "rmdir", str(target)], capture_output=True, timeout=10)
+                subprocess.run(
+                    ["cmd", "/c", "rmdir", str(target)], capture_output=True, timeout=10
+                )
         except Exception:
-            logger.debug("subagent_git: runtime link cleanup failed: %s", target, exc_info=True)
+            logger.debug(
+                "subagent_git: runtime link cleanup failed: %s", target, exc_info=True
+            )
 
 
 def cleanup_worktree(root: str, handle: WorktreeHandle) -> None:
@@ -486,7 +515,9 @@ def cleanup_stale_branches(root: str, current_run_id: str | None = None) -> int:
     if not is_git_repo(root):
         return 0
 
-    rc, current, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=root, check=False)
+    rc, current, _ = _run_git(
+        ["rev-parse", "--abbrev-ref", "HEAD"], cwd=root, check=False
+    )
     current = current.strip() if rc == 0 else ""
 
     rc, out, _ = _run_git(

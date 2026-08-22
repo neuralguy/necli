@@ -22,10 +22,9 @@ from rich.table import Table
 from rich.text import Text
 
 import models as app_models
-import session.storage as storage
 from config.i18n import t as _
 from config.themes import ansi_24bit, t
-from session import Session
+from session import Session, storage
 from ui import format_tokens
 
 logger = logging.getLogger(__name__)
@@ -316,7 +315,11 @@ async def _run_with_interrupt(coro, session):
             if task.done():
                 return
             hard_at = ctl.hard_at
-            if ctl.level >= 2 and hard_at is not None and time.monotonic() - hard_at > timeout:
+            if (
+                ctl.level >= 2
+                and hard_at is not None
+                and time.monotonic() - hard_at > timeout
+            ):
                 _restore_termios()
                 ctl.restore_stderr()
                 _write_now(
@@ -441,7 +444,10 @@ def _build_left_content(
     if n_mcp > 0:
         meta.append("\n")
         meta.append("mcp  ", style="dim")
-        meta.append(_("welcome.mcp_ready", n=n_mcp, tools=mcp_tools), style=f"bold {t('success')}")
+        meta.append(
+            _("welcome.mcp_ready", n=n_mcp, tools=mcp_tools),
+            style=f"bold {t('success')}",
+        )
 
     if tg_info:
         meta.append("\n")

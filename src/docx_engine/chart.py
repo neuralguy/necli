@@ -101,7 +101,10 @@ def parse_chart_part_xml(xml: str, part_path: str):
     plot_area = find_child(chart, "c:plotArea") if chart else None
     if not chart or not plot_area:
         return None
-    plot = next((c for c in children_of(plot_area) if (name_of(c) or "").endswith("Chart")), None)
+    plot = next(
+        (c for c in children_of(plot_area) if (name_of(c) or "").endswith("Chart")),
+        None,
+    )
     if not plot:
         return None
     kind = CHART_KINDS.get(name_of(plot) or "", "other")
@@ -131,7 +134,12 @@ def parse_chart_part_xml(xml: str, part_path: str):
     if not series:
         return None
     title = _chart_title(chart)
-    out = {"partPath": part_path, "kind": kind, "categories": categories, "series": series}
+    out = {
+        "partPath": part_path,
+        "kind": kind,
+        "categories": categories,
+        "series": series,
+    }
     if title is not None:
         out["title"] = title
     return out
@@ -215,7 +223,9 @@ def _num_cache_xml(values, f):
             points.append(f'<c:pt idx="{i}"><c:v>{escape_xml_text(text)}</c:v></c:pt>')
     return (
         f"<c:numRef><c:f>{escape_xml_text(f)}</c:f><c:numCache><c:formatCode>General</c:formatCode>"
-        f'<c:ptCount val="{len(values)}"/>' + "".join(points) + "</c:numCache></c:numRef>"
+        f'<c:ptCount val="{len(values)}"/>'
+        + "".join(points)
+        + "</c:numCache></c:numRef>"
     )
 
 
@@ -250,9 +260,7 @@ def build_chart_part_xml(chart: dict, external_data_r_id=None) -> str:
         )
     sers_xml = "".join(sers)
     if kind == "pie":
-        plot = (
-            f'<c:pieChart><c:varyColors val="1"/>{sers_xml}<c:firstSliceAng val="0"/></c:pieChart>'
-        )
+        plot = f'<c:pieChart><c:varyColors val="1"/>{sers_xml}<c:firstSliceAng val="0"/></c:pieChart>'
     else:
         axes = (
             '<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling>'
@@ -286,7 +294,8 @@ def build_chart_part_xml(chart: dict, external_data_r_id=None) -> str:
         else ""
     )
     return (
-        XML_DECL + '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+        XML_DECL
+        + '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
         'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
         f"<c:chart>{title}<c:plotArea><c:layout/>{plot}</c:plotArea>"
@@ -338,20 +347,25 @@ def build_chart_workbook_xlsx(categories, series) -> str:
             v = values[i] if i < len(values) else None
             text = _num_text(v)
             if text is not None:
-                cells.append(f'<c r="{_xlsx_col(j + 1)}{rn}"><v>{escape_xml_text(text)}</v></c>')
+                cells.append(
+                    f'<c r="{_xlsx_col(j + 1)}{rn}"><v>{escape_xml_text(text)}</v></c>'
+                )
         data_rows.append(f'<row r="{rn}">{"".join(cells)}</row>')
     sheet = (
-        XML_DECL + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        XML_DECL
+        + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         f'<sheetData><row r="1">{"".join(header)}</row>{"".join(data_rows)}</sheetData></worksheet>'
     )
     sst = (
-        XML_DECL + f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        XML_DECL
+        + f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         f'count="{len(strings)}" uniqueCount="{len(strings)}">'
         + "".join(f"<si><t>{escape_xml_text(s)}</t></si>" for s in strings)
         + "</sst>"
     )
     wb = (
-        XML_DECL + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        XML_DECL
+        + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
         '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
     )
@@ -369,7 +383,8 @@ def build_chart_workbook_xlsx(categories, series) -> str:
         "</Relationships>"
     )
     ct = (
-        XML_DECL + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        XML_DECL
+        + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
@@ -460,7 +475,9 @@ def patch_chart_part_xml(xml: str, patch: dict) -> str:
         if patch.get("categories"):
             cat = tag_range("c:cat", ser_rng[0], ser_rng[1])
             if cat:
-                _push_point_edits(xml, cat, patch["categories"], edits, inner_text_ranges, "c:v")
+                _push_point_edits(
+                    xml, cat, patch["categories"], edits, inner_text_ranges, "c:v"
+                )
     if not edits:
         return xml
     out = xml
@@ -491,7 +508,9 @@ def patch_chart_workbook_xlsx(b64: str, categories, series):
 
         header = [inline("A1", "")]
         for j, ser in enumerate(series):
-            header.append(inline(f"{_xlsx_col(j + 1)}1", ser.get("name", f"Series {j + 1}")))
+            header.append(
+                inline(f"{_xlsx_col(j + 1)}1", ser.get("name", f"Series {j + 1}"))
+            )
         data_rows = []
         for i, cat in enumerate(categories):
             rn = i + 2
@@ -512,12 +531,17 @@ def patch_chart_workbook_xlsx(b64: str, categories, series):
             r"<sheetData/>|<sheetData[^>]*>[\s\S]*?</sheetData>", new_sd, sheet, count=1
         )
         last_ref = f"{_xlsx_col(len(series))}{len(categories) + 1}"
-        updated = re.sub(r"<dimension[^>]*/>", f'<dimension ref="A1:{last_ref}"/>', updated)
+        updated = re.sub(
+            r"<dimension[^>]*/>", f'<dimension ref="A1:{last_ref}"/>', updated
+        )
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as out:
             for name in src.namelist():
                 out.writestr(
-                    name, updated.encode() if name == "xl/worksheets/sheet1.xml" else src.read(name)
+                    name,
+                    updated.encode()
+                    if name == "xl/worksheets/sheet1.xml"
+                    else src.read(name),
                 )
         return base64.b64encode(buf.getvalue()).decode()
     except Exception:

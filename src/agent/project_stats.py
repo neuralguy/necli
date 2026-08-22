@@ -63,4 +63,6 @@ class StepTracker:
 
     @property
     def has_changes(self) -> bool:
-        return bool(self.files_changed) or self.lines_added > 0 or self.lines_removed > 0
+        return (
+            bool(self.files_changed) or self.lines_added > 0 or self.lines_removed > 0
+        )

@@ -79,7 +79,9 @@ class TurnStats:
     def summary(self) -> dict[str, Any]:
         """Generate turn summary dict."""
         total_duration = time.monotonic() - self.start_time
-        local_overhead = total_duration - self.api_time - self.tool_time - self.context_time
+        local_overhead = (
+            total_duration - self.api_time - self.tool_time - self.context_time
+        )
 
         return {
             "duration": total_duration,

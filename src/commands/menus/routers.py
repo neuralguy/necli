@@ -36,7 +36,9 @@ def _available_routes() -> list[tuple[dict, object, str]]:
 
 async def _pick_routes(selected: list[dict] | None = None) -> list[dict] | None:
     available = _available_routes()
-    selected_keys = {(route["provider_id"], route["model_id"]) for route in selected or []}
+    selected_keys = {
+        (route["provider_id"], route["model_id"]) for route in selected or []
+    }
     items = [
         {
             "label": model.display_name,
@@ -61,7 +63,9 @@ async def _pick_routes(selected: list[dict] | None = None) -> list[dict] | None:
     if choice is None:
         return None
     routes = [
-        route for index, (route, _model, _provider) in enumerate(available) if index in checked
+        route
+        for index, (route, _model, _provider) in enumerate(available)
+        if index in checked
     ]
     if len(routes) < 2:
         return None
@@ -123,7 +127,8 @@ async def _router_detail(router_id: str) -> None:
                 }
             )
         is_active = (
-            config.get_active_api() == "routers" and config.get_active_api_model() == router_id
+            config.get_active_api() == "routers"
+            and config.get_active_api_model() == router_id
         )
         items.extend(
             [
@@ -187,7 +192,10 @@ async def _router_detail(router_id: str) -> None:
             actions,
             title=_route_title(router["routes"][choice])[0],
             facts=[
-                facts_line(_("routers.position", n=choice + 1), _("routers.total", n=route_count))
+                facts_line(
+                    _("routers.position", n=choice + 1),
+                    _("routers.total", n=route_count),
+                )
             ],
         )
         if action == 0:
@@ -211,7 +219,9 @@ async def routers_interactive() -> None:
         items = [
             {
                 "label": router["name"],
-                "hint": " → ".join(_route_title(route)[0] for route in router["routes"]),
+                "hint": " → ".join(
+                    _route_title(route)[0] for route in router["routes"]
+                ),
                 "cols": [f"{get_router_balance(router['id']):g}$"],
             }
             for router in routers

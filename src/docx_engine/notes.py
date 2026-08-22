@@ -26,7 +26,9 @@ NOTE_NS = (
 
 
 def _plain(xml):
-    return unescape_xml_text("".join(re.findall(r"<w:t(?:\s[^>]*)?>([\s\S]*?)</w:t>", xml)))
+    return unescape_xml_text(
+        "".join(re.findall(r"<w:t(?:\s[^>]*)?>([\s\S]*?)</w:t>", xml))
+    )
 
 
 def _entries(xml: str, kind: str):
@@ -41,7 +43,9 @@ def _entries(xml: str, kind: str):
             continue
         paras = [
             re.sub(r"^\s+", "", _plain(p), count=1) if i == 0 else _plain(p)
-            for i, p in enumerate(re.findall(r"<w:p[\s>][\s\S]*?</w:p>|<w:p/>", m.group(2)))
+            for i, p in enumerate(
+                re.findall(r"<w:p[\s>][\s\S]*?</w:p>|<w:p/>", m.group(2))
+            )
         ]
         out.append({"id": idm.group(1), "text": "\n".join(paras), "xml": m.group(0)})
     return out
@@ -89,7 +93,9 @@ def build_notes_xml(kind: str, notes: list[NoteInfo], original_xml=None) -> str:
     originals = {}
     if original_xml:
         structural = "".join(
-            re.findall(rf'<{entry}\s[^>]*w:type="[^"]*"[^>]*>[\s\S]*?</{entry}>', original_xml)
+            re.findall(
+                rf'<{entry}\s[^>]*w:type="[^"]*"[^>]*>[\s\S]*?</{entry}>', original_xml
+            )
         )
         for e in _entries(original_xml, kind):
             originals[e["id"]] = e
@@ -103,7 +109,9 @@ def build_notes_xml(kind: str, notes: list[NoteInfo], original_xml=None) -> str:
         elif orig["text"] == n.text:
             body.append(orig["xml"])
         else:
-            patched = patch_paragraph_texts(orig["xml"], n.text, strip_first_leading_space=True)
+            patched = patch_paragraph_texts(
+                orig["xml"], n.text, strip_first_leading_space=True
+            )
             body.append(patched if patched else _note_xml(kind, n))
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'

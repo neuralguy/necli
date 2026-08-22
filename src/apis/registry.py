@@ -17,6 +17,7 @@ from apis.config import get_api_key, list_api_configs, list_routers, normalize_b
 from apis.models import ApiModelInfo, ApiProviderDefinition
 from config.paths import resource_path
 from logger import logger
+from models import DEFAULT_CONTEXT_LIMIT
 
 _DEFINITIONS_DIR = resource_path("apis", "definitions")
 
@@ -39,7 +40,7 @@ def _parse_model(raw: dict) -> ApiModelInfo:
     return ApiModelInfo(
         id=raw_id,
         display_name=display_name,
-        context_window=raw.get("context_window", 128_000),
+        context_window=raw.get("context_window", DEFAULT_CONTEXT_LIMIT),
         input_price=raw.get("input_price", 0.0),
         output_price=raw.get("output_price", 0.0),
     )
@@ -119,7 +120,8 @@ def _load_routers_definition() -> None:
                 id=router["id"],
                 display_name=router["name"],
                 context_window=min(
-                    (model.context_window for model in route_infos), default=128_000
+                    (model.context_window for model in route_infos),
+                    default=DEFAULT_CONTEXT_LIMIT,
                 ),
                 input_price=first.input_price if first else 0.0,
                 output_price=first.output_price if first else 0.0,
@@ -184,7 +186,9 @@ def get_definitions() -> dict[str, ApiProviderDefinition]:
         return dict(_definitions)
 
 
-def _create_instance(defn: ApiProviderDefinition, model_id: str, **kwargs) -> BaseProvider:
+def _create_instance(
+    defn: ApiProviderDefinition, model_id: str, **kwargs
+) -> BaseProvider:
     """Создаёт LLM-инстанс по типу провайдера."""
     # Глобальный прокси из конфига применяется, если у провайдера нет своего.
     if not defn.proxy:
@@ -258,7 +262,9 @@ def get_provider(provider_id: str, model_id: str, **kwargs) -> BaseProvider:
     # даже с kwargs, иначе каждый запрос создаёт новый инстанс с новым session_id,
     # и шлюзы теряют привязку prompt-cache к сессии → Cache write 0.
     kwargs_key = (
-        tuple(sorted((key, _freeze_cache_value(value)) for key, value in kwargs.items()))
+        tuple(
+            sorted((key, _freeze_cache_value(value)) for key, value in kwargs.items())
+        )
         if kwargs
         else ()
     )

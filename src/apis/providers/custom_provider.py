@@ -86,7 +86,9 @@ def create_custom_provider(
     provider._prompt_cache_mode = str(
         extra.get("prompt_cache", extra.get("prompt_caching", "auto"))
     )
-    provider._cache_read_factor = float(extra.get("cache_read_factor", provider._cache_read_factor))
+    provider._cache_read_factor = float(
+        extra.get("cache_read_factor", provider._cache_read_factor)
+    )
     extra_body = dict(extra.get("extra_body") or {})
     reasoning_models = extra.get("reasoning_models") or {}
     if actual_model in reasoning_models:
@@ -94,5 +96,7 @@ def create_custom_provider(
     if extra_body:
         provider._extra_body = extra_body
 
-    logger.debug(f"Created custom provider: {definition.name} / {actual_model} @ {api_url}")
+    logger.debug(
+        f"Created custom provider: {definition.name} / {actual_model} @ {api_url}"
+    )
     return provider

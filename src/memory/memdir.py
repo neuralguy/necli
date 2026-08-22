@@ -89,7 +89,9 @@ def _safe_filename(name: str) -> str:
     return name
 
 
-def memory_path(name: str, *, working_dir: str | None = None, scope: str = "project") -> Path:
+def memory_path(
+    name: str, *, working_dir: str | None = None, scope: str = "project"
+) -> Path:
     """Canonical in-scope path for a memory name.
 
     All CRUD operations use this function so ``read`` cannot bypass the same
@@ -110,7 +112,9 @@ def _scan_dir(mdir: Path) -> list[MemoryFile]:
     return out
 
 
-def scan_memories(working_dir: str | None = None, *, scope: str = "project") -> list[MemoryFile]:
+def scan_memories(
+    working_dir: str | None = None, *, scope: str = "project"
+) -> list[MemoryFile]:
     """Сканирует memory-файлы.
 
     scope="project" — память текущего проекта (working_dir).
@@ -176,7 +180,9 @@ def write_memory(
 
     extra = dict(existing.extra) if existing is not None else {}
     body = (body or "").strip()[:_MAX_FILE_CHARS]
-    mf = MemoryFile(path=path, type=mtype, created=created, updated=now, body=body, extra=extra)
+    mf = MemoryFile(
+        path=path, type=mtype, created=created, updated=now, body=body, extra=extra
+    )
     try:
         atomic_write_text(path, mf.render())
         logger.info("memory: wrote {} (type={})", path.name, mtype)
@@ -211,7 +217,11 @@ def delete_memory(
 def _is_pinned(f: MemoryFile) -> bool:
     pinned = f.extra.get("pinned", "").strip().lower()
     priority = f.extra.get("priority", "").strip().lower()
-    return pinned in ("1", "true", "yes", "on") or priority in ("pinned", "high", "critical")
+    return pinned in ("1", "true", "yes", "on") or priority in (
+        "pinned",
+        "high",
+        "critical",
+    )
 
 
 def _tokens(text: str) -> set[str]:
@@ -242,7 +252,9 @@ def find_similar_memories(
         overlap = query_tokens & tokens
         if not overlap:
             continue
-        score = sum(math.log((total + 1) / (document_frequency[t] + 1)) + 1 for t in overlap)
+        score = sum(
+            math.log((total + 1) / (document_frequency[t] + 1)) + 1 for t in overlap
+        )
         score /= math.sqrt(max(1, len(tokens)))
         ranked.append((score, memory))
     ranked.sort(key=lambda item: (item[0], item[1].updated, item[1].name), reverse=True)
@@ -334,7 +346,9 @@ def format_manifest(working_dir: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def format_similar_memories(query: str, working_dir: str | None = None, *, limit: int = 8) -> str:
+def format_similar_memories(
+    query: str, working_dir: str | None = None, *, limit: int = 8
+) -> str:
     """Full candidate records used before a model changes persistent memory."""
     files = find_similar_memories(query, working_dir, limit=limit)
     if not files:

@@ -41,7 +41,9 @@ class RouterProvider(BaseProvider):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                errors.append(f"{self._route_label(route)}: {type(exc).__name__}: {exc}")
+                errors.append(
+                    f"{self._route_label(route)}: {type(exc).__name__}: {exc}"
+                )
                 logger.warning(
                     "Router {} route {}/{} failed ({}), switching to next: {}",
                     self.router_id,
@@ -76,7 +78,9 @@ class RouterProvider(BaseProvider):
             except Exception as exc:
                 if yielded:
                     raise
-                errors.append(f"{self._route_label(route)}: {type(exc).__name__}: {exc}")
+                errors.append(
+                    f"{self._route_label(route)}: {type(exc).__name__}: {exc}"
+                )
                 logger.warning(
                     "Router {} route {}/{} failed ({}), switching to next: {}",
                     self.router_id,
@@ -97,7 +101,9 @@ class RouterProvider(BaseProvider):
 
     def _supports_anthropic_cache_control(self) -> bool:
         try:
-            llm = self._active_llm or (self._candidate(self.routes[0]) if self.routes else None)
+            llm = self._active_llm or (
+                self._candidate(self.routes[0]) if self.routes else None
+            )
             return bool(llm and llm._supports_anthropic_cache_control())
         except Exception:
             return False

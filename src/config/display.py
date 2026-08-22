@@ -32,4 +32,6 @@ def is_block_full(block_name: str, *, compact: bool) -> bool:
 
 def set_full_blocks(*, compact: bool, blocks: set[str] | list[str]) -> None:
     key = COMPACT_KEY if compact else FULL_KEY
-    settings.set_value(key, sorted({str(block) for block in blocks if str(block).strip()}))
+    settings.set_value(
+        key, sorted({str(block) for block in blocks if str(block).strip()})
+    )

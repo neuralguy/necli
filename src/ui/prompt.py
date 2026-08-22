@@ -39,10 +39,17 @@ from wcwidth import wcswidth
 
 from config.i18n import t as _i18n
 from config.themes import ansi_24bit, t
-from ui.formatting import BAR_EMPTY_END, BAR_EMPTY_START, BAR_FILLED_END, BAR_FILLED_START
+from ui.formatting import (
+    BAR_EMPTY_END,
+    BAR_EMPTY_START,
+    BAR_FILLED_END,
+    BAR_FILLED_START,
+)
 from ui.shell import get_shell
 
 logger = logging.getLogger(__name__)
+
+_PASTED_TEXT_COLLAPSE_THRESHOLD = 500
 
 
 def _build_style():
@@ -306,8 +313,8 @@ class InputPrompt:
 
     # ───────────────────────── многострочные вставки ───────────────────────
     def _insert_pasted_text(self, buf, text: str) -> None:
-        """Вставляет многострочный текст как маркер, сохраняя оригинал до отправки."""
-        if "\n" not in text:
+        """Сворачивает многострочную вставку только если она длиннее 500 символов."""
+        if len(text) <= _PASTED_TEXT_COLLAPSE_THRESHOLD:
             buf.insert_text(text)
             return
         marker = _i18n("prompt.pasted_chars", n=len(text))
@@ -348,7 +355,10 @@ class InputPrompt:
         if session is not None:
             self.session = session
         try:
-            from ui.terminal_title import set_activity_status, set_session_terminal_title
+            from ui.terminal_title import (
+                set_activity_status,
+                set_session_terminal_title,
+            )
 
             set_activity_status(status)
             if self.session is not None:
@@ -379,7 +389,12 @@ class InputPrompt:
             prefix = "─── "
             suffix = " "
             visible_len = (
-                _vw(prefix) + _vw(before) + _vw(filled) + _vw(empty) + _vw(after) + _vw(suffix)
+                _vw(prefix)
+                + _vw(before)
+                + _vw(filled)
+                + _vw(empty)
+                + _vw(after)
+                + _vw(suffix)
             )
             remaining = max(0, w - visible_len)
             tail = "─" * remaining
@@ -432,10 +447,10 @@ class InputPrompt:
     # ──────────────────────────────── эхо ввода ────────────────────────────
     def _mode_prefix(self) -> str:
         if self.mode == "planning":
-            return "🧠 plan > "
+            return "◈ plan > "
         if self.mode == "swarm":
-            return "🔮 swarm > "
-        return "🚀 agent > "
+            return "◊ swarm > "
+        return "⇢ agent > "
 
     def render_echo(self, text: str, time_str: str | None = None) -> str:
         """Собирает полосу эха: bold bright-white на фоне bg_code во всю ширину,
@@ -452,7 +467,9 @@ class InputPrompt:
         fg = ansi_24bit(t("fg_primary"))
 
         # Маппинг [imageN] → путь для OSC 8 file://-гиперссылок (Ctrl+клик).
-        image_paths = {f"[image{idx}]": p for idx, p in enumerate(self.pending_images, start=1)}
+        image_paths = {
+            f"[image{idx}]": p for idx, p in enumerate(self.pending_images, start=1)
+        }
 
         def _linkify(seg: str) -> str:
             # Оборачивает [imageN] в OSC 8 file://-ссылку + underline.

@@ -10,7 +10,7 @@ from .xml_utils import escape_xml_attr, unescape_xml_text
 INK_NAME_PREFIX = "necli-ink"
 INK_MEDIA_PREFIX = "necliink"
 INK_REL_RE = re.compile(
-    rf'<Relationship [^>]*Target="media/{INK_MEDIA_PREFIX}\d+\.png"[^>]*/>', re.S
+    rf'<Relationship [^>]*Target="media/{INK_MEDIA_PREFIX}\d+\.png"[^>]*/>', re.DOTALL
 )
 INK_MEDIA_PATH_RE = re.compile(rf"^word/media/{INK_MEDIA_PREFIX}\d+\.png$")
 EMU_PER_PX = 9525
@@ -18,7 +18,9 @@ A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 PIC_NS = "http://schemas.openxmlformats.org/drawingml/2006/picture"
 WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-ANCHOR_RUN_RE = re.compile(r"<w:r><w:drawing><wp:anchor[\s\S]*?</wp:anchor></w:drawing></w:r>")
+ANCHOR_RUN_RE = re.compile(
+    r"<w:r><w:drawing><wp:anchor[\s\S]*?</wp:anchor></w:drawing></w:r>"
+)
 
 
 def anchored_ink_run_xml(ink: dict, r_id: str, doc_pr_id: int) -> str:
@@ -36,7 +38,9 @@ def anchored_ink_run_xml(ink: dict, r_id: str, doc_pr_id: int) -> str:
         or height <= 0
         or doc_pr_id < 0
     ):
-        raise ValueError("ink dimensions must be finite positive values and id non-negative")
+        raise ValueError(
+            "ink dimensions must be finite positive values and id non-negative"
+        )
     cx = max(1, round(width * EMU_PER_PX))
     cy = max(1, round(height * EMU_PER_PX))
     x, y = round(offset_x * EMU_PER_PX), round(offset_y * EMU_PER_PX)
@@ -95,8 +99,10 @@ def find_ink_runs(paragraph_xml: str) -> list[dict]:
         out.append(
             {
                 "xml": run,
-                "offsetXPx": emu(r"<wp:positionH[^>]*><wp:posOffset>(-?\d+)") / EMU_PER_PX,
-                "offsetYPx": emu(r"<wp:positionV[^>]*><wp:posOffset>(-?\d+)") / EMU_PER_PX,
+                "offsetXPx": emu(r"<wp:positionH[^>]*><wp:posOffset>(-?\d+)")
+                / EMU_PER_PX,
+                "offsetYPx": emu(r"<wp:positionV[^>]*><wp:posOffset>(-?\d+)")
+                / EMU_PER_PX,
                 "widthPx": emu(r'<wp:extent cx="(\d+)"') / EMU_PER_PX,
                 "heightPx": emu(r'<wp:extent cx="\d+" cy="(\d+)"') / EMU_PER_PX,
                 "payload": unescape_xml_text(descr.group(1)) if descr else None,

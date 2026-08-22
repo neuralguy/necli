@@ -6,12 +6,19 @@
 `wrap_input_for_focus_tracking` вырезает их из потока ДО парсера и
 превращает в состояние фокуса.
 
+Режим включаем ТОЛЬКО пока терминал в raw-режиме: в cooked-режиме
+ответ терминала (`\x1b[I`) уходит в эхо tty-драйвера и печатается в строку
+ввода как `^[[I`. Поэтому включение привязано к `Input.raw_mode()`
+(`bind_focus_reporting_to_raw_mode`), а на время `cooked_mode()`
+(run_in_terminal) отчётность приостанавливается.
+
 Не все терминалы поддерживают режим — тогда состояние остаётся None
 («неизвестно»), и вызывающие трактуют его как «не в фокусе».
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 
@@ -91,6 +98,49 @@ def enable_focus_reporting() -> None:
 def disable_focus_reporting() -> None:
     _write_seq(DISABLE_SEQ)
     reset_focus_state()
+
+
+def bind_focus_reporting_to_raw_mode(base_input) -> bool:
+    """Привязать focus reporting к raw-режиму конкретного Input.
+
+    Возвращает True, если удалось обернуть `raw_mode`/`cooked_mode`. Пока
+    активен raw-режим, режим включён; на время вложенного cooked-окна
+    (`run_in_terminal` печатает статику) он выключается, чтобы ответ
+    терминала не попал в эхо, а состояние фокуса при этом сохраняется.
+    """
+    raw_mode = getattr(base_input, "raw_mode", None)
+    cooked_mode = getattr(base_input, "cooked_mode", None)
+    if not callable(raw_mode) or not callable(cooked_mode):
+        return False
+
+    state = {"raw": 0}
+
+    @contextlib.contextmanager
+    def raw_mode_wrapper(*args, **kwargs):
+        with raw_mode(*args, **kwargs):
+            state["raw"] += 1
+            enable_focus_reporting()
+            try:
+                yield
+            finally:
+                state["raw"] -= 1
+                disable_focus_reporting()
+
+    @contextlib.contextmanager
+    def cooked_mode_wrapper(*args, **kwargs):
+        paused = state["raw"] > 0
+        if paused:
+            _write_seq(DISABLE_SEQ)
+        try:
+            with cooked_mode(*args, **kwargs):
+                yield
+        finally:
+            if paused:
+                _write_seq(ENABLE_SEQ)
+
+    base_input.raw_mode = raw_mode_wrapper
+    base_input.cooked_mode = cooked_mode_wrapper
+    return True
 
 
 def wrap_input_for_focus_tracking(base_input):

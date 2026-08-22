@@ -172,7 +172,9 @@ class LSPManager:
                 continue
             cmd = cfg.get("command", "")
             if not cmd or shutil.which(cmd) is None:
-                logger.debug("lsp: skip '{}' (command '{}' not in PATH)", cfg.get("id"), cmd)
+                logger.debug(
+                    "lsp: skip '{}' (command '{}' not in PATH)", cfg.get("id"), cmd
+                )
                 continue
             self._configs.append(cfg)
         logger.info("lsp: {} server(s) configured (lazy start)", len(self._configs))
@@ -278,7 +280,9 @@ class LSPManager:
                 },
                 "workspace": {"workspaceFolders": True},
             },
-            "workspaceFolders": [{"uri": root_uri, "name": Path(server.root_path).name}],
+            "workspaceFolders": [
+                {"uri": root_uri, "name": Path(server.root_path).name}
+            ],
             "clientInfo": {"name": "necli-api", "version": "1.0"},
             "initializationOptions": server.config.get("initialization_options") or {},
         }
@@ -287,7 +291,9 @@ class LSPManager:
         # Конфигурация (pyright: diagnosticMode, useLibraryCodeForTypes и т.п.).
         settings = server.config.get("settings")
         if settings:
-            await self._notify(server, "workspace/didChangeConfiguration", {"settings": settings})
+            await self._notify(
+                server, "workspace/didChangeConfiguration", {"settings": settings}
+            )
 
     async def _reader_loop(self, server: LSPServer) -> None:
         proc = server._proc
@@ -326,7 +332,9 @@ class LSPManager:
             server._pending.clear()
             for fut in pending:
                 if not fut.done():
-                    fut.set_exception(ConnectionError(f"LSP server '{server.id}' reader stopped"))
+                    fut.set_exception(
+                        ConnectionError(f"LSP server '{server.id}' reader stopped")
+                    )
 
     def _dispatch(self, server: LSPServer, msg: dict) -> None:
         if "id" in msg and ("result" in msg or "error" in msg):
@@ -381,7 +389,9 @@ class LSPManager:
 
             task.add_done_callback(_done)
         except Exception as e:
-            logger.debug("lsp[{}] reply to server request id={} failed: {}", server.id, rid, e)
+            logger.debug(
+                "lsp[{}] reply to server request id={} failed: {}", server.id, rid, e
+            )
 
     async def _send(self, server: LSPServer, msg: dict) -> None:
         body = json.dumps(msg, ensure_ascii=False).encode("utf-8")
@@ -389,18 +399,23 @@ class LSPManager:
         server._proc.stdin.write(header + body)
         await server._proc.stdin.drain()
 
-    async def _request(self, server: LSPServer, method: str, params: dict, timeout: float = 10.0):
+    async def _request(
+        self, server: LSPServer, method: str, params: dict, timeout: float = 10.0
+    ):
         rid = server._next_id
         server._next_id += 1
         fut = asyncio.get_running_loop().create_future()
         server._pending[rid] = fut
         try:
             await self._send(
-                server, {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+                server,
+                {"jsonrpc": "2.0", "id": rid, "method": method, "params": params},
             )
             return await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
-            raise RuntimeError(f"LSP request '{method}' timed out after {timeout}s")  # noqa: B904
+        except asyncio.TimeoutError as e:
+            raise RuntimeError(
+                f"LSP request '{method}' timed out after {timeout}s"
+            ) from e
         finally:
             # Also runs on send failure and caller cancellation. _dispatch may
             # already have popped it; pop is intentionally idempotent.
@@ -416,7 +431,7 @@ class LSPManager:
         try:
             text = file_path.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
-            raise RuntimeError(f"cannot read {file_path}: {e}")  # noqa: B904
+            raise RuntimeError(f"cannot read {file_path}: {e}") from e
         version = 1
         server._opened[path_str] = version
         await self._notify(
@@ -434,7 +449,9 @@ class LSPManager:
 
     # ── публичные действия ──
 
-    def _run_action(self, file_path_str: str, line: int, character: int, action: str) -> ToolResult:
+    def _run_action(
+        self, file_path_str: str, line: int, character: int, action: str
+    ) -> ToolResult:
         from tools._paths import resolve_path
 
         path = resolve_path(file_path_str)
@@ -487,14 +504,20 @@ class LSPManager:
             "position": pos,
         }
         if action == "definition":
-            res = await self._request(server, "textDocument/definition", params, timeout=15.0)
+            res = await self._request(
+                server, "textDocument/definition", params, timeout=15.0
+            )
             return _format_locations(res, "definition")
         if action == "references":
             params["context"] = {"includeDeclaration": True}
-            res = await self._request(server, "textDocument/references", params, timeout=20.0)
+            res = await self._request(
+                server, "textDocument/references", params, timeout=20.0
+            )
             return _format_locations(res, "references")
         if action == "hover":
-            res = await self._request(server, "textDocument/hover", params, timeout=15.0)
+            res = await self._request(
+                server, "textDocument/hover", params, timeout=15.0
+            )
             return _format_hover(res)
         if action == "diagnostics":
             uri = _uri_for_path(path)
@@ -592,7 +615,9 @@ class LSPManager:
                     server._proc.kill()
                 except (OSError, ProcessLookupError) as e:
                     logger.warning(
-                        "lsp proc kill failed pid={}: {}", getattr(server._proc, "pid", None), e
+                        "lsp proc kill failed pid={}: {}",
+                        getattr(server._proc, "pid", None),
+                        e,
                     )
             # Явно закрываем subprocess-transport, ПОКА фоновый loop ещё жив.
             # Иначе BaseSubprocessTransport.__del__ дёрнет loop.call_soon уже
@@ -650,7 +675,12 @@ def _format_locations(res: Any, kind: str) -> str:
         if not isinstance(loc, dict):
             continue
         uri = loc.get("uri") or loc.get("targetUri") or ""
-        rng = loc.get("range") or loc.get("targetSelectionRange") or loc.get("targetRange") or {}
+        rng = (
+            loc.get("range")
+            or loc.get("targetSelectionRange")
+            or loc.get("targetRange")
+            or {}
+        )
         start = rng.get("start") or {}
         ln = start.get("line", 0) + 1
         ch = start.get("character", 0)
@@ -768,7 +798,13 @@ def init_lsp_from_config() -> int:
     if not cfgs:
         return 0
     LSPManager.instance().init_from_configs(cfgs)
-    return len([c for c in cfgs if c.get("enabled", True) and shutil.which(c.get("command", ""))])
+    return len(
+        [
+            c
+            for c in cfgs
+            if c.get("enabled", True) and shutil.which(c.get("command", ""))
+        ]
+    )
 
 
 def shutdown_lsp() -> None:

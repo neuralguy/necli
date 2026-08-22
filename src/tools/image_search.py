@@ -45,6 +45,8 @@ _EXT_BY_CT = {
 # query|max|size|type -> (timestamp, results)
 _search_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
 _cache_lock = threading.Lock()
+_filename_lock = threading.Lock()
+_reserved_filenames: set[str] = set()
 
 
 # Кеш результатов поиска (LRU + TTL). Subagents may invoke this tool from
@@ -111,7 +113,7 @@ def _search_ddg(query: str, max_results: int, args: dict) -> list[dict]:
             warnings.simplefilter("ignore", RuntimeWarning)
             from ddgs import DDGS
     except ImportError:
-        raise RuntimeError("ddgs not installed. Run: uv add ddgs")  # noqa: B904
+        raise RuntimeError("ddgs not installed. Run: uv add ddgs") from None
 
     kwargs: dict = {"max_results": max_results}
     if args.get("size"):
@@ -143,18 +145,23 @@ def _search_ddg(query: str, max_results: int, args: dict) -> list[dict]:
 
 
 # Скачивание + валидация через Pillow
-def _safe_name(idx: int, url: str, content_type: str) -> str:
-    base = f"image_{idx:02d}"
+def _query_filename_stem(query: str) -> str:
+    stem = re.sub(r'\s', "_", query)
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" ._")
+    return stem[:120].rstrip(" .") or "image"
+
+
+def _safe_name(name_stem: str, url: str, content_type: str) -> str:
     ext = _EXT_BY_CT.get((content_type or "").split(";")[0].strip().lower())
     if not ext:
         # URL path may contain slashes after the last dot (e.g. /a.x/y).
         # Path.suffix + strict validation keeps the generated filename flat.
         suffix = Path(urlsplit(url).path).suffix.lower()
         ext = suffix if re.fullmatch(r"\.[a-z0-9]{1,5}", suffix) else ".jpg"
-    return base + ext
+    return name_stem + ext
 
 
-def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
+def _download_one(idx: int, url: str, dest_dir: Path, name_stem: str) -> dict:
     """Качает одну картинку, валидирует Pillow. Возвращает dict со статусом."""
     import httpx
 
@@ -182,7 +189,9 @@ def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
             for chunk in resp.iter_bytes():
                 chunks.extend(chunk)
                 if len(chunks) > _MAX_DOWNLOAD_BYTES:
-                    out["error"] = f"too large (>{_MAX_DOWNLOAD_BYTES // (1024 * 1024)}MB)"
+                    out["error"] = (
+                        f"too large (>{_MAX_DOWNLOAD_BYTES // (1024 * 1024)}MB)"
+                    )
                     return out
             data = bytes(chunks)
     except Exception as e:
@@ -211,7 +220,7 @@ def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
 
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
-        name = _safe_name(idx, url, ct)
+        name = _safe_name(name_stem, url, ct)
         path = dest_dir / name
         path.write_bytes(data)
         out["ok"] = True
@@ -221,14 +230,42 @@ def _download_one(idx: int, url: str, dest_dir: Path) -> dict:
     return out
 
 
-def _download_many(items: list[tuple[int, str]], dest_dir: Path) -> list[dict]:
+def _download_many(
+    items: list[tuple[int, str]], dest_dir: Path, query: str
+) -> list[dict]:
     if not items:
         return []
-    if len(items) == 1:
-        idx, url = items[0]
-        return [_download_one(idx, url, dest_dir)]
-    with ThreadPoolExecutor(max_workers=min(_DOWNLOAD_MAX_WORKERS, len(items))) as ex:
-        return list(ex.map(lambda t: _download_one(t[0], t[1], dest_dir), items))
+
+    query_stem = _query_filename_stem(query)
+    pattern = re.compile(rf"^{re.escape(query_stem)}_(\d+)\.[^.]+$")
+    with _filename_lock:
+        existing_numbers = {
+            int(match.group(1))
+            for path in (dest_dir.iterdir() if dest_dir.exists() else ())
+            if path.is_file() and (match := pattern.match(path.name))
+        }
+        existing_numbers.update(
+            int(match.group(1))
+            for name in _reserved_filenames
+            if (match := pattern.match(name))
+        )
+        start = max(existing_numbers, default=0) + 1
+        name_stems = [f"{query_stem}_{start + i}" for i in range(len(items))]
+        reserved = {f"{name_stem}.reserved" for name_stem in name_stems}
+        _reserved_filenames.update(reserved)
+
+    try:
+        calls = [
+            (*item, dest_dir, name_stem)
+            for item, name_stem in zip(items, name_stems, strict=True)
+        ]
+        if len(calls) == 1:
+            return [_download_one(*calls[0])]
+        with ThreadPoolExecutor(max_workers=min(_DOWNLOAD_MAX_WORKERS, len(calls))) as ex:
+            return list(ex.map(lambda call: _download_one(*call), calls))
+    finally:
+        with _filename_lock:
+            _reserved_filenames.difference_update(reserved)
 
 
 # Вспомогательная: поиск + скачивание для одного запроса
@@ -237,7 +274,7 @@ def _search_and_download(
 ) -> tuple[list[dict], list[Path], list[dict]]:
     """Ищет картинки по query, скачивает все результаты, возвращает (results, image_paths, downloaded).
 
-    offset — сдвиг индекса для _safe_name, чтобы файлы из разных запросов не перезаписывали друг друга.
+    offset — сдвиг служебного индекса результатов между запросами.
     """
     size = args.get("size", "")
     type_ = args.get("type", "")
@@ -263,7 +300,7 @@ def _search_and_download(
 
     # Всегда скачиваем все результаты.
     sel = [(offset + i, r["image"]) for i, r in enumerate(results)]
-    downloaded = _download_many(sel, dest_dir)
+    downloaded = _download_many(sel, dest_dir, query)
     image_paths = [d["path"] for d in downloaded if d["ok"] and d["path"]]
     return results, image_paths, downloaded
 
@@ -296,7 +333,8 @@ def execute_image_search(call: ToolCall) -> ToolResult:
     if len(queries) > 5:
         queries = queries[:5]
         logger.warning(
-            "image_search: truncated queries to 5 (got {})", len(args.get("queries", []))
+            "image_search: truncated queries to 5 (got {})",
+            len(args.get("queries", [])),
         )
 
     try:

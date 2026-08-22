@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 import re
+import textwrap
 
 from rich.console import Console, Group
 from rich.syntax import Syntax
@@ -19,6 +21,18 @@ from tools.models import TOOL_TITLE_ARG as _TOOL_TITLE_ARG
 from ui.text_styles import styled_count_text
 
 is_compact = True
+
+# Терминал не поддерживает альфа-канал для фона, поэтому используем очень
+# низкоконтрастный серый оттенок: он выглядит как лёгкая полупрозрачная заливка.
+CREATE_BG_COLOR = "#25272b"
+
+
+def _apply_create_background(text: Text, *, width: int | None = None) -> Text:
+    if width is not None and len(text.plain) < width:
+        text.append(" " * (width - len(text.plain)))
+    text.stylize(f"on {CREATE_BG_COLOR}")
+    return text
+
 
 console = Console()
 
@@ -147,7 +161,9 @@ def _store_command(cmd: str, tool_name: str, args: dict, subtitle: str = "") -> 
         store = _render_store()
         if store is None:
             return
-        call = tools.ToolCall(command=cmd, tool_name=tool_name, args=dict(args or {}), raw="")
+        call = tools.ToolCall(
+            command=cmd, tool_name=tool_name, args=dict(args or {}), raw=""
+        )
         store.add_command_only(call, subtitle=subtitle)
     except Exception:
         pass
@@ -271,7 +287,7 @@ def _mcp_display_for(tool_name: str) -> tuple[str, str] | None:
         return None
     server, tname = rest.split("__", 1)
     info = ui.mcp_display(server, tname)
-    emoji = info.get("emoji", "🔌") or "🔌"
+    emoji = info.get("emoji", "⌁") or "⌁"
     label = info.get("label", f"{server}.{tname}")
     return (f"{emoji} {label}".strip(), _resolve_color(info, "magenta"))
 
@@ -301,7 +317,9 @@ def _w() -> int:
     return min(MAX_WIDTH(), console.width)
 
 
-def _compact_content(text: str, head: int | None = None, tail: int | None = None) -> str:
+def _compact_content(
+    text: str, head: int | None = None, tail: int | None = None
+) -> str:
     """Compact display: first `head` lines + ... N lines + last `tail` lines."""
     if head is None:
         head = COMPACT_HEAD_LINES()
@@ -315,7 +333,24 @@ def _compact_content(text: str, head: int | None = None, tail: int | None = None
     head_lines = lines[:head]
     # lines[-0:] вернул бы ВЕСЬ список (а не пустой хвост) — явно гасим tail==0.
     tail_lines = lines[-tail:] if tail > 0 else []
-    return "\n".join(head_lines) + f"\n\n... {skipped} lines\n\n" + "\n".join(tail_lines)
+    return (
+        "\n".join(head_lines) + f"\n\n... {skipped} lines\n\n" + "\n".join(tail_lines)
+    )
+
+
+def _relative_display_path(path: str) -> str:
+    """Сокращает абсолютный путь внутри рабочего проекта до относительного."""
+    if not path or not isinstance(path, str) or not os.path.isabs(path):
+        return str(path or "")
+    try:
+        from tools._paths import get_working_dir
+
+        relative = os.path.relpath(path, get_working_dir())
+        if relative != ".." and not relative.startswith(".." + os.sep):
+            return relative
+    except (OSError, ValueError):
+        pass
+    return path
 
 
 def _format_path_for_title(path) -> str:
@@ -331,20 +366,22 @@ def _format_path_for_title(path) -> str:
             if isinstance(p, dict):
                 p = p.get("path", str(p))
             if p:
-                names.append(str(p))
+                names.append(_relative_display_path(str(p)))
         if not names:
             return ""
         return names[0] if len(names) == 1 else f"{len(names)} files"
     if isinstance(path, dict):
         path = path.get("path", str(path))
-    return str(path) if path else ""
+    return _relative_display_path(str(path)) if path else ""
 
 
 def _compact_display_value(value: str, block_name: str = "") -> str:
     """Compact display: head + ... + tail for large text values."""
     if not isinstance(value, str):
         return value
-    if (block_name and is_block_expanded(block_name)) or (not block_name and _EXPANDED_PREVIEW):
+    if (block_name and is_block_expanded(block_name)) or (
+        not block_name and _EXPANDED_PREVIEW
+    ):
         return value
     return _compact_content(value, COMPACT_HEAD_LINES(), COMPACT_TAIL_LINES())
 
@@ -357,23 +394,22 @@ def prepare_display_args(args: dict, tool_name: str) -> dict:
 
     # Compact display of content for write_file / create_file / patch_file
     if "content" in display_args and isinstance(display_args["content"], str):
-        display_args["content"] = _compact_display_value(display_args["content"], tool_name)
+        display_args["content"] = _compact_display_value(
+            display_args["content"], tool_name
+        )
 
-    # Compact display for patches in patch_file
+    # Compact display for patches in patch_file. The wrapper indentation belongs
+    # to the tool-call formatting, not to the code shown to the user.
     if "patches" in display_args and isinstance(display_args["patches"], list):
         compact_patches = []
         for p in display_args["patches"]:
             cp = dict(p)
-            for key in ("find", "replace", "insert"):
+            for key in ("find", "replace"):
                 if key in cp and isinstance(cp[key], str):
+                    cp[key] = textwrap.dedent(cp[key])
                     cp[key] = _compact_display_value(cp[key], tool_name)
             compact_patches.append(cp)
         display_args["patches"] = compact_patches
-
-    # Top-level find/replace fields
-    for key in ("find", "replace", "insert"):
-        if key in display_args and isinstance(display_args[key], str):
-            display_args[key] = _compact_display_value(display_args[key], tool_name)
 
     return display_args
 
@@ -498,7 +534,7 @@ def _compact_title_text(
     Если задан lead_frame (кадр анимации) — он рисуется ВМЕСТО эмодзи в начале
     display_name (используется во время выполнения инструмента).
     """
-    display_name, color = TOOL_DISPLAY.get(tool_name, ("⏺ Tool", "yellow"))
+    display_name, color = TOOL_DISPLAY.get(tool_name, ("● Tool", "yellow"))
     if tool_name in ("memory", "docx", "pptx"):
         action = str(args.get("action", "")).strip().title()
         if action:
@@ -525,10 +561,14 @@ def _compact_title_text(
     # оставляем компактный счётчик — сами запросы идут отдельными строками.
     search_queries = args.get("queries")
     grouped_search = (
-        tool_name == "web_search" and isinstance(search_queries, list) and len(search_queries) > 1
+        tool_name == "web_search"
+        and isinstance(search_queries, list)
+        and len(search_queries) > 1
     )
     if grouped_search:
-        arg_disp = f"{len(search_queries)} queries" if is_block_expanded("web_search") else ""
+        arg_disp = (
+            f"{len(search_queries)} queries" if is_block_expanded("web_search") else ""
+        )
     if tool_name == "grep" and args.get("pattern"):
         pat = str(args["pattern"])[:60]
         arg_disp = f"{pat} -> {path_disp}" if path_disp else pat
@@ -618,7 +658,14 @@ def _compact_summary_line(
             # Свёрнутый вид: "N files" одной строкой; развёрнутый — дерево.
             if len(infos) >= 2 and not is_block_expanded("memory"):
                 return _i18n("compact.files_n", n=len(infos))
-            return "\n".join(infos)
+            display_infos = []
+            for info in infos:
+                path, separator, suffix = info.partition(" · ")
+                relative = _relative_display_path(path)
+                display_infos.append(
+                    relative + (separator + suffix if separator else "")
+                )
+            return "\n".join(display_infos)
         return ""
 
     if tool_name in ("docx", "pptx"):
@@ -631,7 +678,9 @@ def _compact_summary_line(
                 return f"block {target}"
             return "document metadata"
         if action == "help":
-            return str(args.get("topic") or ("blocks" if tool_name == "docx" else "operations"))
+            return str(
+                args.get("topic") or ("blocks" if tool_name == "docx" else "operations")
+            )
         if result is not None:
             out = (result.output or "").strip()
             if out:
@@ -763,9 +812,12 @@ def _compact_preview_content(
                 ).highlight(ln or " ")
                 if code.plain.endswith("\n"):
                     code.right_crop(1)
-                out.append(num + code)
+                code_width = max(1, console.width - len(num.plain))
+                out.append(num + _apply_create_background(code, width=code_width))
             except Exception:
-                out.append(num + Text(ln))
+                text = Text(ln)
+                code_width = max(1, console.width - len(num.plain))
+                out.append(num + _apply_create_background(text, width=code_width))
         if total > len(head):
             rest = total - len(head)
             out.append(
@@ -900,7 +952,9 @@ def _compact_preview_content(
     return None
 
 
-def _compact_read_preview(result: tools.ToolResult, args: dict | None = None) -> list | None:
+def _compact_read_preview(
+    result: tools.ToolResult, args: dict | None = None
+) -> list | None:
     """Превью для комбинированного read блока (несколько файлов).
 
     При _EXPANDED_PREVIEW показывает кликабельные пути файлов.
@@ -923,9 +977,8 @@ def _compact_read_preview(result: tools.ToolResult, args: dict | None = None) ->
             info = first[1:-1] if first.startswith("[") and first.endswith("]") else ""
             marker = info.find("lines ")
             suffix = info[marker:].strip() if marker >= 0 else str(requested_lines)
-        uri = _file_uri(path)
         line = Text(f"   {ui.get('symbols.summary_prefix', '⎿  ')}", style=t("info"))
-        line.append(uri, style=_file_link_style(path, "info"))
+        line.append(_relative_display_path(path), style=_file_link_style(path, "info"))
         if suffix:
             line.append(f" · {suffix}", style=t("info"))
         return [line]
@@ -958,14 +1011,19 @@ def _compact_read_preview(result: tools.ToolResult, args: dict | None = None) ->
         line = Text()
         line.append(f"{indent}{prefix}", style=t("info"))
         if path_part:
-            line.append(_file_uri(path_part), style=_file_link_style(path_part, "info"))
+            line.append(
+                _relative_display_path(path_part),
+                style=_file_link_style(path_part, "info"),
+            )
         if suffix_part:
             line.append(f" · {suffix_part}", style=t("info"))
         out.append(line)
     return out if out else None
 
 
-def _compact_result_list_preview(tool_name: str, result: tools.ToolResult) -> list | None:
+def _compact_result_list_preview(
+    tool_name: str, result: tools.ToolResult
+) -> list | None:
     """Превью списка результатов (grep/find/lsp): первые 3 строки + остаток."""
     output = (result.output or "").rstrip("\n")
     if not output:
@@ -1087,14 +1145,23 @@ def _compact_memory_catalog_preview(result: tools.ToolResult) -> list | None:
 
 
 def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
-    """Diff-preview для patch_file: минусы и плюсы с нумерацией."""
+    """Diff preview for patch_file, preserving every applied hunk as a unit."""
     out: list = []
-    # Заголовок-сообщение
+
+    def _dedent_hunk_lines(
+        old_lines: list[str], new_lines: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Remove presentation-only shared indentation from one diff hunk."""
+        if not old_lines and not new_lines:
+            return old_lines, new_lines
+        dedented = textwrap.dedent("\n".join([*old_lines, *new_lines])).split("\n")
+        return dedented[: len(old_lines)], dedented[len(old_lines) :]
+
     summary = ""
     for line in (result.output or "").split("\n"):
-        s = line.strip()
-        if s.startswith("✓"):
-            summary = s.lstrip("✓").strip()
+        stripped = line.strip()
+        if stripped.startswith("✓"):
+            summary = stripped.lstrip("✓").strip()
             break
     if summary:
         m = re.match(r"^.*?\s+updated\s+\((.+)\)\s*$", summary)
@@ -1102,166 +1169,287 @@ def _compact_patch_preview(args: dict, result: tools.ToolResult) -> list:
             stats = m.group(1)
             parts = []
             for chunk in stats.split(","):
-                c = chunk.strip()
-                m1 = re.match(r"^(\d+)\s+changed$", c)
-                m2 = re.match(r"^\+(\d+)\s+added$", c)
-                m3 = re.match(r"^-(\d+)\s+removed$", c)
-                if m1:
-                    parts.append(_i18n("patch.stats_changed", n=int(m1.group(1))))
-                elif m2:
-                    parts.append(_i18n("patch.stats_added", n=int(m2.group(1))))
-                elif m3:
-                    parts.append(_i18n("patch.stats_removed", n=int(m3.group(1))))
+                chunk = chunk.strip()
+                changed = re.match(r"^(\d+)\s+changed$", chunk)
+                added = re.match(r"^\+(\d+)\s+added$", chunk)
+                removed = re.match(r"^-(\d+)\s+removed$", chunk)
+                if changed:
+                    parts.append(_i18n("patch.stats_changed", n=int(changed.group(1))))
+                elif added:
+                    parts.append(_i18n("patch.stats_added", n=int(added.group(1))))
+                elif removed:
+                    parts.append(_i18n("patch.stats_removed", n=int(removed.group(1))))
                 else:
-                    parts.append(c)
+                    parts.append(chunk)
             summary = ", ".join(parts) if parts else stats
         out.append(
-            Text(f"   {ui.get('symbols.summary_prefix', '⎿  ')}{summary}", style=t("warning"))
+            Text(
+                f"   {ui.get('symbols.summary_prefix', '⎿  ')}{summary}",
+                style=t("warning"),
+            )
         )
 
-    file_path = args.get("path", "") or ""
-    m = re.match(r".*\.(\w+)$", file_path)
-    lexer = _EXT_LEXER_MAP.get(m.group(1).lower(), "text") if m else "text"
+    file_path = str(args.get("path", "") or "")
+    ext = re.match(r".*\.(\w+)$", file_path)
+    lexer = _EXT_LEXER_MAP.get(ext.group(1).lower(), "text") if ext else "text"
 
-    # Prefer the actual applied hunks carried by patch_file.  Reconstructing a
-    # diff from tool arguments was lossy for native JSON calls and fuzzy edits.
-    minus_lines: list[tuple[int, str]] = []
-    plus_lines: list[tuple[int, str]] = []
+    # Canonical renderer input: a list of independent hunks.  Keeping this
+    # structure is important: flattening all deletions and all additions was
+    # what made separate patches visually merge into one misleading diff.
+    hunks: list[dict] = []
     actual_changes = getattr(result, "patch_changes", None) or []
     if actual_changes:
         for change in actual_changes:
             if not isinstance(change, dict):
                 continue
-            old_start = int(change.get("old_start", 1) or 1)
-            new_start = int(change.get("new_start", old_start) or old_start)
-            for offset, line in enumerate(change.get("old_lines") or []):
-                minus_lines.append((old_start + offset, str(line)))
-            for offset, line in enumerate(change.get("new_lines") or []):
-                plus_lines.append((new_start + offset, str(line)))
+            hunks.append(
+                {
+                    "old_start": int(change.get("old_start", 1) or 1),
+                    "new_start": int(
+                        change.get("new_start", change.get("old_start", 1)) or 1
+                    ),
+                    "old_lines": [str(v) for v in (change.get("old_lines") or [])],
+                    "new_lines": [str(v) for v in (change.get("new_lines") or [])],
+                }
+            )
     else:
         from agent.diff_render import _locate_find_in_file as _locate
 
-        # Fallback for in-progress streaming and old persisted sessions.
         line_starts = list(getattr(result, "line_starts", None) or [])
-        block_idx = [0]
 
-        def _split(text: str) -> list[str]:
-            lns = (text or "").split("\n")
-            if lns and lns[-1] == "":
-                lns = lns[:-1]
-            return lns
+        def _split(text: object) -> list[str]:
+            lines = str(text or "").split("\n")
+            if lines and lines[-1] == "":
+                lines.pop()
+            return lines
 
-        def _add_block(find_text: str, replace_text: str, insert_text: str = "") -> None:
-            find_lns = _split(find_text)
-            repl_lns = _split(replace_text or insert_text)
-            bi = block_idx[0]
-            block_idx[0] += 1
-            start = line_starts[bi] if bi < len(line_starts) else (
-                _locate(file_path, find_text) if find_text else 1
+        def _append_hunk(find_text: object, replace_text: object, index: int) -> None:
+            find_text = textwrap.dedent(str(find_text or ""))
+            replace_text = textwrap.dedent(str(replace_text or ""))
+            find_lines = _split(find_text)
+            replace_lines = _split(replace_text)
+            start_line = (
+                int(line_starts[index])
+                if index < len(line_starts)
+                else (_locate(file_path, find_text) if find_text else 1)
             )
-            # Anchor lines shared by FIND/REPLACE are context, not changes.
-            pref = 0
-            while pref < len(find_lns) and pref < len(repl_lns) and find_lns[pref] == repl_lns[pref]:
-                pref += 1
-            suf = 0
+            # Shared anchors are context, not changed rows.
+            prefix = 0
             while (
-                suf < len(find_lns) - pref
-                and suf < len(repl_lns) - pref
-                and find_lns[len(find_lns) - 1 - suf] == repl_lns[len(repl_lns) - 1 - suf]
+                prefix < len(find_lines)
+                and prefix < len(replace_lines)
+                and find_lines[prefix] == replace_lines[prefix]
             ):
-                suf += 1
-            find_core = find_lns[pref : len(find_lns) - suf] if suf else find_lns[pref:]
-            repl_core = repl_lns[pref : len(repl_lns) - suf] if suf else repl_lns[pref:]
-            for offset, line in enumerate(find_core):
-                minus_lines.append((start + pref + offset, line))
-            for offset, line in enumerate(repl_core):
-                plus_lines.append((start + pref + offset, line))
+                prefix += 1
+            suffix = 0
+            while (
+                suffix < len(find_lines) - prefix
+                and suffix < len(replace_lines) - prefix
+                and find_lines[-1 - suffix] == replace_lines[-1 - suffix]
+            ):
+                suffix += 1
+            old_core = (
+                find_lines[prefix : len(find_lines) - suffix]
+                if suffix
+                else find_lines[prefix:]
+            )
+            new_core = (
+                replace_lines[prefix : len(replace_lines) - suffix]
+                if suffix
+                else replace_lines[prefix:]
+            )
+            if old_core or new_core:
+                hunks.append(
+                    {
+                        "old_start": start_line + prefix,
+                        "new_start": start_line + prefix,
+                        "old_lines": old_core,
+                        "new_lines": new_core,
+                    }
+                )
 
         patches = args.get("patches")
         if isinstance(patches, list):
-            for patch in patches:
+            for index, patch in enumerate(patches):
                 if isinstance(patch, dict):
-                    _add_block(
-                        patch.get("find", ""),
-                        patch.get("replace", ""),
-                        patch.get("insert", ""),
-                    )
-        if "find" in args or "replace" in args or "insert" in args:
-            _add_block(args.get("find", ""), args.get("replace", ""), args.get("insert", ""))
+                    _append_hunk(patch.get("find", ""), patch.get("replace", ""), index)
 
-    total = len(minus_lines) + len(plus_lines)
-    if total == 0:
+    if not hunks:
         return out
 
-    # Inline-формат (как в Claude Code): сначала все удалённые строки (-),
-    # затем все добавленные (+), каждая со своим абсолютным номером, фон на
-    # всю ширину терминала.
-    total_lines = len(minus_lines) + len(plus_lines)
+    for hunk in hunks:
+        old_lines, new_lines = _dedent_hunk_lines(
+            hunk["old_lines"], hunk["new_lines"]
+        )
+        hunk["old_lines"] = old_lines
+        hunk["new_lines"] = new_lines
+
+    total_rows = sum(len(h["old_lines"]) + len(h["new_lines"]) for h in hunks)
     limit = None if is_block_expanded("patch_file") else _preview_limit()
-    if limit is None:
-        minus_show = minus_lines
-        plus_show = plus_lines
-    else:
-        minus_show = minus_lines[:limit]
-        remaining = max(0, limit - len(minus_show))
-        plus_show = plus_lines[:remaining]
-    shown = len(minus_show) + len(plus_show)
+    remaining = total_rows if limit is None else max(0, int(limit))
 
-    max_abs = max(
-        max((n for n, _ in minus_show), default=0),
-        max((n for n, _ in plus_show), default=0),
-    )
-    num_w = max(1, len(str(max_abs or 1)))
-
-    def _hl(ln: str) -> Text:
+    def _highlight(line: str) -> Text:
         try:
-            code = Syntax(
-                ln or " ",
+            rendered = Syntax(
+                line or " ",
                 lexer,
                 theme="monokai",
                 line_numbers=False,
                 padding=(0, 0),
                 background_color="default",
                 word_wrap=False,
-            ).highlight(ln or " ")
-            if code.plain.endswith("\n"):
-                code.right_crop(1)
-            return code
+            ).highlight(line or " ")
+            if rendered.plain.endswith("\n"):
+                rendered.right_crop(1)
+            return rendered
         except Exception:
-            return Text(ln)
+            return Text(line)
 
     bg_del = ui.get("diff_colors.bg_delete") or t("diff_del_bg")
     bg_add = ui.get("diff_colors.bg_add") or t("diff_add_bg")
     fg_del = ui.get("diff_colors.fg_delete") or t("diff_del_fg")
     fg_add = ui.get("diff_colors.fg_add") or t("diff_add_fg")
-    pref_del = ui.get("diff_colors.prefix_delete", "- ")
-    pref_add = ui.get("diff_colors.prefix_add", "+ ")
+    prefix_del = str(ui.get("diff_colors.prefix_delete", "- "))
+    prefix_add = str(ui.get("diff_colors.prefix_add", "+ "))
+    hunk_separator = str(ui.get("symbols.patch_hunk_separator", "..."))
+    mode = str(ui.get("diff.mode", "inline") or "inline").lower().replace("-", "_")
+    if mode not in {"inline", "side_by_side"}:
+        mode = "inline"
+    if mode == "side_by_side":
+        hunk_separator = "..."
 
-    term_w = console.width
-    # layout: "      NN " + sign(2) + body — фон тянется на всю ширину строки.
-    prefix_w = 6 + num_w + 1
-    body_w = max(8, term_w - prefix_w - len(pref_del) - 2)
+    max_num = max(
+        [1]
+        + [h["old_start"] + max(0, len(h["old_lines"]) - 1) for h in hunks]
+        + [h["new_start"] + max(0, len(h["new_lines"]) - 1) for h in hunks]
+    )
+    num_w = len(str(max_num))
 
-    def _emit(rows: list[tuple[int, str]], sign: str, fg: str, bg: str) -> None:
-        for num_val, text_ln in rows:
-            num_str = str(num_val).rjust(num_w)
-            prefix = Text(f"      {num_str} ", style=t("fg_primary"))
-            sign_t = Text(sign, style=f"bold {fg} on {bg}")
-            body = _hl(text_ln)
-            if len(body.plain) > body_w:
-                body = body[: max(1, body_w - 1)]
-                body.append("\u2026")
-            body.stylize(f"on {bg}")
-            pad = body_w - len(body.plain)
-            if pad > 0:
-                body.append(" " * pad, style=f"on {bg}")
-            out.append(prefix + sign_t + body)
+    def _trim_body(body: Text, width: int) -> Text:
+        width = max(1, width)
+        if len(body.plain) <= width:
+            return body
+        body = body[: max(1, width - 1)]
+        body.append(str(ui.get("symbols.ellipsis", "…")))
+        return body
 
-    _emit(minus_show, pref_del, fg_del, bg_del)
-    _emit(plus_show, pref_add, fg_add, bg_add)
+    def _inline_row(number: int, line: str, sign: str, fg: str, bg: str) -> Text:
+        prefix = Text(f"      {str(number).rjust(num_w)} ", style=t("fg_primary"))
+        sign_text = Text(sign, style=f"bold {fg} on {bg}")
+        body_width = max(8, console.width - len(prefix.plain) - len(sign) - 2)
+        body = _trim_body(_highlight(line), body_width)
+        body.stylize(f"on {bg}")
+        if len(body.plain) < body_width:
+            body.append(" " * (body_width - len(body.plain)), style=f"on {bg}")
+        return prefix + sign_text + body
 
-    rest_rows = total_lines - shown
-    if rest_rows > 0:
+    separator = str(ui.get("symbols.diff_separator", "  │  "))
+    side_fixed = (
+        6
+        + num_w
+        + 1
+        + len(prefix_del)
+        + 6
+        + num_w
+        + 1
+        + len(prefix_add)
+        + len(separator)
+    )
+    side_cell_width = max(8, (console.width - side_fixed) // 2)
+    side_separator_column = (
+        6 + num_w + 1 + len(prefix_del) + side_cell_width + len(separator) // 2
+    )
+
+    def _side_row(
+        old_number: int | None,
+        old_line: str | None,
+        new_number: int | None,
+        new_line: str | None,
+    ) -> Text:
+        cell_width = side_cell_width
+        row = Text()
+        if old_number is None:
+            row.append(" " * (6 + num_w + 1 + len(prefix_del) + cell_width))
+        else:
+            row.append(f"      {str(old_number).rjust(num_w)} ", style=t("fg_primary"))
+            row.append(prefix_del, style=f"bold {fg_del} on {bg_del}")
+            body = _trim_body(_highlight(old_line or ""), cell_width)
+            body.stylize(f"on {bg_del}")
+            if len(body.plain) < cell_width:
+                body.append(" " * (cell_width - len(body.plain)), style=f"on {bg_del}")
+            row.append_text(body)
+        row.append(separator, style="dim")
+        if new_number is None:
+            row.append(" " * (6 + num_w + 1 + len(prefix_add) + cell_width))
+        else:
+            row.append(f"{str(new_number).rjust(num_w)} ", style=t("fg_primary"))
+            row.append(prefix_add, style=f"bold {fg_add} on {bg_add}")
+            body = _trim_body(_highlight(new_line or ""), cell_width)
+            body.stylize(f"on {bg_add}")
+            if len(body.plain) < cell_width:
+                body.append(" " * (cell_width - len(body.plain)), style=f"on {bg_add}")
+            row.append_text(body)
+        return row
+
+    shown_rows = 0
+    rendered_hunks = 0
+    for _hunk_index, hunk in enumerate(hunks):
+        old_lines = hunk["old_lines"]
+        new_lines = hunk["new_lines"]
+        if remaining <= 0:
+            break
+        if rendered_hunks:
+            if mode == "side_by_side" and console.width >= 72:
+                marker_offset = max(0, side_separator_column - len(hunk_separator) // 2)
+                marker = (" " * marker_offset) + hunk_separator
+            else:
+                marker = f"      {' ' * num_w}   {hunk_separator}"
+            out.append(Text(marker, style=t("dim_text")))
+        rendered_hunks += 1
+
+        if mode == "side_by_side" and console.width >= 72:
+            paired = max(len(old_lines), len(new_lines))
+            for offset in range(paired):
+                # One visual side-by-side row may represent up to two changed
+                # source lines; account both against the compact line budget.
+                cost = int(offset < len(old_lines)) + int(offset < len(new_lines))
+                if cost > remaining:
+                    break
+                old_number = (
+                    hunk["old_start"] + offset if offset < len(old_lines) else None
+                )
+                new_number = (
+                    hunk["new_start"] + offset if offset < len(new_lines) else None
+                )
+                old_line = old_lines[offset] if offset < len(old_lines) else None
+                new_line = new_lines[offset] if offset < len(new_lines) else None
+                out.append(_side_row(old_number, old_line, new_number, new_line))
+                remaining -= cost
+                shown_rows += cost
+        else:
+            for offset, line in enumerate(old_lines):
+                if remaining <= 0:
+                    break
+                out.append(
+                    _inline_row(
+                        hunk["old_start"] + offset, line, prefix_del, fg_del, bg_del
+                    )
+                )
+                remaining -= 1
+                shown_rows += 1
+            for offset, line in enumerate(new_lines):
+                if remaining <= 0:
+                    break
+                out.append(
+                    _inline_row(
+                        hunk["new_start"] + offset, line, prefix_add, fg_add, bg_add
+                    )
+                )
+                remaining -= 1
+                shown_rows += 1
+
+    rest_rows = max(0, total_rows - shown_rows)
+    if rest_rows:
         out.append(
             styled_count_text(
                 _i18n("compact.more_lines", n=rest_rows),
@@ -1316,7 +1504,9 @@ def _show_tool_compact(
     if skipped:
         status_full = icon
     else:
-        status_full = f"{icon}{time_str}{_format_tool_tokens(call, result)}" if icon else ""
+        status_full = (
+            f"{icon}{time_str}{_format_tool_tokens(call, result)}" if icon else ""
+        )
 
     # Весь блок инструмента печатается ОДНИМ print_block (внутри — один
     # print_static): построчная печать давала бы по run_in_terminal на строку.
@@ -1337,7 +1527,9 @@ def _show_tool_compact(
 
     summary = _compact_summary_line(tool_name, args, result, cmd)
     if summary:
-        sum_color = t("error") if (result is not None and result.status != "ok") else t("info")
+        sum_color = (
+            t("error") if (result is not None and result.status != "ok") else t("info")
+        )
         lines = summary.split("\n")
         single = len(lines) == 1
         for i, line in enumerate(lines):
@@ -1478,7 +1670,7 @@ def show_scan_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> 
             prefix = "\u23bf " if i == 0 else "  "
             line = Text()
             line.append(f"{indent}{prefix}", style=t("info"))
-            line.append(_file_uri(path), style=_file_link_style(path, "info"))
+            line.append(_relative_display_path(path), style=_file_link_style(path, "info"))
             line.append(f" · {suffix}", style=t("info"))
             parts.append(line)
     else:
@@ -1501,7 +1693,9 @@ def show_scan_combined(pairs: list[tuple[tools.ToolCall, tools.ToolResult]]) -> 
 show_read_combined = show_scan_combined
 
 
-def _format_grep_info(call: tools.ToolCall, result: tools.ToolResult) -> tuple[str, str]:
+def _format_grep_info(
+    call: tools.ToolCall, result: tools.ToolResult
+) -> tuple[str, str]:
     """(path, suffix) для grep-строки комбинированного блока.
 
     path — кликабельная цель поиска; suffix — pattern и первая строка вывода
@@ -1519,7 +1713,9 @@ def _format_grep_info(call: tools.ToolCall, result: tools.ToolResult) -> tuple[s
     return path, " · ".join(suffix_parts) or "grep"
 
 
-def _format_read_info(call: tools.ToolCall, result: tools.ToolResult) -> tuple[str, str] | None:
+def _format_read_info(
+    call: tools.ToolCall, result: tools.ToolResult
+) -> tuple[str, str] | None:
     """Форматирует информацию о прочитанном файле.
 
     Возвращает (path, suffix) или None, если файл был прочитан полностью
@@ -1604,7 +1800,9 @@ def render_md_panel(text: str, subtitle: str = "", message_num: int = 0):
         if not rest:
             return header
         rest_md = ResponseMarkdown(
-            escape_md_underscores(rest), code_theme="monokai", inline_code_theme="monokai"
+            escape_md_underscores(rest),
+            code_theme="monokai",
+            inline_code_theme="monokai",
         )
         return RGroup(header, rest_md)
     return RGroup(header, md)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "necli"
-version = "1.0.1"
+version = "1.1.0"
 description = "API-first terminal AI agent with interactive and headless modes."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,6 +34,7 @@ dependencies = [
     "tiktoken>=0.7",
     "trafilatura>=1.12",
     "wcwidth>=0.2.13",
+    "websockets>=15.0,<17",
 ]
 
 [project.optional-dependencies]

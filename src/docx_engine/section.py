@@ -96,7 +96,11 @@ def section_settings_from_xml(xml: str) -> dict:
 
 def read_section_settings(parsed) -> dict:
     sect = next(
-        (b for b in parsed.blocks if b.hidden and b.original_xml and "<w:sectPr" in b.original_xml),
+        (
+            b
+            for b in parsed.blocks
+            if b.hidden and b.original_xml and "<w:sectPr" in b.original_xml
+        ),
         None,
     )
     return section_settings_from_xml(sect.original_xml if sect else "")
@@ -117,7 +121,8 @@ def _hf_refs(xml, kind):
 
 def _section_from(sect_pr_xml, first_idx, last_idx):
     t = re.search(
-        r'<w:type[^>]*w:val="(nextPage|continuous|evenPage|oddPage|nextColumn)"', sect_pr_xml
+        r'<w:type[^>]*w:val="(nextPage|continuous|evenPage|oddPage|nextColumn)"',
+        sect_pr_xml,
     )
     start = re.search(r'<w:pgNumType[^>]*w:start="(\d+)"', sect_pr_xml)
     fmt = re.search(r'<w:pgNumType[^>]*w:fmt="([^"]+)"', sect_pr_xml)
@@ -277,7 +282,9 @@ def apply_section_settings(sect_pr_xml: str, s: dict) -> str:
             tag = tag[:-1] + f' w:space="{col_space}">'
             if columns > 1 and not re.search(r'\sw:num="', tag):
                 tag = tag[:-1] + f' w:num="{columns}">'
-            xml = xml[: cm.start()] + tag + cm.group(0)[len(open_tag) :] + xml[cm.end() :]
+            xml = (
+                xml[: cm.start()] + tag + cm.group(0)[len(open_tag) :] + xml[cm.end() :]
+            )
         else:
             tag = f'<w:cols{num_attr} w:space="{col_space}"/>'
             xml = xml[: cm.start()] + tag + xml[cm.end() :]
@@ -292,7 +299,9 @@ def apply_section_settings(sect_pr_xml: str, s: dict) -> str:
     def replace_optional(tag_name, replacement, anchors=()):
         nonlocal xml
         xml = re.sub(
-            rf"<w:{tag_name}\b[^>]*/>|<w:{tag_name}\b[^>]*>[\s\S]*?</w:{tag_name}>", "", xml
+            rf"<w:{tag_name}\b[^>]*/>|<w:{tag_name}\b[^>]*>[\s\S]*?</w:{tag_name}>",
+            "",
+            xml,
         )
         if not replacement:
             return
@@ -352,5 +361,7 @@ def apply_section_start_type(sect_pr_xml, type_):
 
 
 def read_page_color(parsed):
-    m = re.search(r'<w:background[^>]*w:color="([0-9A-Fa-f]{6})"', parsed.internal["documentXml"])
+    m = re.search(
+        r'<w:background[^>]*w:color="([0-9A-Fa-f]{6})"', parsed.internal["documentXml"]
+    )
     return m.group(1).upper() if m else None

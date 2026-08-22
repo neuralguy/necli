@@ -5,6 +5,7 @@ from loguru import logger
 from tools.models import ToolCall, ToolResult
 
 _MAX_RESULTS = 5
+_MAX_RESULTS_LIMIT = 20
 _MAX_RETRIES = 2
 _RETRY_DELAY = 1.0
 
@@ -56,7 +57,9 @@ def execute_web_search(call: ToolCall) -> ToolResult:
 
     if len(queries) > 5:
         queries = queries[:5]
-        logger.warning("web_search: truncated queries to 5 (got {})", len(args.get("queries", [])))
+        logger.warning(
+            "web_search: truncated queries to 5 (got {})", len(args.get("queries", []))
+        )
 
     try:
         max_results = int(args.get("max_results") or _MAX_RESULTS)
@@ -67,6 +70,8 @@ def execute_web_search(call: ToolCall) -> ToolResult:
             _MAX_RESULTS,
         )
         max_results = _MAX_RESULTS
+
+    max_results = max(1, min(max_results, _MAX_RESULTS_LIMIT))
 
     try:
         import warnings

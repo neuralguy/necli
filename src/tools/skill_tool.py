@@ -50,7 +50,10 @@ def execute_skill(call: ToolCall) -> ToolResult:
 def _render_subagent_info() -> str:
     """Живой список моделей и пресетов субагентов — подставляется в скилл."""
     try:
-        from system_prompt import _build_agent_presets_block, _build_subagent_models_block
+        from system_prompt import (
+            _build_agent_presets_block,
+            _build_subagent_models_block,
+        )
     except Exception:
         return ""
     out = ""

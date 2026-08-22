@@ -113,13 +113,17 @@ async def telegram_interactive():
         if choice == 0:
             # Токен бота — такой же секрет, как ключ API: вводим под маской,
             # чтобы он не остался в scrollback открытым текстом.
-            new_token = await overlays.ask_text(f"{_('tg.field_token')}:", password=True)
+            new_token = await overlays.ask_text(
+                f"{_('tg.field_token')}:", password=True
+            )
             if new_token:
                 config.set_telegram_bot_token(new_token)
             continue
 
         if choice == 1:
-            new_chat = await overlays.ask_text(f"{_('tg.field_chat')} ({_('tg.field_chat_hint')}):")
+            new_chat = await overlays.ask_text(
+                f"{_('tg.field_chat')} ({_('tg.field_chat_hint')}):"
+            )
             if new_chat:
                 config.set_telegram_chat_id(new_chat)
             continue
@@ -188,7 +192,9 @@ async def _discover_chat_id(token: str) -> None:
             continue
         chat = msg.get("chat") or {}
         cid = chat.get("id")
-        title = chat.get("title") or chat.get("username") or chat.get("first_name") or ""
+        title = (
+            chat.get("title") or chat.get("username") or chat.get("first_name") or ""
+        )
         if cid and cid not in seen:
             seen[cid] = (chat.get("type", "?"), title)
 
@@ -201,7 +207,9 @@ async def _discover_chat_id(token: str) -> None:
         for cid, (ctype, title) in seen.items()
     ]
     items.append({"label": _("common.cancel")})
-    pick = await card_menu(items, title=_("tg.discovered"), facts=[_("tg.save_chat_hint")])
+    pick = await card_menu(
+        items, title=_("tg.discovered"), facts=[_("tg.save_chat_hint")]
+    )
     if pick is not None and pick < len(seen):
         chosen = list(seen.keys())[pick]
         config.set_telegram_chat_id(str(chosen))

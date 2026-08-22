@@ -23,7 +23,9 @@ def atomic_write_text(path: Path | str, text: str, *, encoding: str = "utf-8") -
     existing_mode: int | None = None
     with contextlib.suppress(OSError):
         existing_mode = stat.S_IMODE(target.stat().st_mode)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
     try:
         if existing_mode is not None:
             if hasattr(os, "fchmod"):

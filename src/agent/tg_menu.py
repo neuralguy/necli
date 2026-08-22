@@ -164,8 +164,6 @@ def _format_plan(state) -> str:
         icon = icons.get(st.status, "•")
         title = st.title[:200]
         line = f"{icon} <b>{i + 1}.</b> {html.escape(title)}"
-        if st.notes:
-            line += f" — <i>{html.escape(st.notes[:100])}</i>"
         lines.append(line)
     return "\n".join(lines)
 

@@ -19,6 +19,7 @@ from commands.menus._style import (
 )
 from config.i18n import t as _
 from logger import logger
+from models import DEFAULT_CONTEXT_LIMIT
 from ui import overlays
 
 
@@ -206,14 +207,18 @@ async def _provider_menu(
             ]
         )
         if badge_w:
-            headings.append(("  " + cell(_("api.col_status"), badge_w, "right"), pal.dim))
+            headings.append(
+                ("  " + cell(_("api.col_status"), badge_w, "right"), pal.dim)
+            )
         lines.append(row_line(headings, width, pal=pal))
         if above:
             lines.append(more_note(above, up=True))
         for pos in range(start, end):
             if pos == 0:
                 oauth_label = (
-                    _("api.chatgpt_provider") if chatgpt_connected else _("api.chatgpt_connect")
+                    _("api.chatgpt_provider")
+                    if chatgpt_connected
+                    else _("api.chatgpt_connect")
                 )
                 oauth_hint = (
                     _("api.chatgpt_manage_hint")
@@ -254,7 +259,9 @@ async def _provider_menu(
                 continue
             orig = order[pos - 1]
             r = rows[orig]
-            is_active = orig < total_providers and visible_providers[orig]["id"] == active_api
+            is_active = (
+                orig < total_providers and visible_providers[orig]["id"] == active_api
+            )
             cells = [
                 ("● " if is_active else "  ", pal.success),
                 (cell(r["label"], label_w), pal.success if is_active else ""),
@@ -305,7 +312,9 @@ async def _provider_menu(
             break
     result_pos = await _run_panel(
         render_fn,
-        key_hints(("type", "to search"), ("↑↓", "move"), ("enter", "open"), ("esc", "close")),
+        key_hints(
+            ("type", "to search"), ("↑↓", "move"), ("enter", "open"), ("esc", "close")
+        ),
         total,
         initial_pos,
         on_key=on_key,
@@ -395,7 +404,9 @@ async def api_interactive():
 
             defn = get_definition(chatgpt["id"])
             await refresh_chatgpt_usage(force=True, proxy=defn.proxy if defn else "")
-            chatgpt = next((p for p in list_providers() if p.get("type") == "chatgpt"), chatgpt)
+            chatgpt = next(
+                (p for p in list_providers() if p.get("type") == "chatgpt"), chatgpt
+            )
             result = await _api_provider_detail(chatgpt, active_api, active_model)
             if result is not None:
                 return result
@@ -414,7 +425,9 @@ async def api_interactive():
             defn = get_definition(provider["id"])
             await refresh_chatgpt_usage(force=True, proxy=defn.proxy if defn else "")
             providers = list_providers()
-            provider = next((p for p in providers if p["id"] == provider["id"]), provider)
+            provider = next(
+                (p for p in providers if p["id"] == provider["id"]), provider
+            )
         result = await _api_provider_detail(provider, active_api, active_model)
         if result is not None:
             return result
@@ -433,7 +446,9 @@ async def _api_model_add(provider_id: str):
     if display_name is None:
         return
     ctx_str = await overlays.ask_text(
-        f"{_('api.field_context_window')}:", default="128000", validate=_validate_int
+        f"{_('api.field_context_window')}:",
+        default=str(DEFAULT_CONTEXT_LIMIT),
+        validate=_validate_int,
     )
     if ctx_str is None:
         return
@@ -519,7 +534,9 @@ async def _api_provider_edit(provider_id: str):
     name = await overlays.ask_text(f"{head}{_('api.field_name')}:", default=defn.name)
     if name is None:
         return
-    base_url = await overlays.ask_text(f"{head}{_('api.field_base_url')}:", default=defn.base_url)
+    base_url = await overlays.ask_text(
+        f"{head}{_('api.field_base_url')}:", default=defn.base_url
+    )
     if base_url is None:
         return
     ptype = await overlays.ask_text(f"{head}{_('api.field_type')}:", default=defn.type)
@@ -590,7 +607,9 @@ def _prompt_cache_enabled(defn) -> bool:
     if mode in {"anthropic", "anthropic_cache_control", "cache_control", "on", "true"}:
         return True
     model_ids = [getattr(m, "id", "") for m in getattr(defn, "models", [])]
-    return any("claude" in mid.lower() or "anthropic/" in mid.lower() for mid in model_ids)
+    return any(
+        "claude" in mid.lower() or "anthropic/" in mid.lower() for mid in model_ids
+    )
 
 
 async def _api_keys_menu(provider_id: str, active_api: str) -> None:
@@ -634,7 +653,9 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
         choice = await card_menu(
             items,
             title=f"Ключи: {provider_id}",
-            facts=[f"{len(credentials)} key(s) · ★ — главный, с него начинаются запросы"],
+            facts=[
+                f"{len(credentials)} key(s) · ★ — главный, с него начинаются запросы"
+            ],
         )
         if choice is None or choice == len(credentials) + 1:
             return
@@ -724,7 +745,9 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
         if action == 0:
             # Без default: пустой ввод здесь означает «ничего не менять»,
             # а '-' — очистить имя.
-            name = await overlays.ask_text(f"Имя ({current['name'] or 'без имени'}, '-' убрать):")
+            name = await overlays.ask_text(
+                f"Имя ({current['name'] or 'без имени'}, '-' убрать):"
+            )
             if not name:
                 continue
             set_api_credential_name(provider_id, choice, "" if name == "-" else name)
@@ -737,7 +760,9 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
             )
             if not proxy:
                 continue
-            update_api_credential_proxy(provider_id, choice, "" if proxy == "-" else proxy)
+            update_api_credential_proxy(
+                provider_id, choice, "" if proxy == "-" else proxy
+            )
             reload_providers()
             _refresh_active_api_session(provider_id, active_api)
             continue
@@ -782,10 +807,14 @@ async def _api_keys_menu(provider_id: str, active_api: str) -> None:
         if action == 5:
             # Ключ показываем внутри оверлея, а не печатаем в scrollback:
             # статику стереть нельзя, и секрет остался бы в истории терминала.
-            await card_menu([{"label": _("common.back")}], title="API key", facts=[current["key"]])
+            await card_menu(
+                [{"label": _("common.back")}], title="API key", facts=[current["key"]]
+            )
             continue
 
-        if action == 6 and await confirm_delete(f"Удалить ключ {_mask_api_key(current['key'])}?"):
+        if action == 6 and await confirm_delete(
+            f"Удалить ключ {_mask_api_key(current['key'])}?"
+        ):
             remove_api_credential(provider_id, choice)
             reload_providers()
             _refresh_active_api_session(provider_id, active_api)
@@ -814,12 +843,18 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
             from apis.chatgpt_usage import get_cached_chatgpt_usage
 
             auth_status = chatgpt_auth_status()
-            weekly_usage = get_cached_chatgpt_usage() if auth_status.get("authenticated") else None
+            weekly_usage = (
+                get_cached_chatgpt_usage() if auth_status.get("authenticated") else None
+            )
         else:
             weekly_usage = None
-        has_key = bool(auth_status.get("authenticated")) if is_chatgpt else bool(credentials)
+        has_key = (
+            bool(auth_status.get("authenticated")) if is_chatgpt else bool(credentials)
+        )
         cache_enabled = _prompt_cache_enabled(defn)
-        cache_status = _("api.prompt_cache_on") if cache_enabled else _("api.prompt_cache_off")
+        cache_status = (
+            _("api.prompt_cache_on") if cache_enabled else _("api.prompt_cache_off")
+        )
         if is_chatgpt:
             key_status = (
                 auth_status.get("email") or _("api.chatgpt_connected")
@@ -828,7 +863,9 @@ async def _api_provider_detail(provider: dict, active_api: str, active_model: st
             )
         else:
             key_status = (
-                f"{len(credentials)} key(s)" if has_key else f"API key: {_('common.not_set')}"
+                f"{len(credentials)} key(s)"
+                if has_key
+                else f"API key: {_('common.not_set')}"
             )
         if weekly_usage:
             remaining = float(weekly_usage.get("remaining_percent") or 0)
@@ -1063,7 +1100,11 @@ def _ensure_chatgpt_provider() -> None:
 
     models = chatgpt_models()
     existing = next(
-        (provider for provider in list_api_configs() if provider.get("id") == "chatgpt"),
+        (
+            provider
+            for provider in list_api_configs()
+            if provider.get("id") == "chatgpt"
+        ),
         None,
     )
     if existing is not None:
@@ -1184,7 +1225,9 @@ async def _api_models_menu(provider_id: str):
 
         if choice == len(defn.models) + 1:
             # «Удалить выбранные»: сносим все отмеченные пробелом модели.
-            if checked and await confirm_delete(_("api.delete_selected_q", n=len(checked))):
+            if checked and await confirm_delete(
+                _("api.delete_selected_q", n=len(checked))
+            ):
                 for idx in sorted(checked, reverse=True):
                     remove_model_from_provider(provider_id, defn.models[idx].id)
             continue
@@ -1208,6 +1251,8 @@ async def _api_models_menu(provider_id: str):
         )
         if a == 0:
             await _api_model_edit(provider_id, model)
-        elif a == 1 and await confirm_delete(_("api.delete_model_q", name=model.display_name)):
+        elif a == 1 and await confirm_delete(
+            _("api.delete_model_q", name=model.display_name)
+        ):
             remove_model_from_provider(provider_id, model.id)
         continue

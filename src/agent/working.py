@@ -54,7 +54,7 @@ def _waiting_header(elapsed: float) -> Text:
     """Заголовок раунда, ждущего фоновую работу: ход агента завершён,
     но background-задачи/субагенты ещё идут и раунд продолжится позже."""
     header = Text()
-    header.append("⏳ ", style=f"bold {t('dim_text')}")
+    header.append("⧖ ", style=f"bold {t('dim_text')}")
     header.append("Waiting", style=f"bold {t('dim_text')}")
     header.append(" " + format_duration(elapsed), style="dim")
     return header
@@ -87,6 +87,18 @@ def _usage_parts(usage: dict | None) -> tuple[int, int]:
     return inp, out
 
 
+def _cache_read_part(usage: dict | None) -> int:
+    usage = usage or {}
+    for key in ("cache_read", "cache_read_input_tokens", "cached_tokens"):
+        try:
+            value = int(usage.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value:
+            return value
+    return 0
+
+
 def _darken(color: str, factor: float) -> str | None:
     """Затемнить hex-цвет, сохранив его оттенок; для иных форматов — None."""
     raw = str(color or "").removeprefix("#")
@@ -113,6 +125,7 @@ class WorkingRound:
     finished_at: float | None = None
     token_estimate: int = 0
     estimated_output_tokens: int = 0
+    cache_read_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     ai_requests: int = 0
@@ -146,6 +159,12 @@ class WorkingRound:
         """
         if not self.active:
             return
+        was_waiting = self.waiting
+        if was_waiting:
+            # Авто-resume фоновой задачи начинает новый lifecycle stream-индексов,
+            # хотя WorkingRound остаётся тем же пользовательским ходом.
+            self._started_stream_indexes.clear()
+            self._usage_accounted_stream_indexes.clear()
         self.waiting = False
         self.retry_status = ""
         self.model = model or self.model
@@ -220,7 +239,9 @@ class WorkingRound:
             self._usage_accounted_stream_indexes.add(key)
 
         inp, out = _usage_parts(usage)
-        if inp or out:
+        cache = _cache_read_part(usage)
+        if cache or inp or out:
+            self.cache_read_tokens += cache
             self.input_tokens += inp
             self.output_tokens += out
         else:
@@ -254,7 +275,9 @@ class WorkingRound:
             if not target or self.active_calls[index].split(" · ", 1)[0] == target:
                 self.active_calls.pop(index)
                 break
-        self.current = self.active_calls[-1] if self.active_calls else tr("working.processing")
+        self.current = (
+            self.active_calls[-1] if self.active_calls else tr("working.processing")
+        )
         self.invalidate()
 
     def mark_waiting(self) -> None:
@@ -322,19 +345,24 @@ class WorkingRound:
                     header.append_text(self._shimmer())
                 header.append(" " + format_duration(self.elapsed), style="dim")
 
-        output_tokens = self.output_tokens + self.estimated_output_tokens + self.token_estimate
-        output_prefix = "~" if self.estimated_output_tokens or self.token_estimate else ""
+        output_tokens = (
+            self.output_tokens + self.estimated_output_tokens + self.token_estimate
+        )
+        output_prefix = (
+            "~" if self.estimated_output_tokens or self.token_estimate else ""
+        )
         details = Text("   ⎿  ", style=t("dim_text"))
         details.append(f"{self.ai_requests} ⟳", style=t("fg_primary"))
         details.append(" · ", style="dim")
-        details.append(f"{self.call_count} 🛠", style=t("fg_primary"))
+        details.append(f"{self.call_count} ⚒︎", style=t("fg_primary"))
         details.append(" · ", style="dim")
-        details.append(
-            f"↑{_fmt_tokens(self.input_tokens)}",
-            style=t("fg_primary"),
-        )
+        details.append(f"c{_fmt_tokens(self.cache_read_tokens)}", style=t("fg_primary"))
         details.append(" ", style="dim")
-        details.append(f"↓{output_prefix}{_fmt_tokens(output_tokens)}", style=t("fg_primary"))
+        details.append(f"↑{_fmt_tokens(self.input_tokens)}", style=t("fg_primary"))
+        details.append(" ", style="dim")
+        details.append(
+            f"↓{output_prefix}{_fmt_tokens(output_tokens)}", style=t("fg_primary")
+        )
         return Group(header, details)
 
     def finish(self, outcome: str | None = None) -> None:
@@ -358,7 +386,9 @@ class WorkingRound:
             store = getattr(self.ctx, "render_store", None)
             if store is not None:
                 output_tokens = (
-                    self.output_tokens + self.estimated_output_tokens + self.token_estimate
+                    self.output_tokens
+                    + self.estimated_output_tokens
+                    + self.token_estimate
                 )
                 store.add(
                     "working",
@@ -366,6 +396,7 @@ class WorkingRound:
                         "elapsed": self.elapsed,
                         "ai_requests": self.ai_requests,
                         "calls": self.call_count,
+                        "cache_read_tokens": self.cache_read_tokens,
                         "input_tokens": self.input_tokens,
                         "output_tokens": output_tokens,
                         "output_estimated": bool(
@@ -391,6 +422,7 @@ class WorkingRound:
                             "elapsed": self.elapsed,
                             "ai_requests": self.ai_requests,
                             "calls": self.call_count,
+                            "cache_read_tokens": self.cache_read_tokens,
                             "input_tokens": self.input_tokens,
                             "output_tokens": (
                                 self.output_tokens

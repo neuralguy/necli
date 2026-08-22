@@ -141,11 +141,7 @@ def _smart_preview(call: tools.ToolCall) -> str:
         patches = args.get("patches")
         if isinstance(patches, list):
             return f"{path}  ({len(patches)} patch{'es' if len(patches) != 1 else ''})"
-        if args.get("delete_lines"):
-            return f"{path}  (delete {args['delete_lines']})"
-        if "insert" in args:
-            return f"{path}  (insert @ line {args.get('line', '?')})"
-        return f"{path}  (find/replace)"
+        return f"{path}  (invalid patch)"
 
     if name in ("read", "grep"):
         if args.get("pattern"):
@@ -166,7 +162,7 @@ def _smart_preview(call: tools.ToolCall) -> str:
     # Fallback: ключевые аргументы строкой.
     parts = []
     for k, v in list(args.items())[:3]:
-        if k in ("content", "b64", "insert", "replace", "find", "diff", "patches"):
+        if k in ("content", "b64", "diff", "patches"):
             parts.append(f"{k}=…")
         else:
             parts.append(f"{k}={_clip(v, 28)}")
@@ -304,7 +300,9 @@ def _reach_meter(level: int, role: str) -> str:
     и переживут перезапуск.
     """
     filled_role = "warning" if level >= _REACH_STEPS else role
-    return paint("●" * level, filled_role) + paint("○" * (_REACH_STEPS - level), "muted")
+    return paint("●" * level, filled_role) + paint(
+        "○" * (_REACH_STEPS - level), "muted"
+    )
 
 
 class PermissionOverlay(Overlay):
@@ -316,7 +314,9 @@ class PermissionOverlay(Overlay):
 
     top_margin_rows = 1
 
-    def __init__(self, call: tools.ToolCall, emoji: str, label: str, color_role: str) -> None:
+    def __init__(
+        self, call: tools.ToolCall, emoji: str, label: str, color_role: str
+    ) -> None:
         super().__init__()
         self.call = call
         self.emoji = emoji
@@ -460,7 +460,10 @@ async def _ask_choice(
         # самого loop'а — рисуем прежним синхронным меню, оно ничего не ждёт.
         from ui import overlays
 
-        items = [{"label": _color(o["label"], o["role"]), "hint": o["hint"]} for o in _options()]
+        items = [
+            {"label": _color(o["label"], o["role"]), "hint": o["hint"]}
+            for o in _options()
+        ]
         return await overlays.select_menu(
             items,
             current=_GROUP_BREAK if _is_destructive(call) else 0,

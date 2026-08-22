@@ -18,6 +18,8 @@ class Limits:
     TABLE_TRUNCATE_THRESHOLD = 200
     SHELL_TIMEOUT = 60
     BG_SHELL_TIMEOUT = 3600
+    BG_SHELL_MAX_OUTPUT_CHARS = 1_000_000
+    BG_SHELL_UI_OUTPUT_CHARS = 50_000
     MAX_SUBAGENT_ITERATIONS = 100
     MAX_SUBAGENT_CONTEXT_TOKENS = 1_000_000
     # Общий wall-clock бюджет ОДНОГО субагента. Итерации и контекст уже

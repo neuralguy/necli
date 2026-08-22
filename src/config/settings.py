@@ -17,6 +17,7 @@ T = TypeVar("T")
 _DEFAULT_CONFIG: dict[str, object] = {
     "model": "Claude Opus 4.6",
     "response_timeout": 180,
+    "stream_idle_timeout": 180,
     "api_providers": [],
     "api_keys": {},
     "active_api": "",
@@ -35,6 +36,8 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "notifications_enabled": True,
     "tool_format_force_native": True,
     "disabled_tools": [],
+    "user_prompt_enabled": True,
+    "memory_enabled": True,
     "display_full_blocks_compact": [],
     "display_full_blocks_full": ["*"],
     # Авто-резюм агента при завершении фоновой shell-задачи: если задача
@@ -71,6 +74,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
 }
 
 _config_cache: dict | None = None
+_config_load_failed = False
 _CONFIG_LOCK = threading.RLock()
 
 # Инкрементируется при любом изменении конфига. Позволяет внешним кэшам
@@ -80,24 +84,28 @@ _settings_version: int = 0
 
 
 def _load_config() -> dict:
-    global _config_cache
+    global _config_cache, _config_load_failed
     with _CONFIG_LOCK:
         if _config_cache is not None:
             return _config_cache
 
         data: dict = {}
+        _config_load_failed = False
         if CONFIG_FILE.exists():
             try:
                 loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 if not isinstance(loaded, dict):
                     logger.error(
-                        "config load failed for %s: root must be a JSON object", CONFIG_FILE
+                        "config load failed for %s: root must be a JSON object",
+                        CONFIG_FILE,
                     )
+                    _config_load_failed = True
                     data = {}
                 else:
                     data = loaded
             except (json.JSONDecodeError, OSError) as e:
                 logger.error("config load failed for %s: %s", CONFIG_FILE, e)
+                _config_load_failed = True
                 data = {}
 
         merged = copy.deepcopy(_DEFAULT_CONFIG)
@@ -106,9 +114,14 @@ def _load_config() -> dict:
         return merged
 
 
-def _save_config(data: dict) -> None:
+def _save_config(data: dict) -> bool:
     global _config_cache, _settings_version
     with _CONFIG_LOCK:
+        if _config_load_failed:
+            logger.error(
+                "refusing to overwrite unreadable config file: %s", CONFIG_FILE
+            )
+            return False
         try:
             atomic_write_json(CONFIG_FILE, data)
             # Только после успешного replace публикуем новый snapshot. Не
@@ -116,6 +129,7 @@ def _save_config(data: dict) -> None:
             # мутация снова обойдёт persistence.
             _config_cache = copy.deepcopy(data)
             _settings_version += 1
+            return True
         except OSError as e:
             logger.error("config save failed for %s: %s", CONFIG_FILE, e)
             raise
@@ -158,5 +172,6 @@ def set_value(key: str, value: object) -> None:
         # Copy-on-write: не мутируем опубликованный cache до успешной записи.
         cfg = copy.deepcopy(_load_config())
         cfg[key] = copy.deepcopy(value)
-        _save_config(cfg)
-    logger.debug("config set: %s", key)
+        saved = _save_config(cfg)
+    if saved:
+        logger.debug("config set: %s", key)

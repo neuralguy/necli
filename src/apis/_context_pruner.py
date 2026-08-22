@@ -192,9 +192,7 @@ def _set_text_content(msg: Any, new_text: str) -> Any:
 
 def _placeholder(cmd: str, cmd_tail: str, paths: list[str], reason: str) -> str:
     path_disp = ", ".join(paths) if paths else cmd_tail
-    return (
-        f"$ {cmd} {cmd_tail}\n{_EVICT_MARKER} — {reason}. Re-read with read if needed: {path_disp}]"
-    )
+    return f"$ {cmd} {cmd_tail}\n{_EVICT_MARKER} — {reason}. Re-read with read if needed: {path_disp}]"
 
 
 def _scan_round_writes(messages: list) -> dict[str, int]:
@@ -271,8 +269,7 @@ def _range_from_read_args(args: Any) -> tuple[int, int] | None:
     limit = args.get("limit", 1000)
     if not isinstance(offset, int) or not isinstance(limit, int):
         return None
-    if offset < 1:
-        offset = 1
+    offset = max(offset, 1)
     if limit < 1:
         limit = 1000
     return (offset, offset + limit - 1)
@@ -310,7 +307,10 @@ def _scan_read_ranges(messages: list) -> dict[str, list[tuple[int, tuple[int, in
         elif isinstance(msg, AIMessage):
             for tc in getattr(msg, "tool_calls", []) or []:
                 if (tc.get("name") or "") in _READ_NAMES:
-                    _add(_paths_from_args(tc.get("args")), _range_from_read_args(tc.get("args")))
+                    _add(
+                        _paths_from_args(tc.get("args")),
+                        _range_from_read_args(tc.get("args")),
+                    )
     return reads
 
 
@@ -334,7 +334,9 @@ def _range_dedup_reason(
     covered = True
     for p in paths:
         if write_rounds.get(p, 0) >= block_round:
-            return None  # файл менялся в текущем/более позднем раунде — контент актуален
+            return (
+                None  # файл менялся в текущем/более позднем раунде — контент актуален
+            )
         # Не строим список всех prior ranges для КАЖДОГО read-блока. В native
         # с длинной историей это превращалось в O(N²): каждый новый read заново
         # копировал/просматривал всю историю диапазонов того же файла перед
@@ -459,7 +461,9 @@ def _tool_fold_placeholder(cmd_line: str, reason: str) -> str:
     (что было вызвано) и даёт компактное summary вместо полного вывода —
     чтобы в истории остался «след» вызова без объёма токенов.
     """
-    return f"{cmd_line}\n{_EVICT_MARKER} — {reason}. (tool output folded, command kept)]"
+    return (
+        f"{cmd_line}\n{_EVICT_MARKER} — {reason}. (tool output folded, command kept)]"
+    )
 
 
 def _should_fold_tool(
@@ -509,7 +513,9 @@ def _runtime_results_summary(text: str) -> str:
     )
 
 
-def _prune_runtime_tool_results(messages: list, keep_last: int = 3) -> tuple[list, int, int]:
+def _prune_runtime_tool_results(
+    messages: list, keep_last: int = 3
+) -> tuple[list, int, int]:
     indexes = []
     for i, msg in enumerate(messages):
         if not isinstance(msg, HumanMessage):
@@ -599,7 +605,9 @@ def _prune_user_text(
                 new_blocks.append(_tool_fold_placeholder(first_line, fold_reason))
                 changed = True
                 continue
-            reason = _should_evict_tool(user_round, current_round, len(block), age_eviction)
+            reason = _should_evict_tool(
+                user_round, current_round, len(block), age_eviction
+            )
             if reason is None:
                 new_blocks.append(block)
                 continue
@@ -678,18 +686,20 @@ def _prune_native(
                 continue
             fold_reason = _should_fold_tool(t_round, current_round, tool_fold_rounds)
             if fold_reason is not None:
-                new_content = (
-                    f"{_EVICT_MARKER} — {fold_reason}. (tool output folded, tool call kept)]"
-                )
+                new_content = f"{_EVICT_MARKER} — {fold_reason}. (tool output folded, tool call kept)]"
                 saved += len(content) - len(new_content)
                 pruned += 1
                 result.append(_set_text_content(msg, new_content))
                 continue
-            reason = _should_evict_tool(t_round, current_round, len(content), age_eviction)
+            reason = _should_evict_tool(
+                t_round, current_round, len(content), age_eviction
+            )
             if reason is None:
                 result.append(msg)
                 continue
-            new_content = f"{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
+            new_content = (
+                f"{_EVICT_MARKER} — {reason}. Re-run the tool if you need this output.]"
+            )
             saved += len(content) - len(new_content)
             pruned += 1
             result.append(_set_text_content(msg, new_content))
@@ -704,9 +714,7 @@ def _prune_native(
             if reason is None:
                 result.append(msg)
                 continue
-            new_content = (
-                f"{_EVICT_MARKER} — {reason}. Reload the skill (skill tool) if you still need it.]"
-            )
+            new_content = f"{_EVICT_MARKER} — {reason}. Reload the skill (skill tool) if you still need it.]"
             saved += len(content) - len(new_content)
             pruned += 1
             result.append(_set_text_content(msg, new_content))
@@ -739,7 +747,9 @@ def _prune_native(
             result.append(msg)
             continue
         path_disp = ", ".join(paths) if paths else "(unknown)"
-        new_content = f"{_EVICT_MARKER} — {reason}. Re-read with read if needed: {path_disp}]"
+        new_content = (
+            f"{_EVICT_MARKER} — {reason}. Re-read with read if needed: {path_disp}]"
+        )
         saved += len(content) - len(new_content)
         pruned += 1
         evicted_paths.update(paths)
@@ -790,7 +800,9 @@ def _prune_messages_impl(
 
     current_round = sum(1 for m in messages if _is_real_user(m))
     if current_round <= 1:
-        result, runtime_pruned, runtime_saved = _prune_runtime_tool_results(list(messages))
+        result, runtime_pruned, runtime_saved = _prune_runtime_tool_results(
+            list(messages)
+        )
         return result, {
             "pruned_blocks": runtime_pruned,
             "saved_chars": runtime_saved,
@@ -829,7 +841,9 @@ def _prune_messages_impl(
                 tool_fold_rounds=tool_fold_rounds,
             )
             if new_text != text:
-                pruned_blocks += new_text.count(_EVICT_MARKER) - text.count(_EVICT_MARKER)
+                pruned_blocks += new_text.count(_EVICT_MARKER) - text.count(
+                    _EVICT_MARKER
+                )
                 saved += len(text) - len(new_text)
                 result.append(_set_text_content(msg, new_text))
             else:

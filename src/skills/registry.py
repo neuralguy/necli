@@ -25,7 +25,6 @@ import re
 # Скилл → набор инструментов, которые он «открывает».
 # Единственное место правды. Добавляешь скилл с тулами — правишь здесь.
 SKILL_TOOLS: dict[str, set[str]] = {
-    "web": {"web_search", "web_fetch", "image_search"},
     "subagents": {"subagent"},
 }
 

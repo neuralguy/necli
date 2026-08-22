@@ -3,6 +3,7 @@
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 
@@ -53,8 +54,25 @@ _TEE_REDIRECT_RE = re.compile(
 
 
 def _utf8_env() -> dict:
-    """env с UTF-8 локалью. На Windows C.UTF-8 нет — задаём только PYTHONUTF8."""
+    """UTF-8 env с локальным virtualenv текущего проекта, если он существует."""
     env = dict(os.environ)
+    working_dir = get_working_dir()
+    for name in (".venv", "venv"):
+        virtualenv = os.path.join(working_dir, name)
+        bindir = os.path.join(
+            virtualenv,
+            "Scripts" if sys.platform == "win32" else "bin",
+        )
+        if os.path.isdir(bindir):
+            env["VIRTUAL_ENV"] = virtualenv
+            path_parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+            existing = [
+                p
+                for p in path_parts
+                if os.path.normpath(p) != os.path.normpath(bindir)
+            ]
+            env["PATH"] = os.pathsep.join([bindir, *existing])
+            break
     if sys.platform == "win32":
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
@@ -143,6 +161,20 @@ def _strip_shell_prefix(command: str) -> str:
         if not rest or rest[0] in (" ", "\t", "\n"):
             return rest.lstrip()
     return command
+
+
+def _terminate_process_group(process: subprocess.Popen, *, force: bool = False) -> None:
+    """Terminate a shell and every process it started during foreground execution."""
+    try:
+        if sys.platform != "win32":
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+        elif force:
+            process.kill()
+        else:
+            process.terminate()
+    except (ProcessLookupError, OSError):
+        # The shell may have exited while the timeout handler was scheduled.
+        pass
 
 
 def execute_shell(call: ToolCall) -> ToolResult:
@@ -234,48 +266,60 @@ def execute_shell(call: ToolCall) -> ToolResult:
     debug("tool.shell.start", command=command[:100], cwd=get_working_dir())
     logger.info("shell exec: {!r} (cwd={})", command[:300], get_working_dir())
     run_kwargs = {
-        "capture_output": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
         "text": True,
-        "timeout": _EXECUTION_TIMEOUT,
         "cwd": get_working_dir(),
         "env": _utf8_env(),
     }
     if sys.platform != "win32":
         run_kwargs["executable"] = "/bin/bash"
+        # A dedicated session makes the timeout cleanup include pipelines,
+        # backgrounded commands and grandchildren spawned by the shell.
+        run_kwargs["start_new_session"] = True
     try:
-        result = subprocess.run(command, shell=True, **run_kwargs)
+        process = subprocess.Popen(command, shell=True, **run_kwargs)
+        try:
+            stdout, stderr = process.communicate(timeout=_EXECUTION_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(process)
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                _terminate_process_group(process, force=True)
+                process.communicate()
+            logger.warning("shell timeout {}s: {!r}", _EXECUTION_TIMEOUT, command[:200])
+            return ToolResult(
+                name=call.name,
+                status="error",
+                output=f"Timeout: {_EXECUTION_TIMEOUT}s",
+                exit_code=-1,
+                command=command,
+            )
+
         info(
             "tool.shell.end",
-            exit_code=result.returncode,
-            stdout_len=len(result.stdout or ""),
-            stderr_len=len(result.stderr or ""),
+            exit_code=process.returncode,
+            stdout_len=len(stdout or ""),
+            stderr_len=len(stderr or ""),
         )
 
         parts = []
-        if result.stdout:
-            parts.append(result.stdout)
-        if result.stderr:
-            parts.append(f"[stderr]\n{result.stderr}")
+        if stdout:
+            parts.append(stdout)
+        if stderr:
+            parts.append(f"[stderr]\n{stderr}")
 
         output = "\n".join(parts) if parts else "(no output)"
 
         return ToolResult(
             name=call.name,
-            status="ok" if result.returncode == 0 else "error",
+            status="ok" if process.returncode == 0 else "error",
             output=output,
-            exit_code=result.returncode,
+            exit_code=process.returncode,
             command=command,
         )
 
-    except subprocess.TimeoutExpired:
-        logger.warning("shell timeout {}s: {!r}", _EXECUTION_TIMEOUT, command[:200])
-        return ToolResult(
-            name=call.name,
-            status="error",
-            output=f"Timeout: {_EXECUTION_TIMEOUT}s",
-            exit_code=-1,
-            command=command,
-        )
     except Exception as e:
         logger.opt(exception=True).error("shell crashed: {}", e)
         return ToolResult(

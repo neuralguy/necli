@@ -43,7 +43,11 @@ class PlanPanel:
 
     @property
     def has_live_plan(self) -> bool:
-        return self._plan is not None and bool(self._plan.steps) and not self._plan.is_complete
+        return (
+            self._plan is not None
+            and bool(self._plan.steps)
+            and not self._plan.is_complete
+        )
 
     def update(self, plan, action: str = "", focus_index: int | None = None) -> bool:
         """Событие on_plan_update. True — потреблено живой панелью.

@@ -15,6 +15,7 @@ import httpx
 from apis.config import add_model_to_provider, get_api_key, remove_model_from_provider
 from apis.registry import get_definition, reload_providers
 from logger import logger
+from models import DEFAULT_CONTEXT_LIMIT
 
 # Анти-перезапись цен: модели в этом списке имеют ручные цены в JSON-определениях,
 # при синке цены НЕ обновляются (источник истины — JSON).
@@ -26,7 +27,9 @@ async def _fetch_openai_compatible(
 ) -> list[dict]:
     """GET {base_url}/models → список моделей в OpenAI-формате."""
     url = base_url.rstrip("/") + "/models"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=30.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, connect=30.0)
+    ) as client:
         resp = await client.get(url, headers=headers)
         if resp.status_code != 200:
             raise ValueError(f"HTTP {resp.status_code}: {resp.text[:300]}")
@@ -47,7 +50,7 @@ async def _fetch_openai_compatible(
             item.get("context_length")
             or item.get("context_window")
             or (item.get("top_provider", {}) or {}).get("context_length")
-            or 128_000
+            or DEFAULT_CONTEXT_LIMIT
         )
         # OpenRouter возвращает цены в pricing.prompt/completion (per token, не per 1M)
         pricing = item.get("pricing") or {}
@@ -82,10 +85,11 @@ async def _fetch_openai_compatible(
 async def _fetch_ollama(base_url: str, timeout: int) -> list[dict]:
     """Ollama: GET /api/tags → список локальных моделей."""
     api_base = base_url.rstrip("/")
-    if api_base.endswith("/v1"):
-        api_base = api_base[:-3]
+    api_base = api_base.removesuffix("/v1")
     url = api_base + "/api/tags"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=30.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, connect=30.0)
+    ) as client:
         resp = await client.get(url)
         if resp.status_code != 200:
             raise ValueError(f"HTTP {resp.status_code}: {resp.text[:300]}")
@@ -120,7 +124,11 @@ _LOCAL_PROVIDER_IDS = {"ollama", "lmstudio"}
 
 
 def _is_local_url(base_url: str) -> bool:
-    return ("localhost" in base_url) or ("127.0.0.1" in base_url) or ("0.0.0.0" in base_url)
+    return (
+        ("localhost" in base_url)
+        or ("127.0.0.1" in base_url)
+        or ("0.0.0.0" in base_url)
+    )
 
 
 async def _discover_async(provider_id: str) -> list[dict]:

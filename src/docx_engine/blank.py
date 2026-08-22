@@ -20,7 +20,12 @@ BLANK_ORDERED_NUM_ID = "2"
 
 
 def _esc_attr(s):
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def _toc_style(level):
@@ -116,9 +121,13 @@ def _custom_levels(levels):
             indent = int(value(level, "indent_left", "indentLeft", 720 * (i + 1)))
             hanging = int(value(level, "hanging", default=360))
         except (TypeError, ValueError) as exc:
-            raise ValueError("custom numbering start/indent/hanging must be integers") from exc
+            raise ValueError(
+                "custom numbering start/indent/hanging must be integers"
+            ) from exc
         if start < 0 or indent < 0 or hanging < 0:
-            raise ValueError("custom numbering start/indent/hanging must be non-negative")
+            raise ValueError(
+                "custom numbering start/indent/hanging must be non-negative"
+            )
         num_fmt = _esc_attr(str(value(level, "num_fmt", "numFmt", "decimal")))
         lvl_text = _esc_attr(str(value(level, "lvl_text", "lvlText", f"%{i + 1}.")))
         parts.append(
@@ -196,6 +205,7 @@ def build_blank_docx(east_asia_font: str | None = None) -> bytes:
         )
         z.writestr(
             "word/document.xml",
-            XML_DECL + f"<w:document {DOC_NS}><w:body><w:p/>{sect}</w:body></w:document>",
+            XML_DECL
+            + f"<w:document {DOC_NS}><w:body><w:p/>{sect}</w:body></w:document>",
         )
     return buf.getvalue()

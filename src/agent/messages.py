@@ -101,7 +101,11 @@ def is_api_proxy_error(text: str) -> bool:
     t = text.strip().lower()
     if "request aborted" in t and "ask_proxy" in t:
         return True
-    return "http error" in t and ("502" in t or "503" in t or "524" in t) and "ask_proxy" in t
+    return (
+        "http error" in t
+        and ("502" in t or "503" in t or "524" in t)
+        and "ask_proxy" in t
+    )
 
 
 def is_likely_truncated(text: str) -> bool:
@@ -165,7 +169,10 @@ async def _build_first_message_impl(
         except Exception:
             logger.debug("session notes load failed", exc_info=True)
     if history:
-        from system_prompt import CONVERSATION_CONTEXT_FOOTER, CONVERSATION_CONTEXT_HEADER
+        from system_prompt import (
+            CONVERSATION_CONTEXT_FOOTER,
+            CONVERSATION_CONTEXT_HEADER,
+        )
 
         parts.append("\n" + CONVERSATION_CONTEXT_HEADER)
         for msg in history:
@@ -217,7 +224,9 @@ def _build_tool_results_payload(results) -> str:
     return build_tool_results(_result_dicts(results))
 
 
-def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=None) -> str:
+def _build_result_extras(
+    plan=None, working_dir=None, step_tracker=None, ctx=None
+) -> str:
     """Добавки к результатам раунда: план + проверка TypeScript + fs-изменения.
 
     Это НЕ часть вывода инструментов — в native режиме отправляется отдельным
@@ -228,7 +237,7 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
     _extras_started = time.monotonic()
     _timings: dict[str, float] = {}
 
-    if plan and plan.steps:
+    if plan and plan.steps and not plan.is_complete:
         parts.append(plan.render_for_context())
 
     # Проверка TypeScript на изменённых файлах раунда.
@@ -237,7 +246,9 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
             _t = time.monotonic()
             from tools.file_ops.project_check import run_project_check
 
-            check_block = run_project_check(working_dir, set(step_tracker.files_changed))
+            check_block = run_project_check(
+                working_dir, set(step_tracker.files_changed)
+            )
             _timings["project_check"] = time.monotonic() - _t
             if check_block:
                 parts.append(check_block)
@@ -292,7 +303,9 @@ def _build_result_extras(plan=None, working_dir=None, step_tracker=None, ctx=Non
     return "\n\n".join(parts)
 
 
-def _build_result_message(results, plan=None, working_dir=None, step_tracker=None, ctx=None):
+def _build_result_message(
+    results, plan=None, working_dir=None, step_tracker=None, ctx=None
+):
     """Плоский payload результатов + extras одним текстом (text/fenced режим,
     а также run_agent без сессии). Native режим вместо этого использует
     build_structured_tool_results + _build_result_extras раздельно."""

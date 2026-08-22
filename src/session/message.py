@@ -70,7 +70,9 @@ class Message:
             self.tokens = tokens
         elif self.usage:
             if role == "assistant":
-                self.tokens = int(self.usage.get("output") or 0) or count_tokens(content, model)
+                self.tokens = int(self.usage.get("output") or 0) or count_tokens(
+                    content, model
+                )
             else:
                 self.tokens = count_tokens(content, model)
         else:

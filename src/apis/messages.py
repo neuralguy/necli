@@ -76,7 +76,9 @@ class AIMessageChunk(AIMessage):
         usage_metadata: dict | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(content, tool_calls=tool_calls, usage_metadata=usage_metadata, **kwargs)
+        super().__init__(
+            content, tool_calls=tool_calls, usage_metadata=usage_metadata, **kwargs
+        )
         self.tool_call_chunks: list = list(tool_call_chunks or [])
 
     def __add__(self, other: AIMessageChunk) -> AIMessageChunk:

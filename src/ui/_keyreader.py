@@ -111,7 +111,9 @@ else:
             needed = 3
         else:
             needed = 0
-        return (first + (os.read(fd, needed) if needed else b"")).decode("utf-8", errors="replace")
+        return (first + (os.read(fd, needed) if needed else b"")).decode(
+            "utf-8", errors="replace"
+        )
 
     def _read_key_raw(fd: int, text_input: bool = False) -> str:
         ch = _read_utf8_char(fd)
@@ -122,7 +124,9 @@ else:
                 return "escape"
             rest = os.read(fd, 8).decode("utf-8", errors="replace")
             if rest.startswith("[") and len(rest) >= 2:
-                return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(rest[1], rest[1])
+                return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(
+                    rest[1], rest[1]
+                )
             return "escape"
         return _normalize_text(ch) if text_input else _normalize(ch)
 

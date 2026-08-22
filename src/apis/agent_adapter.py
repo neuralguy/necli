@@ -18,6 +18,7 @@ import asyncio
 import base64
 import inspect
 import json
+import re
 import threading
 import time
 import uuid
@@ -422,7 +423,7 @@ def _first_int(d: dict, *keys) -> int:
 def _extract_usage(obj) -> dict:
     """Достаёт usage из AIMessage/AIMessageChunk через usage_metadata либо response_metadata.
 
-    Возвращает {input, output, total, reasoning} или пустой dict.
+    Возвращает {input, output, total, cache_read, reasoning} или пустой dict.
     Источники по приоритету:
       1) obj.usage_metadata
       2) obj.response_metadata.token_usage|usage (OpenAI/Anthropic-совместимое)
@@ -469,9 +470,14 @@ def _extract_usage(obj) -> dict:
         out["input"] = inp
         out["output"] = outp
         out["total"] = _first_int(tu, "total_tokens") or (inp + outp)
-    ctd = tu.get("completion_tokens_details") or {}
+    ptd = tu.get("prompt_tokens_details") or tu.get("input_tokens_details") or {}
+    if isinstance(ptd, dict):
+        cache_read = _first_int(ptd, "cached_tokens", "cache_read_tokens")
+        if cache_read:
+            out["cache_read"] = cache_read
+    ctd = tu.get("completion_tokens_details") or tu.get("output_tokens_details") or {}
     if isinstance(ctd, dict):
-        reasoning = _first_int(ctd, "reasoning_tokens")
+        reasoning = _first_int(ctd, "reasoning_tokens", "reasoning")
         if reasoning:
             out["reasoning"] = reasoning
     return out
@@ -530,9 +536,29 @@ async def api_describe_images(image_paths: list) -> str:
         model_id,
         len(image_paths),
     )
-    result = await with_throttle_retry(lambda: llm.ainvoke([HumanMessage(content=content)]))
+    result = await with_throttle_retry(
+        lambda: llm.ainvoke([HumanMessage(content=content)])
+    )
     _spend_llm_usage(llm, result)
     return _content_to_text(getattr(result, "content", result)).strip()
+
+
+_EXTERNAL_CHANGES_RE = re.compile(
+    r"(?:^|\n)--- EXTERNAL FILE CHANGES \(made outside the agent\) ---\n.*?"
+    r"\n--- END EXTERNAL FILE CHANGES ---(?=\n|$)",
+    re.DOTALL,
+)
+
+
+def _without_external_changes(text: str) -> str:
+    """Remove one-turn filesystem notices before persisting API history.
+
+    The full notice is still present in the request that detected the change,
+    but later requests must not keep replaying stale external edits.
+    """
+    if not text or "--- EXTERNAL FILE CHANGES" not in text:
+        return text
+    return _EXTERNAL_CHANGES_RE.sub("", text).strip()
 
 
 async def api_send_message(
@@ -547,6 +573,7 @@ async def api_send_message(
     on_retry_attempt=None,
     tool_results=None,
     extras=None,
+    persist_text=None,
 ):
     """Отправляет сообщение провайдеру.
 
@@ -579,37 +606,18 @@ async def api_send_message(
     # fallback-ветка ниже выставляет его заново при необходимости.
     session.image_fallback = False
 
-    # When a dedicated image model is configured, the main model never receives
-    # image bytes. It gets an exhaustive textual hand-off instead. This also
-    # applies to images returned by tools, not only clipboard attachments.
-    if images:
-        from apis.helper_models import configured_route
+    original_images = list(images or [])
+    from apis.helper_models import configured_route
 
-        if configured_route("image") is not None:
-            original_images = list(images)
-            try:
-                description = await api_describe_images(original_images)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.error("image description failed: {}", exc, exc_info=True)
-                description = (
-                    "[The configured image model could not describe the attached images: "
-                    f"{type(exc).__name__}: {exc}]"
-                )
-            block = "<image_descriptions>\n" + description + "\n</image_descriptions>"
-            for path in original_images:
-                session.image_description_cache[str(Path(path))] = description
-            text = (text + "\n\n" + block).strip()
-            if tool_results is not None:
-                extras = (str(extras).strip() + "\n\n" + block).strip() if extras else block
-            images = None
+    image_fallback_route = configured_route("image") if original_images else None
 
     if model and model != session.model_id:
         try:
             llm = get_provider(session.provider_id, model, **_provider_kwargs())
         except Exception as e:
-            logger.error("Model override '" + str(model) + "' failed, fallback: " + str(e))
+            logger.error(
+                "Model override '" + str(model) + "' failed, fallback: " + str(e)
+            )
             llm = session.llm
     else:
         llm = session.llm
@@ -672,7 +680,9 @@ async def api_send_message(
     # — иначе 400. Поэтому закрываем pending даже при tool_results is None,
     # если среди них есть control-вызовы (им build_native_tool_messages выдаст ack).
     _CONTROL_NAMES = {"plan", "think"}
-    has_pending_control = any((tc.get("name") or "") in _CONTROL_NAMES for tc in pending_tool_calls)
+    has_pending_control = any(
+        (tc.get("name") or "") in _CONTROL_NAMES for tc in pending_tool_calls
+    )
     if pending_tool_calls and (tool_results is not None or has_pending_control):
         # Native: по одному ToolMessage на tool_call_id (name+FIFO), а extras
         # (план/проверки/статистика) — ОТДЕЛЬНЫМ HumanMessage, чтобы не
@@ -705,23 +715,33 @@ async def api_send_message(
                 additional_kwargs={"synthetic": True},
             )
             messages.append(extras_message)
+    elif not tool_results and extras and str(extras).strip():
+        extras_message = HumanMessage(
+            content=str(extras),
+            additional_kwargs={"synthetic": True},
+        )
+        messages.append(extras_message)
+        text = str(extras)
     elif tool_results:
         # Гибрид: провайдер native, но в прошлом ответе модель использовала
         # текстовые :::call блоки (а не native function-calling) → pending
-        # tool_calls нет. Шлём результаты плоским text-payload + extras одним
-        # HumanMessage, иначе ушло бы пустое сообщение и модель потеряла бы
-        # вывод инструментов.
+        # tool_calls нет. Результаты сохраняем в историю, а динамические extras
+        # отправляем отдельным request-local сообщением.
         from system_prompt import build_tool_results as _build_tool_results
 
         payload = _build_tool_results(tool_results)
-        if extras and str(extras).strip():
-            payload = (payload + "\n\n" + str(extras)).strip()
         messages.append(
             HumanMessage(
                 content=payload,
                 additional_kwargs={"synthetic": True},
             )
         )
+        if extras and str(extras).strip():
+            extras_message = HumanMessage(
+                content=str(extras),
+                additional_kwargs={"synthetic": True},
+            )
+            messages.append(extras_message)
         text = payload  # для записи в ApiSession ниже (session.add_user)
         # Изображения от инструментов в гибрид-режиме тоже нужно прикрепить
         # отдельным multimodal HumanMessage — иначе модель их молча не увидит
@@ -749,7 +769,7 @@ async def api_send_message(
             )
         else:
             messages.append(HumanMessage(content=text))
-    else:
+    elif text and str(text).strip():
         messages.append(HumanMessage(content=text))
 
     # ── Записываем user/tool-сообщение в ApiSession ДО запроса.
@@ -761,8 +781,8 @@ async def api_send_message(
         session.messages.extend(tool_result_messages)
         if images_message is not None:
             session.messages.append(images_message)
-        if extras_message is not None:
-            session.messages.append(extras_message)
+        # extras (plan, diagnostics and external-change notices) are deliberately
+        # request-local: persisting them would mutate the reusable prompt prefix.
     elif has_images and mm_content_cached is not None:
         session.messages.append(
             HumanMessage(
@@ -773,7 +793,10 @@ async def api_send_message(
     else:
         # Гибрид-ветка: текстовый payload + (опционально) отдельное
         # multimodal-сообщение с изображениями инструментов.
-        session.add_user(text, synthetic=True)
+        history_text = text if persist_text is None else persist_text
+        persisted_text = _without_external_changes(str(history_text or ""))
+        if persisted_text:
+            session.add_user(persisted_text, synthetic=True)
         if images_message is not None:
             session.messages.append(images_message)
 
@@ -853,31 +876,127 @@ async def api_send_message(
             return ""
         return ""
 
-    # Fallback при отправке фото модели, которая его не принимает (или файл
-    # повреждён): не роняем сессию — убираем изображения из запроса и истории,
-    # модели уходит текст с пометкой «фото не удалось прочитать», и запрос
-    # повторяется один раз чистым текстом.
+    # Если основная модель не принимает фото (или файл повреждён), один раз
+    # пробуем настроенную image-модель на оригинале, а затем повторяем запрос
+    # основной модели с её текстовым описанием. Без image-модели используется
+    # текстовая пометка о том, что фото не удалось прочитать.
     _img_fallback_note = "\n\n[Фото не удалось прочитать — изображение не отправлено.]"
 
-    def _strip_images_from(target: list) -> bool:
-        """Заменяет image_url-части мультимодальных HumanMessage текстом-пометкой."""
-        dropped = False
+    def _replace_images_with_text(target: list, replacement: str) -> bool:
+        """Заменяет image_url-части мультимодальных HumanMessage текстом."""
+        replaced = False
         for m in list(target):
             content = getattr(m, "content", None)
             if not isinstance(content, list):
                 continue
-            if not any(isinstance(p, dict) and p.get("type") == "image_url" for p in content):
+            if not any(
+                isinstance(p, dict) and p.get("type") == "image_url" for p in content
+            ):
                 continue
             text_parts = [
-                p for p in content if not (isinstance(p, dict) and p.get("type") == "image_url")
+                p
+                for p in content
+                if not (isinstance(p, dict) and p.get("type") == "image_url")
             ]
-            if text_parts:
-                text_parts.append({"type": "text", "text": _img_fallback_note})
-            else:
-                text_parts = [{"type": "text", "text": _img_fallback_note.strip()}]
+            text_parts.append({"type": "text", "text": replacement})
             m.content = text_parts
-            dropped = True
-        return dropped
+            replaced = True
+        return replaced
+
+    def _main_response_needs_image_fallback() -> bool:
+        """Detect a successful response that still proves vision was unavailable.
+
+        Some OpenAI-compatible gateways accept multimodal requests but silently drop
+        image parts. The model then either asks to read the already-attached image
+        from disk or explicitly says that it cannot see it. Treat those outcomes
+        like a vision transport failure and retry once with a helper description.
+        """
+        if not has_images:
+            return False
+
+        original_paths: set[Path] = set()
+        for image in original_images:
+            try:
+                original_paths.add(Path(image).expanduser().resolve(strict=False))
+            except (OSError, RuntimeError, TypeError, ValueError):
+                continue
+
+        for call in tool_calls:
+            if not isinstance(call, dict) or str(call.get("name", "")).lower() != "read":
+                continue
+            args = call.get("args") or {}
+            if not isinstance(args, dict):
+                continue
+            candidate = args.get("path") or args.get("file_path")
+            if not candidate:
+                continue
+            try:
+                candidate_path = Path(candidate).expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                continue
+            if candidate_path in original_paths:
+                return True
+
+        normalized = " ".join((raw_text or "").lower().split())
+        if not normalized:
+            return False
+        missing_image_phrases = (
+            "cannot see the attached image",
+            "can't see the attached image",
+            "cannot view the attached image",
+            "can't view the attached image",
+            "cannot access the attached image",
+            "can't access the attached image",
+            "unable to see the attached image",
+            "unable to view the attached image",
+            "unable to access the attached image",
+            "cannot see the image in my context",
+            "can't see the image in my context",
+            "image is not available in my context",
+            "не вижу прикрепленное изображение",
+            "не вижу прикреплённое изображение",
+            "не могу увидеть прикрепленное изображение",
+            "не могу увидеть прикреплённое изображение",
+            "не могу просмотреть прикрепленное изображение",
+            "не могу просмотреть прикреплённое изображение",
+            "не могу получить доступ к изображению",
+            "изображение недоступно в моем контексте",
+            "изображение недоступно в моём контексте",
+        )
+        return any(phrase in normalized for phrase in missing_image_phrases)
+
+    async def _apply_image_fallback(reason: str) -> None:
+        """Replace attached images with a helper-model description for one retry."""
+        from logger import warning as _log_warning
+
+        _log_warning("api.request.retry", attempt=2, reason=reason, delay=0.0)
+        logger.warning("API image fallback retry: {}", reason)
+        fallback_text = _img_fallback_note
+        if image_fallback_route is not None:
+            try:
+                description = await api_describe_images(original_images)
+                if description.strip():
+                    description = description.strip()
+                    fallback_text = (
+                        "\n\n<image_descriptions>\n"
+                        + description
+                        + "\n</image_descriptions>"
+                    )
+                    for path in original_images:
+                        session.image_description_cache[str(Path(path))] = description
+                    session.image_fallback = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as fallback_exc:
+                logger.error(
+                    "image fallback description failed: {}",
+                    fallback_exc,
+                    exc_info=True,
+                )
+        _replace_images_with_text(messages, fallback_text)
+        _replace_images_with_text(session.messages, fallback_text)
+        if fallback_text == _img_fallback_note:
+            session.image_fallback = True
 
     async def _run_api_call() -> None:
         nonlocal \
@@ -899,6 +1018,11 @@ async def api_send_message(
             tool_calls = list(getattr(final_chunk, "tool_calls", []) or [])
             reasoning_content = _extract_reasoning(final_chunk)
             usage_info = _extract_usage(final_chunk)
+            if usage_info.get("cache_read"):
+                billing_llm = getattr(llm, "_active_llm", None) or llm
+                usage_info["cache_read_factor"] = float(
+                    getattr(billing_llm, "_cache_read_factor", 0.1)
+                )
             response_meta = getattr(final_chunk, "response_metadata", None) or {}
             if isinstance(response_meta, dict):
                 finish_reason = response_meta.get("finish_reason")
@@ -923,6 +1047,11 @@ async def api_send_message(
             tool_calls = _ensure_tool_call_ids(tool_calls)
             reasoning_content = _extract_reasoning(result)
             usage_info = _extract_usage(result)
+            if usage_info.get("cache_read"):
+                billing_llm = getattr(llm, "_active_llm", None) or llm
+                usage_info["cache_read_factor"] = float(
+                    getattr(billing_llm, "_cache_read_factor", 0.1)
+                )
             response_meta = getattr(result, "response_metadata", None) or {}
             if isinstance(response_meta, dict):
                 finish_reason = response_meta.get("finish_reason")
@@ -934,6 +1063,9 @@ async def api_send_message(
     for _attempt in range(2):
         try:
             await _run_api_call()
+            if _attempt == 0 and _main_response_needs_image_fallback():
+                await _apply_image_fallback("main model did not consume attached image")
+                continue
             break
         except asyncio.CancelledError:
             # Cancel мог прилететь в середине стрима. raw_text уже содержит
@@ -953,28 +1085,15 @@ async def api_send_message(
                     # иначе history кончается user-сообщением без ответа.
                     session.add_assistant("[Interrupted]")
                 logger.info(
-                    "API cancelled mid-stream: saved partial assistant len=" + str(len(partial))
+                    "API cancelled mid-stream: saved partial assistant len="
+                    + str(len(partial))
                 )
             except Exception:
                 logger.debug("partial assistant save on cancel failed", exc_info=True)
             raise
         except Exception as e:
             if _attempt == 0 and has_images:
-                # Фото не принято (модель без поддержки изображений или файл
-                # повреждён). Убираем фото из локального запроса и API-истории
-                # и пробуем ещё раз чистым текстом — сессия продолжает работать.
-                from logger import warning as _log_warning
-
-                _log_warning("api.request.retry", attempt=2, reason=str(e), delay=0.0)
-                logger.warning(
-                    "API send failed with image(s), retrying text-only: "
-                    + type(e).__name__
-                    + ": "
-                    + str(e)
-                )
-                _strip_images_from(messages)
-                _strip_images_from(session.messages)
-                session.image_fallback = True
+                await _apply_image_fallback(f"{type(e).__name__}: {e}")
                 continue
             elapsed = time.monotonic() - t0
             logger.opt(exception=True).error(
@@ -1029,7 +1148,9 @@ async def api_send_message(
     clean_raw_text = _sanitize(raw_text)
     try:
         from tools import has_tool_calls as _has_tool_calls
-        from tools import truncate_after_last_tool_call as _truncate_after_last_tool_call
+        from tools import (
+            truncate_after_last_tool_call as _truncate_after_last_tool_call,
+        )
 
         if _has_tool_calls(clean_raw_text):
             clean_raw_text = _truncate_after_last_tool_call(clean_raw_text)
@@ -1048,7 +1169,22 @@ async def api_send_message(
         reasoning_content=reasoning_content,
     )
     if reasoning_content:
-        logger.info("API reasoning_content captured: " + str(len(reasoning_content)) + " chars")
+        logger.info(
+            "API reasoning_content captured: " + str(len(reasoning_content)) + " chars"
+        )
+
+    # Фото не должно оставаться в API-истории: следующий запрос может уйти
+    # уже на модель без vision-поддержки. Для повторных запросов достаточно
+    # текстовой отметки, что оригинал уже был отправлен один раз.
+    if original_images:
+        image_history_note = (
+            "[Image already sent to the main model; do not attach it again.]"
+        )
+        _replace_images_with_text(session.messages, image_history_note)
+        for path in original_images:
+            cache_key = str(Path(path))
+            if cache_key not in session.image_description_cache:
+                session.image_description_cache[cache_key] = image_history_note
 
     # Unbind request ID
     unbind("request")
@@ -1097,7 +1233,10 @@ async def api_compress_history(compress_prompt: str) -> str:
 
     messages = [HumanMessage(content=compress_prompt)]
     try:
-        result = await with_throttle_retry(lambda: llm.ainvoke(messages))
+        result = await stream_with_throttle_retry(
+            lambda: llm.astream(messages),
+            lambda _text: None,
+        )
     except Exception as e:
         elapsed = time.monotonic() - t0
         logger.error(
@@ -1114,7 +1253,11 @@ async def api_compress_history(compress_prompt: str) -> str:
     text = _content_to_text(getattr(result, "content", result)).strip()
     elapsed = time.monotonic() - t0
     logger.info(
-        "API compress done: " + str(len(text)) + " chars in " + str(round(elapsed, 1)) + "s"
+        "API compress done: "
+        + str(len(text))
+        + " chars in "
+        + str(round(elapsed, 1))
+        + "s"
     )
     return text
 
@@ -1154,7 +1297,9 @@ async def api_recap(conversation_text: str) -> str:
         + str(len(conversation_text))
     )
     try:
-        result = await with_throttle_retry(lambda: llm.ainvoke([HumanMessage(content=prompt)]))
+        result = await with_throttle_retry(
+            lambda: llm.ainvoke([HumanMessage(content=prompt)])
+        )
     except Exception as e:
         elapsed = time.monotonic() - t0
         logger.error(
@@ -1169,7 +1314,13 @@ async def api_recap(conversation_text: str) -> str:
     _spend_llm_usage(llm, result)
     text = _content_to_text(getattr(result, "content", result)).strip()
     elapsed = time.monotonic() - t0
-    logger.info("API recap done: " + str(len(text)) + " chars in " + str(round(elapsed, 1)) + "s")
+    logger.info(
+        "API recap done: "
+        + str(len(text))
+        + " chars in "
+        + str(round(elapsed, 1))
+        + "s"
+    )
     return text
 
 
@@ -1195,7 +1346,9 @@ async def api_extract_memory(prompt: str) -> str:
         + str(len(prompt))
     )
     try:
-        result = await with_throttle_retry(lambda: llm.ainvoke([HumanMessage(content=prompt)]))
+        result = await with_throttle_retry(
+            lambda: llm.ainvoke([HumanMessage(content=prompt)])
+        )
     except Exception as e:
         elapsed = time.monotonic() - t0
         logger.error(
@@ -1242,7 +1395,9 @@ async def api_insights(prompt: str) -> str:
         + str(len(prompt))
     )
     try:
-        result = await with_throttle_retry(lambda: llm.ainvoke([HumanMessage(content=prompt)]))
+        result = await with_throttle_retry(
+            lambda: llm.ainvoke([HumanMessage(content=prompt)])
+        )
     except Exception as e:
         elapsed = time.monotonic() - t0
         logger.error(
@@ -1338,9 +1493,13 @@ def restore_api_session_history(necli_session):
             # Если в head попала compress-мета ([compressed...] + summary),
             # помечаем сообщение флагом, чтобы api_send_message не принял его
             # за настоящий системный промпт и всё равно вставил build_system_prompt.
-            is_compressed = any(s.lstrip().startswith("[compressed") for s in head_system)
+            is_compressed = any(
+                s.lstrip().startswith("[compressed") for s in head_system
+            )
             kw = {"compressed": True} if is_compressed else None
-            api_sess.messages.append(SystemMessage(content=joined, additional_kwargs=kw))
+            api_sess.messages.append(
+                SystemMessage(content=joined, additional_kwargs=kw)
+            )
             head_system.clear()
 
     def _flush_pending_calls():
@@ -1403,10 +1562,15 @@ def restore_api_session_history(necli_session):
                 parsed = parse_tool_calls(content)
                 if parsed:
                     native_calls = _ensure_tool_call_ids(
-                        [{"name": c.tool_name, "args": c.args, "id": ""} for c in parsed]
+                        [
+                            {"name": c.tool_name, "args": c.args, "id": ""}
+                            for c in parsed
+                        ]
                     )
                     clean = strip_tool_calls(content)
-                    api_sess.messages.append(AIMessage(content=clean, tool_calls=native_calls))
+                    api_sess.messages.append(
+                        AIMessage(content=clean, tool_calls=native_calls)
+                    )
                     pending_restore_calls = native_calls
                 else:
                     api_sess.messages.append(AIMessage(content=content))
@@ -1453,7 +1617,9 @@ def restore_api_session_history(necli_session):
             seen_user = True
             pending_inline_system.clear()
             if native and pending_restore_calls:
-                segments = _split_tool_result_segments(content, len(pending_restore_calls))
+                segments = _split_tool_result_segments(
+                    content, len(pending_restore_calls)
+                )
                 for tc, seg in zip(pending_restore_calls, segments, strict=False):
                     api_sess.messages.append(
                         ToolMessage(
@@ -1478,7 +1644,11 @@ def restore_api_session_history(necli_session):
                     calls = []
                 native_calls = _ensure_tool_call_ids(
                     [
-                        {"name": c.get("name") or "shell", "args": c.get("args") or {}, "id": ""}
+                        {
+                            "name": c.get("name") or "shell",
+                            "args": c.get("args") or {},
+                            "id": "",
+                        }
                         for c in calls
                         if isinstance(c, dict)
                     ]
@@ -1491,12 +1661,16 @@ def restore_api_session_history(necli_session):
                 if target is not None:
                     target.tool_calls = native_calls
                 else:
-                    api_sess.messages.append(AIMessage(content="", tool_calls=native_calls))
+                    api_sess.messages.append(
+                        AIMessage(content="", tool_calls=native_calls)
+                    )
                 pending_restore_calls = native_calls
             continue
         else:
             logger.debug(
-                "restore_api_session_history: unknown role '" + role + "', treating as user"
+                "restore_api_session_history: unknown role '"
+                + role
+                + "', treating as user"
             )
             seen_user = True
             api_sess.messages.append(HumanMessage(content=content))

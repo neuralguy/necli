@@ -107,7 +107,10 @@ class ShellOutputMixin:
             ordered.append("working")
         if "plan" in self._dynamic:
             ordered.append("plan")
-        parts = [(k, self.bridge.to_ansi(self._resolve(self._dynamic[k]), w)) for k in ordered]
+        parts = [
+            (k, self.bridge.to_ansi(self._resolve(self._dynamic[k]), w))
+            for k in ordered
+        ]
         chunks: list[str] = []
         for dynamic_key, part in parts:
             if not part:
@@ -115,11 +118,9 @@ class ShellOutputMixin:
             # Мысли/частичный инструмент живут над Working. Между этими
             # смысловыми блоками нужен пустой ряд, иначе нижняя строка мыслей
             # визуально слипается с заголовком Working.
-            if dynamic_key == "working" and chunks:
-                chunks.append("\n")
-            # План — отдельный смысловой блок под Working, поэтому между ними
-            # сохраняем такую же отбивку, как между частичным выводом и Working.
-            elif dynamic_key == "plan" and "working" in self._dynamic and chunks:
+            if (dynamic_key == "working" and chunks) or (
+                dynamic_key == "plan" and "working" in self._dynamic and chunks
+            ):
                 chunks.append("\n")
             chunks.append(part if part.endswith("\n") else part + "\n")
         body = "".join(chunks).rstrip("\n")
@@ -323,7 +324,11 @@ class ShellOutputMixin:
         return len(self._visible_queued_messages())
 
     def _queue_edit_hint(self) -> str:
-        if self.overlay is not None or self.input_buffer.text or not self._queued_messages:
+        if (
+            self.overlay is not None
+            or self.input_buffer.text
+            or not self._queued_messages
+        ):
             return ""
         from config.i18n import t as tr
 
@@ -388,7 +393,11 @@ class ShellOutputMixin:
             return ""
         agents = sum(group.summary_count for group in hidden if group.kind == "agent")
         tasks = sum(group.summary_count for group in hidden if group.kind == "task")
-        other = sum(group.summary_count for group in hidden if group.kind not in ("agent", "task"))
+        other = sum(
+            group.summary_count
+            for group in hidden
+            if group.kind not in ("agent", "task")
+        )
         from config.i18n import t as tr
 
         if agents and tasks:

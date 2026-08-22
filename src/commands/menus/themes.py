@@ -89,11 +89,19 @@ async def themes_interactive():
             )
         custom_idx = len(theme_names)
         items.append(
-            {"label": _("themes.customize"), "hint": _("themes.customize_hint"), "action": True}
+            {
+                "label": _("themes.customize"),
+                "hint": _("themes.customize_hint"),
+                "action": True,
+            }
         )
         if custom:
             items.append(
-                {"label": _("themes.reset"), "hint": _("themes.reset_hint"), "action": True}
+                {
+                    "label": _("themes.reset"),
+                    "hint": _("themes.reset_hint"),
+                    "action": True,
+                }
             )
 
         def footer(sel: int, names=theme_names) -> str:

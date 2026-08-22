@@ -240,7 +240,9 @@ def handle(cmd: dict):
             "listParagraphStyleId": parsed.list_paragraph_style_id,
             "themeFonts": parsed.theme_fonts,
             "themeColors": parsed.theme_colors,
-            "styles": [dict(s) for s in parsed.styles.values() if not s.get("semiHidden")],
+            "styles": [
+                dict(s) for s in parsed.styles.values() if not s.get("semiHidden")
+            ],
             "docDefaults": parsed.doc_defaults,
             "numbering": parsed.numbering,
         }
@@ -265,7 +267,9 @@ def handle(cmd: dict):
     if c == "caption":
         return {
             "ok": True,
-            "xml": generate_caption_xml(cmd["label"], cmd["number"], cmd.get("text", "")),
+            "xml": generate_caption_xml(
+                cmd["label"], cmd["number"], cmd.get("text", "")
+            ),
         }
     if c == "table":
         return {
@@ -279,7 +283,9 @@ def handle(cmd: dict):
     if c == "wordart":
         return {
             "ok": True,
-            "xml": build_word_art_paragraph_xml(cmd.get("text", "WordArt"), cmd.get("wordArtId")),
+            "xml": build_word_art_paragraph_xml(
+                cmd.get("text", "WordArt"), cmd.get("wordArtId")
+            ),
         }
     if c == "patchChart":
         return {"ok": True, "xml": patch_chart_part_xml(cmd["xml"], cmd["patch"])}
@@ -318,7 +324,8 @@ def main():
         except Exception:
             print(
                 json.dumps(
-                    {"ok": False, "error": traceback.format_exc(limit=5)}, ensure_ascii=False
+                    {"ok": False, "error": traceback.format_exc(limit=5)},
+                    ensure_ascii=False,
                 ),
                 flush=True,
             )

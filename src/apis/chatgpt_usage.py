@@ -42,13 +42,17 @@ def parse_chatgpt_weekly_usage(data: Any) -> dict[str, Any] | None:
         except (KeyError, TypeError, ValueError):
             continue
         if seconds >= _WEEK_SECONDS * 6 / 7:
-            windows.append({**window, "limit_window_seconds": seconds, "used_percent": used})
+            windows.append(
+                {**window, "limit_window_seconds": seconds, "used_percent": used}
+            )
 
     if not windows:
         secondary = rate_limit.get("secondary_window")
         if isinstance(secondary, dict) and not secondary.get("limit_window_seconds"):
             try:
-                windows.append({**secondary, "used_percent": float(secondary["used_percent"])})
+                windows.append(
+                    {**secondary, "used_percent": float(secondary["used_percent"])}
+                )
             except (KeyError, TypeError, ValueError):
                 pass
     if not windows:
@@ -96,7 +100,9 @@ def _notify_listeners(snapshot: dict[str, Any]) -> None:
             logger.debug("ChatGPT usage listener failed: {}", exc)
 
 
-async def refresh_chatgpt_usage(*, force: bool = False, proxy: str = "") -> dict[str, Any] | None:
+async def refresh_chatgpt_usage(
+    *, force: bool = False, proxy: str = ""
+) -> dict[str, Any] | None:
     """Refresh usage best-effort; failures never break provider requests or menus."""
     global _fetched_at, _snapshot
 
@@ -115,7 +121,9 @@ async def refresh_chatgpt_usage(*, force: bool = False, proxy: str = "") -> dict
             async with httpx.AsyncClient(**kwargs) as client:
                 response: httpx.Response | None = None
                 for refresh_token in (False, True):
-                    token, account_id = await get_chatgpt_access(force_refresh=refresh_token)
+                    token, account_id = await get_chatgpt_access(
+                        force_refresh=refresh_token
+                    )
                     headers = {
                         "Authorization": f"Bearer {token}",
                         "Accept": "application/json",
@@ -146,7 +154,9 @@ def schedule_chatgpt_usage_refresh(*, proxy: str = "") -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
-async def refresh_connected_chatgpt_usage(*, force: bool = False) -> dict[str, Any] | None:
+async def refresh_connected_chatgpt_usage(
+    *, force: bool = False
+) -> dict[str, Any] | None:
     """Refresh the connected ChatGPT provider without duplicating UI lookup logic."""
     from apis.chatgpt_auth import chatgpt_auth_status
     from apis.registry import get_definitions

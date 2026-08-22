@@ -5,11 +5,10 @@ from dataclasses import dataclass
 from rich.console import Console
 
 import config
-import session.storage as storage
 from config.i18n import t as _
 from config.themes import t
 from logger import logger
-from session import Session
+from session import Session, storage
 from ui.menu import select_session_menu
 
 console = Console()
@@ -43,8 +42,7 @@ def _print_help() -> None:
     for _cat, _key, cmds in groups:
         for c in cmds:
             label_len = len(command_label(c.name, include_action=False))
-            if label_len > max_label:
-                max_label = label_len
+            max_label = max(max_label, label_len)
     col_width = max_label + 4
 
     accent = t("accent")
@@ -60,7 +58,9 @@ def _print_help() -> None:
             aliases = ""
             if c.aliases:
                 aliases = f" [dim](alias: {', '.join(c.aliases)})[/dim]"
-            console.print(f"  [bold {accent}]{label}[/bold {accent}]{padding}{desc}{aliases}")
+            console.print(
+                f"  [bold {accent}]{label}[/bold {accent}]{padding}{desc}{aliases}"
+            )
         console.print()
 
 
@@ -250,7 +250,9 @@ async def _handle_slash(
         if not sessions_list:
             return r
 
-        choice = await _call_menu(select_session_menu, sessions_list, current_id=session.id)
+        choice = await _call_menu(
+            select_session_menu, sessions_list, current_id=session.id
+        )
         if choice is not None:
             sid = sessions_list[choice]["id"]
             if sid != session.id:
@@ -274,8 +276,7 @@ async def _handle_slash(
 
     if head == "/copy":
         n = int(rest) if rest.strip().isdigit() else 1
-        if n < 1:
-            n = 1
+        n = max(n, 1)
         assistant_msgs = [m for m in session.messages if m.role == "assistant"]
         if not assistant_msgs:
             return r

@@ -35,7 +35,9 @@ def _iterated_sha512(password: str, salt: bytes, spin: int) -> bytes:
     return h
 
 
-def hash_protection_password(password: str, spin_count: int = DEFAULT_SPIN_COUNT) -> dict:
+def hash_protection_password(
+    password: str, spin_count: int = DEFAULT_SPIN_COUNT
+) -> dict:
     spin_count = _validated_spin(spin_count)
     salt = os.urandom(16)
     h = _iterated_sha512(password, salt, spin_count)

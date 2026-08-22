@@ -10,9 +10,12 @@ from pathlib import PurePosixPath
 from xml.etree import ElementTree as ET
 
 from .models import SlideSize
-from .xmlutil import attr_int, local, qn
+from .xmlutil import attr_int, local, parse_xml, qn
 
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+_MAX_ARCHIVE_PARTS = 10_000
+_MAX_PART_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+_MAX_ARCHIVE_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,11 +37,25 @@ class PackageArchive:
     def open(cls, data: bytes) -> PackageArchive:
         try:
             with zipfile.ZipFile(BytesIO(data), "r") as package:
-                entries = {
-                    info.filename: package.read(info)
-                    for info in package.infolist()
-                    if not info.is_dir()
-                }
+                parts = [info for info in package.infolist() if not info.is_dir()]
+                if len(parts) > _MAX_ARCHIVE_PARTS:
+                    raise ValueError(
+                        f"PPTX contains too many parts (>{_MAX_ARCHIVE_PARTS})"
+                    )
+
+                entries: dict[str, bytes] = {}
+                total_size = 0
+                for info in parts:
+                    if info.file_size > _MAX_PART_UNCOMPRESSED_BYTES:
+                        raise ValueError(
+                            f"PPTX part '{info.filename}' exceeds the {_MAX_PART_UNCOMPRESSED_BYTES // (1024 * 1024)}MB limit"
+                        )
+                    total_size += info.file_size
+                    if total_size > _MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                        raise ValueError(
+                            f"PPTX exceeds the {_MAX_ARCHIVE_UNCOMPRESSED_BYTES // (1024 * 1024)}MB uncompressed limit"
+                        )
+                    entries[info.filename] = package.read(info)
         except zipfile.BadZipFile as exc:
             raise ValueError("Input is not a valid PPTX/ZIP package") from exc
         return cls(entries, sha256(data).hexdigest())
@@ -65,7 +82,7 @@ class PackageArchive:
         if not xml:
             return {}
         try:
-            root = ET.fromstring(xml.encode("utf-8"))
+            root = parse_xml(xml)
         except ET.ParseError:
             return {}
         relationships: dict[str, Relationship] = {}
@@ -81,10 +98,16 @@ class PackageArchive:
             relationships[relation.id] = relation
         return relationships
 
-    def write_rels(self, part_path: str, relationships: dict[str, Relationship]) -> None:
+    def write_rels(
+        self, part_path: str, relationships: dict[str, Relationship]
+    ) -> None:
         root = ET.Element(f"{{{REL_NS}}}Relationships")
         for relation in relationships.values():
-            attrs = {"Id": relation.id, "Type": relation.type, "Target": relation.target}
+            attrs = {
+                "Id": relation.id,
+                "Type": relation.type,
+                "Target": relation.target,
+            }
             if relation.target_mode:
                 attrs["TargetMode"] = relation.target_mode
             ET.SubElement(root, f"{{{REL_NS}}}Relationship", attrs)
@@ -98,11 +121,13 @@ class PackageArchive:
         if not xml:
             raise ValueError("ppt/presentation.xml is missing")
         try:
-            root = ET.fromstring(xml.encode("utf-8"))
+            root = parse_xml(xml)
         except ET.ParseError as exc:
             raise ValueError("ppt/presentation.xml is malformed") from exc
         size_node = root.find(qn("p", "sldSz"))
-        size = SlideSize(attr_int(size_node, "cx", 9_144_000), attr_int(size_node, "cy", 6_858_000))
+        size = SlideSize(
+            attr_int(size_node, "cx", 9_144_000), attr_int(size_node, "cy", 6_858_000)
+        )
         relationships = self.read_rels("ppt/presentation.xml")
         slide_paths: list[str] = []
         listing = root.find(qn("p", "sldIdLst"))
@@ -111,7 +136,9 @@ class PackageArchive:
                 relation_id = item.get(qn("r", "id")) or item.get("id")
                 if relation_id in relationships:
                     slide_paths.append(
-                        resolve_target("ppt/presentation.xml", relationships[relation_id].target)
+                        resolve_target(
+                            "ppt/presentation.xml", relationships[relation_id].target
+                        )
                     )
         return size, slide_paths
 
@@ -133,7 +160,11 @@ class PackageArchive:
                 if relation.type.endswith("/theme"):
                     theme_path = resolve_target(master_path, relation.target)
                     break
-        return {"layout_path": layout_path, "master_path": master_path, "theme_path": theme_path}
+        return {
+            "layout_path": layout_path,
+            "master_path": master_path,
+            "theme_path": theme_path,
+        }
 
     def to_bytes(self) -> bytes:
         buffer = BytesIO()
@@ -144,7 +175,9 @@ class PackageArchive:
                 extension = path.rsplit(".", 1)[-1].lower() if "." in path else ""
                 info = zipfile.ZipInfo(path)
                 info.compress_type = (
-                    zipfile.ZIP_DEFLATED if extension in {"xml", "rels"} else zipfile.ZIP_STORED
+                    zipfile.ZIP_DEFLATED
+                    if extension in {"xml", "rels"}
+                    else zipfile.ZIP_STORED
                 )
                 output.writestr(info, data)
         return buffer.getvalue()

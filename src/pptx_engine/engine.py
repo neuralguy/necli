@@ -15,7 +15,13 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from .archive import PackageArchive, Relationship, relative_target, rels_path_for, resolve_target
+from .archive import (
+    PackageArchive,
+    Relationship,
+    relative_target,
+    rels_path_for,
+    resolve_target,
+)
 from .models import (
     ByteAnchor,
     Deck,
@@ -108,7 +114,9 @@ def _stroke_xml(stroke: dict[str, Any] | None) -> str:
     width = _as_int(stroke.get("width"), 12700)
     cap = f' cap="{xml_escape_attr(str(stroke["cap"]))}"' if stroke.get("cap") else ""
     dash = (
-        f'<a:prstDash val="{xml_escape_attr(str(stroke["dash"]))}"/>' if stroke.get("dash") else ""
+        f'<a:prstDash val="{xml_escape_attr(str(stroke["dash"]))}"/>'
+        if stroke.get("dash")
+        else ""
     )
     ends = ""
     for source, tag in (("head_end", "headEnd"), ("tail_end", "tailEnd")):
@@ -117,7 +125,11 @@ def _stroke_xml(stroke: dict[str, Any] | None) -> str:
             ends += (
                 f'<a:{tag} type="{xml_escape_attr(str(end.get("type", "none")))}"'
                 + (f' w="{xml_escape_attr(str(end["w"]))}"' if end.get("w") else "")
-                + (f' len="{xml_escape_attr(str(end["len"]))}"' if end.get("len") else "")
+                + (
+                    f' len="{xml_escape_attr(str(end["len"]))}"'
+                    if end.get("len")
+                    else ""
+                )
                 + "/>"
             )
     return f'<a:ln w="{width}"{cap}>{_fill_xml(stroke.get("fill"))}{dash}{ends}</a:ln>'
@@ -130,8 +142,14 @@ def _run_xml(run: TextRun) -> str:
     attrs += ' u="sng"' if run.underline else ""
     attrs += ' strike="sngStrike"' if run.strike else ""
     attrs += f' sz="{round(run.font_size * 100)}"' if run.font_size is not None else ""
-    attrs += f' baseline="{round(run.baseline * 1000)}"' if run.baseline is not None else ""
-    attrs += f' spc="{round(run.letter_spacing * 100)}"' if run.letter_spacing is not None else ""
+    attrs += (
+        f' baseline="{round(run.baseline * 1000)}"' if run.baseline is not None else ""
+    )
+    attrs += (
+        f' spc="{round(run.letter_spacing * 100)}"'
+        if run.letter_spacing is not None
+        else ""
+    )
     props = ""
     if run.font_family:
         props += f'<a:latin typeface="{xml_escape_attr(run.font_family)}"/>'
@@ -162,7 +180,9 @@ def _paragraph_xml(paragraph: Paragraph) -> str:
     if paragraph.line_height is not None:
         extras += f'<a:lnSpc><a:spcPct val="{round(paragraph.line_height * 1000)}"/></a:lnSpc>'
     elif paragraph.line_exact is not None:
-        extras += f'<a:lnSpc><a:spcPts val="{round(paragraph.line_exact * 100)}"/></a:lnSpc>'
+        extras += (
+            f'<a:lnSpc><a:spcPts val="{round(paragraph.line_exact * 100)}"/></a:lnSpc>'
+        )
     if paragraph.space_before is not None:
         extras += f'<a:spcBef><a:spcPts val="{round(paragraph.space_before * 100)}"/></a:spcBef>'
     if paragraph.space_after is not None:
@@ -186,7 +206,9 @@ def _text_xml(body: TextBody | None) -> str:
     wrap = "none" if body.wrap is False else "square"
     body_pr = f'<a:bodyPr lIns="{insets.get("l", 91440)}" tIns="{insets.get("t", 45720)}" rIns="{insets.get("r", 91440)}" bIns="{insets.get("b", 45720)}" anchor="{anchor}" wrap="{wrap}">'
     if body.autofit == "shrink":
-        body_pr += f'<a:normAutofit fontScale="{round((body.font_scale or 1) * 100000)}"/>'
+        body_pr += (
+            f'<a:normAutofit fontScale="{round((body.font_scale or 1) * 100000)}"/>'
+        )
     elif body.autofit == "resize":
         body_pr += "<a:spAutoFit/>"
     else:
@@ -206,23 +228,31 @@ def element_xml(element: Element) -> str:
     if element.type in {"shape", "text"}:
         geometry = element.preset_geometry or "rect"
         adj = "".join(
-            f'<a:gd name="{xml_escape_attr(k)}" fmla="val {v}"/>' for k, v in element.adjust.items()
+            f'<a:gd name="{xml_escape_attr(k)}" fmla="val {v}"/>'
+            for k, v in element.adjust.items()
         )
-        geometry_xml = (
-            f'<a:prstGeom prst="{xml_escape_attr(geometry)}"><a:avLst>{adj}</a:avLst></a:prstGeom>'
-        )
+        geometry_xml = f'<a:prstGeom prst="{xml_escape_attr(geometry)}"><a:avLst>{adj}</a:avLst></a:prstGeom>'
         sp_pr = f"<p:spPr>{_xfrm_xml(element.transform)}{geometry_xml}{_fill_xml(element.fill)}{_stroke_xml(element.stroke)}</p:spPr>"
-        ph = f'<p:ph type="{xml_escape_attr(element.placeholder)}"/>' if element.placeholder else ""
+        ph = (
+            f'<p:ph type="{xml_escape_attr(element.placeholder)}"/>'
+            if element.placeholder
+            else ""
+        )
         return f'<p:sp><p:nvSpPr><p:cNvPr id="{numeric_id}" name="{name}"{descr}/><p:cNvSpPr txBox="{1 if element.type == "text" else 0}"/><p:nvPr>{ph}</p:nvPr></p:nvSpPr>{sp_pr}{_text_xml(element.text)}</p:sp>'
     if element.type == "picture":
         embed = (
-            f' r:embed="{xml_escape_attr(element.media_r_id or "")}"' if element.media_r_id else ""
+            f' r:embed="{xml_escape_attr(element.media_r_id or "")}"'
+            if element.media_r_id
+            else ""
         )
         src = ""
         if element.src_rect:
             src = (
                 "<a:srcRect "
-                + " ".join(f'{k}="{round(float(v) * 100000)}"' for k, v in element.src_rect.items())
+                + " ".join(
+                    f'{k}="{round(float(v) * 100000)}"'
+                    for k, v in element.src_rect.items()
+                )
                 + "/>"
             )
         alpha = (
@@ -267,19 +297,23 @@ def _table_xml(element: Element, numeric_id: int, name: str, descr: str) -> str:
             if isinstance(cell, dict) and cell.get("merged"):
                 attrs += ' hMerge="1"'
             fill = (
-                _fill_xml(cell.get("fill")) if isinstance(cell, dict) and cell.get("fill") else ""
+                _fill_xml(cell.get("fill"))
+                if isinstance(cell, dict) and cell.get("fill")
+                else ""
             )
             body = _text_xml(
-                text if isinstance(text, TextBody) else TextBody([Paragraph([TextRun("")])])
+                text
+                if isinstance(text, TextBody)
+                else TextBody([Paragraph([TextRun("")])])
             )
             # Tables use DrawingML's a:txBody (not PresentationML p:txBody).
-            body = body.replace("<p:txBody>", "<a:txBody>").replace("</p:txBody>", "</a:txBody>")
+            body = body.replace("<p:txBody>", "<a:txBody>").replace(
+                "</p:txBody>", "</a:txBody>"
+            )
             cells_xml += f"<a:tc{attrs}>{body}<a:tcPr>{fill}</a:tcPr></a:tc>"
         table_rows += f'<a:tr h="{max(1, height)}">{cells_xml}</a:tr>'
     xfrm = element.transform.offset
-    frame_xfrm = (
-        f'<p:xfrm><a:off x="{xfrm.x}" y="{xfrm.y}"/><a:ext cx="{xfrm.cx}" cy="{xfrm.cy}"/></p:xfrm>'
-    )
+    frame_xfrm = f'<p:xfrm><a:off x="{xfrm.x}" y="{xfrm.y}"/><a:ext cx="{xfrm.cx}" cy="{xfrm.cy}"/></p:xfrm>'
     return f'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{numeric_id}" name="{name}"{descr}/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>{frame_xfrm}<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl><a:tblPr firstRow="1" bandRow="1"/><a:tblGrid>{grid}</a:tblGrid>{table_rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>'
 
 
@@ -300,7 +334,9 @@ class PptxDocument:
         return cls.open_bytes(Path(file_path).read_bytes())
 
     @classmethod
-    def create_blank(cls, width_emu: int = 12_192_000, height_emu: int = 6_858_000) -> PptxDocument:
+    def create_blank(
+        cls, width_emu: int = 12_192_000, height_emu: int = 6_858_000
+    ) -> PptxDocument:
         archive = PackageArchive(_blank_entries(width_emu, height_emu), "")
         document = cls(archive, parse_deck(archive))
         document.deck.original_hash = sha256(document.to_bytes()).hexdigest()
@@ -314,7 +350,9 @@ class PptxDocument:
         slide = self.deck.slides[index]
         relations = {
             r.id: (
-                r.target if r.target_mode == "External" else resolve_target(slide.path, r.target)
+                r.target
+                if r.target_mode == "External"
+                else resolve_target(slide.path, r.target)
             )
             for r in self.archive.read_rels(slide.path).values()
         }
@@ -332,7 +370,9 @@ class PptxDocument:
 
     def slide(self, index: int) -> Slide:
         if not 0 <= index < len(self.deck.slides):
-            raise PptxError(f"slide_index {index} is outside [0, {len(self.deck.slides) - 1}]")
+            raise PptxError(
+                f"slide_index {index} is outside [0, {len(self.deck.slides) - 1}]"
+            )
         return self.deck.slides[index]
 
     def _next_nv_id(self, slide: Slide) -> int:
@@ -348,7 +388,11 @@ class PptxDocument:
         return max_id + 1
 
     def _new_element(
-        self, slide: Slide, kind: str, transform: dict[str, Any] | None = None, **kwargs: Any
+        self,
+        slide: Slide,
+        kind: str,
+        transform: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> Element:
         number = self._next_nv_id(slide)
         rect_data = (transform or {}).get("offset", transform or {})
@@ -477,7 +521,10 @@ class PptxDocument:
         parsed_rows: list[list[dict[str, Any]]] = []
         for row in rows:
             parsed_rows.append(
-                [{"text": TextBody([Paragraph([TextRun(str(value))])])} for value in row]
+                [
+                    {"text": TextBody([Paragraph([TextRun(str(value))])])}
+                    for value in row
+                ]
             )
         element = self._new_element(
             slide,
@@ -517,7 +564,9 @@ class PptxDocument:
         element.dirty = True
         return element
 
-    def replace_all(self, search: str, replacement: str, *, case_sensitive: bool = True) -> int:
+    def replace_all(
+        self, search: str, replacement: str, *, case_sensitive: bool = True
+    ) -> int:
         if not search:
             raise PptxError("search must not be empty")
         flags = 0 if case_sensitive else re.IGNORECASE
@@ -540,14 +589,19 @@ class PptxDocument:
                             for para in body.paragraphs:
                                 for run in para.runs:
                                     run.text, changed = re.subn(
-                                        re.escape(search), replacement, run.text, flags=flags
+                                        re.escape(search),
+                                        replacement,
+                                        run.text,
+                                        flags=flags,
                                     )
                                     count += changed
                                     if changed:
                                         element.dirty = True
         return count
 
-    def transform(self, slide_index: int, element_id: str, patch: dict[str, Any]) -> Element:
+    def transform(
+        self, slide_index: int, element_id: str, patch: dict[str, Any]
+    ) -> Element:
         element = self.require_element(slide_index, element_id)
         offset = patch.get("offset", patch)
         for key in ("x", "y", "cx", "cy"):
@@ -562,7 +616,9 @@ class PptxDocument:
         element.dirty_transform = True
         return element
 
-    def set_fill(self, slide_index: int, element_id: str, fill: dict[str, Any]) -> Element:
+    def set_fill(
+        self, slide_index: int, element_id: str, fill: dict[str, Any]
+    ) -> Element:
         element = self.require_element(slide_index, element_id)
         element.fill = fill
         element.dirty_fill = True
@@ -576,7 +632,9 @@ class PptxDocument:
         element.dirty_stroke = True
         return element
 
-    def set_font(self, slide_index: int, element_id: str, patch: dict[str, Any]) -> Element:
+    def set_font(
+        self, slide_index: int, element_id: str, patch: dict[str, Any]
+    ) -> Element:
         element = self.require_element(slide_index, element_id)
         if not element.text:
             raise PptxError(f"element {element_id} does not carry editable text")
@@ -645,7 +703,9 @@ class PptxDocument:
             slide.structure_dirty = True
         return found
 
-    def group(self, slide_index: int, element_ids: list[str], name: str | None = None) -> Element:
+    def group(
+        self, slide_index: int, element_ids: list[str], name: str | None = None
+    ) -> Element:
         slide = self.slide(slide_index)
         members = [e for e in slide.elements if e.id in set(element_ids)]
         if len(members) < 2:
@@ -661,7 +721,9 @@ class PptxDocument:
             children=members,
             name=name,
         )
-        slide.elements = [e for e in slide.elements if e.id not in set(element_ids)] + [group]
+        slide.elements = [e for e in slide.elements if e.id not in set(element_ids)] + [
+            group
+        ]
         slide.structure_dirty = True
         return group
 
@@ -681,12 +743,16 @@ class PptxDocument:
         background = f"<p:bg><p:bgPr><a:solidFill>{_colour_xml(color)}</a:solidFill><a:effectLst/></p:bgPr></p:bg>"
         if "<p:bg>" in slide.body_prefix:
             slide.body_prefix = re.sub(
-                r"<p:bg>.*?</p:bg>", background, slide.body_prefix, flags=re.S
+                r"<p:bg>.*?</p:bg>", background, slide.body_prefix, flags=re.DOTALL
             )
         else:
-            c_sld_end = slide.body_prefix.find(">", slide.body_prefix.find("<p:cSld")) + 1
+            c_sld_end = (
+                slide.body_prefix.find(">", slide.body_prefix.find("<p:cSld")) + 1
+            )
             slide.body_prefix = (
-                slide.body_prefix[:c_sld_end] + background + slide.body_prefix[c_sld_end:]
+                slide.body_prefix[:c_sld_end]
+                + background
+                + slide.body_prefix[c_sld_end:]
             )
         slide.structure_dirty = True
 
@@ -719,7 +785,12 @@ class PptxDocument:
         # Copy the relation graph but omit notes relationship so notes never alias.
         source_rels = self.archive.read_rels(source.path)
         self.archive.write_rels(
-            new_path, {k: v for k, v in source_rels.items() if not v.type.endswith("/notesSlide")}
+            new_path,
+            {
+                k: v
+                for k, v in source_rels.items()
+                if not v.type.endswith("/notesSlide")
+            },
         )
         result = self._register_slide(source_index, new_path)
         if clear_text:
@@ -748,7 +819,9 @@ class PptxDocument:
             ),
             None,
         )
-        rels = {"rId1": Relationship("rId1", layout.type, layout.target)} if layout else {}
+        rels = (
+            {"rId1": Relationship("rId1", layout.type, layout.target)} if layout else {}
+        )
         self.archive.write_rels(new_path, rels)
         result = self._register_slide(source_index, new_path)
         if insertion_index == 0:
@@ -762,11 +835,18 @@ class PptxDocument:
         pres_path = "ppt/presentation.xml"
         rels = self.archive.read_rels(pres_path)
         relation = next(
-            (r for r in rels.values() if resolve_target(pres_path, r.target) == slide.path), None
+            (
+                r
+                for r in rels.values()
+                if resolve_target(pres_path, r.target) == slide.path
+            ),
+            None,
         )
         if relation:
             xml = self.archive.read_text(pres_path) or ""
-            xml = re.sub(rf'<p:sldId\b(?=[^>]*r:id="{re.escape(relation.id)}")[^>]*/>', "", xml)
+            xml = re.sub(
+                rf'<p:sldId\b(?=[^>]*r:id="{re.escape(relation.id)}")[^>]*/>', "", xml
+            )
             self.archive.write_text(pres_path, xml)
             rels.pop(relation.id, None)
             self.archive.write_rels(pres_path, rels)
@@ -792,7 +872,12 @@ class PptxDocument:
                 if rel:
                     mapped[resolve_target(pres_path, rel.target)] = tag
         ordered = "".join(mapped.get(s.path, "") for s in self.deck.slides)
-        pres = re.sub(r"(<p:sldIdLst>).*?(</p:sldIdLst>)", rf"\1{ordered}\2", pres, flags=re.S)
+        pres = re.sub(
+            r"(<p:sldIdLst>).*?(</p:sldIdLst>)",
+            rf"\1{ordered}\2",
+            pres,
+            flags=re.DOTALL,
+        )
         self.archive.write_text(pres_path, pres)
 
     def set_slide_size(self, cx: int, cy: int) -> None:
@@ -804,7 +889,9 @@ class PptxDocument:
     def require_element(self, slide_index: int, element_id: str) -> Element:
         element = element_by_id(self.slide(slide_index), element_id)
         if not element:
-            raise PptxError(f"element {element_id} was not found on slide {slide_index}")
+            raise PptxError(
+                f"element {element_id} was not found on slide {slide_index}"
+            )
         return element
 
     def _add_media(self, slide: Slide, data: bytes, ext: str) -> tuple[str, str]:
@@ -815,15 +902,22 @@ class PptxDocument:
         self.archive.entries[path] = data
         content_type = mimetypes.types_map.get("." + ext, f"image/{ext}")
         types = self.archive.read_text("[Content_Types].xml") or ""
-        if not re.search(rf'<Default\b[^>]*Extension="{re.escape(ext)}"', types, re.I):
+        if not re.search(
+            rf'<Default\b[^>]*Extension="{re.escape(ext)}"', types, re.IGNORECASE
+        ):
             types = types.replace(
-                "</Types>", f'<Default Extension="{ext}" ContentType="{content_type}"/></Types>'
+                "</Types>",
+                f'<Default Extension="{ext}" ContentType="{content_type}"/></Types>',
             )
             self.archive.write_text("[Content_Types].xml", types)
         relations = self.archive.read_rels(slide.path)
-        used = [int(x[3:]) for x in relations if x.startswith("rId") and x[3:].isdigit()]
+        used = [
+            int(x[3:]) for x in relations if x.startswith("rId") and x[3:].isdigit()
+        ]
         r_id = f"rId{max(used, default=0) + 1}"
-        relations[r_id] = Relationship(r_id, P_REL + "/image", relative_target(slide.path, path))
+        relations[r_id] = Relationship(
+            r_id, P_REL + "/image", relative_target(slide.path, path)
+        )
         self.archive.write_rels(slide.path, relations)
         return path, r_id
 
@@ -844,13 +938,19 @@ class PptxDocument:
         rels = self.archive.read_rels(pres_path)
         used = [int(x[3:]) for x in rels if x.startswith("rId") and x[3:].isdigit()]
         r_id = f"rId{max(used, default=0) + 1}"
-        rels[r_id] = Relationship(r_id, P_REL + "/slide", relative_target(pres_path, new_path))
+        rels[r_id] = Relationship(
+            r_id, P_REL + "/slide", relative_target(pres_path, new_path)
+        )
         self.archive.write_rels(pres_path, rels)
         ids = [int(x) for x in re.findall(r'<p:sldId\b[^>]*\bid="(\d+)"', pres)]
         tag = f'<p:sldId id="{max(ids, default=255) + 1}" r:id="{r_id}"/>'
         anchor_slide = self.slide(after_index)
         anchor_rel = next(
-            (r for r in rels.values() if resolve_target(pres_path, r.target) == anchor_slide.path),
+            (
+                r
+                for r in rels.values()
+                if resolve_target(pres_path, r.target) == anchor_slide.path
+            ),
             None,
         )
         if anchor_rel:
@@ -867,7 +967,11 @@ class PptxDocument:
             )
             self.archive.write_text("[Content_Types].xml", content)
         relations = {
-            r.id: (r.target if r.target_mode == "External" else resolve_target(new_path, r.target))
+            r.id: (
+                r.target
+                if r.target_mode == "External"
+                else resolve_target(new_path, r.target)
+            )
             for r in self.archive.read_rels(new_path).values()
         }
         chain = self.archive.resolve_slide_chain(new_path)
@@ -996,5 +1100,7 @@ def open_pptx(data: bytes) -> PptxDocument:
     return PptxDocument.open_bytes(data)
 
 
-def create_blank_pptx(width_emu: int = 12_192_000, height_emu: int = 6_858_000) -> bytes:
+def create_blank_pptx(
+    width_emu: int = 12_192_000, height_emu: int = 6_858_000
+) -> bytes:
     return PptxDocument.create_blank(width_emu, height_emu).to_bytes()

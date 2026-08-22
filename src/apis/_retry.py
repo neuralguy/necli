@@ -2,20 +2,46 @@
 
 import asyncio
 import inspect
+import math
 import re
+
+import httpx
 
 from logger import logger
 from tools._html_unescape import maybe_unescape
 
 _THROTTLE_CODE = 429
-_RETRY_DELAYS = (1.0, 2.0, 3.0, 10.0, 15.0, 30.0, 60.0)
+_RETRY_DELAYS = (2.0, 3.0, 5.0, 10.0, 15.0)
 _MAX_RETRIES = len(_RETRY_DELAYS) + 1
 _MAX_DELAY = _RETRY_DELAYS[-1]
 # Пол на паузу между ретраями. Прокси (onlysq) присылает Retry-After: 0 →
 # раньше это давало 8 ретраев за ~2мс (видно в логах "retry in 0.0s attempt 7/8"):
 # попытки сгорали впустую, сервер не успевал остыть → запрос всё равно падал.
 # Любую посчитанную паузу поднимаем минимум до этого значения.
-_MIN_RETRY_DELAY = 1.5
+_MIN_RETRY_DELAY = 2.0
+_EMPTY_IDLE_RETRIES = 1
+_PARTIAL_IDLE_RETRIES = 1
+
+
+def _stream_idle_timeout() -> float:
+    from config.settings import get
+
+    value = get("stream_idle_timeout", 180)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 180.0
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout < 1 or timeout > 3600:
+        return 180.0
+    return timeout
+
+
+class StreamIdleTimeout(TimeoutError):
+    """Провайдер не прислал ни одного stream-чанка за idle-интервал."""
+
+
+class StreamIncompleteError(ConnectionError):
+    """Транспорт завершил stream без терминального события провайдера."""
+
 
 _THROTTLE_KEYWORDS = (
     "rate limit",
@@ -39,7 +65,6 @@ _TRANSIENT_PROVIDER_KEYWORDS = (
     "connection closed",
     "server disconnected",
     "stream closed",
-    "stream error",
     "no live api keys available",
     "please try again later",
     "temporarily unavailable",
@@ -47,28 +72,68 @@ _TRANSIENT_PROVIDER_KEYWORDS = (
     "bad gateway",
     "gateway timeout",
 )
+_TRANSIENT_EXCEPTION_NAMES = (
+    "clientconnectionerror",
+    "clientconnectorerror",
+    "connectionclosed",
+    "connectionerror",
+    "connecterror",
+    "connecttimeout",
+    "incompleteread",
+    "pooltimeout",
+    "readtimeout",
+    "serverdisconnected",
+    "writetimeout",
+)
 _RETRY_AFTER_RE = re.compile(r"retry[- ]?after[\"'\s:=]+(\d+(?:\.\d+)?)", re.IGNORECASE)
+_HTTP_STATUS_RE = re.compile(r"\b(?:api error|http)\s*(\d{3})\b", re.IGNORECASE)
 
 
 # Статусы, которые ОДНОЗНАЧНО транзиентны (сервер просит подождать/недоступен).
 # Текстовое сопоставление по _THROTTLE_KEYWORDS применяем ТОЛЬКО как fallback,
 # когда статус неизвестен — иначе нерелевантная ошибка со словом "quota"
 # в сообщении (напр. валидационная) вызовет ложный ретрай.
-_RETRYABLE_STATUSES = frozenset({_THROTTLE_CODE, 500, 502, 503, 504, 529})
+_RETRYABLE_STATUSES = frozenset(
+    {_THROTTLE_CODE, 408, 425, 500, 502, 503, 504, 520, 522, 524, 529}
+)
 
 
 def is_throttled(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status is None:
         status = getattr(exc, "status", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
     if isinstance(status, int):
         # Известен явный статус — доверяем только ему, текст не смотрим.
         return status in _RETRYABLE_STATUSES
+    if isinstance(
+        exc,
+        (
+            asyncio.TimeoutError,
+            ConnectionError,
+            EOFError,
+            httpx.TransportError,
+        ),
+    ):
+        return True
     # Статус неизвестен (httpx TransportError и пр.) — fallback на ключевые слова.
     s_lower = str(exc).lower()
-    exc_name = type(exc).__name__.lower()
-    return any(k in s_lower for k in _THROTTLE_KEYWORDS) or any(
-        k in s_lower or k in exc_name for k in _TRANSIENT_PROVIDER_KEYWORDS
+    exc_name = " ".join(cls.__name__.lower() for cls in type(exc).__mro__)
+    compact_name = re.sub(r"[^a-z0-9]", "", exc_name)
+    status_match = _HTTP_STATUS_RE.search(s_lower)
+    if status_match and int(status_match.group(1)) in _RETRYABLE_STATUSES:
+        return True
+    return (
+        any(k in s_lower for k in _THROTTLE_KEYWORDS)
+        or any(k in compact_name for k in _TRANSIENT_EXCEPTION_NAMES)
+        or any(
+            k in s_lower
+            or k in exc_name
+            or re.sub(r"[^a-z0-9]", "", k) in compact_name
+            for k in _TRANSIENT_PROVIDER_KEYWORDS
+        )
     )
 
 
@@ -109,7 +174,9 @@ async def with_throttle_retry(coro_factory, on_retry=None, on_retry_attempt=None
                 delay = _backoff_delay(attempt, e)
                 from logger import warning
 
-                warning("api.request.retry", attempt=attempt + 1, reason=str(e), delay=delay)
+                warning(
+                    "api.request.retry", attempt=attempt + 1, reason=str(e), delay=delay
+                )
                 logger.warning(
                     f"API throttled, retry in {delay:.1f}s (attempt {attempt + 1}/{_MAX_RETRIES}): {e}"
                 )
@@ -231,11 +298,79 @@ async def stream_with_throttle_retry(
             )
         return out
 
+    def _result_chunk(
+        *,
+        full_text: str,
+        full_reasoning: str,
+        tool_acc: dict[int, dict],
+        tool_order: list[int],
+        latest_direct_tool_calls: list,
+        latest_usage: dict,
+        merged_additional_kwargs: dict,
+        merged_response_metadata: dict,
+        saw_chunk: bool,
+    ):
+        import json
+
+        final_tc_chunks = _finalize_tool_chunks(tool_acc, tool_order)
+        if merged_response_metadata.get("stream_incomplete"):
+            completed_chunks = []
+            for tool_chunk in final_tc_chunks:
+                try:
+                    parsed_args = json.loads(tool_chunk.get("args") or "")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed_args, dict):
+                    completed_chunks.append(tool_chunk)
+            final_tc_chunks = completed_chunks
+        final_tool_calls = _tc_chunks_to_tool_calls(final_tc_chunks)
+        if not final_tool_calls and latest_direct_tool_calls:
+            final_tool_calls = latest_direct_tool_calls
+        if full_reasoning:
+            merged_additional_kwargs["reasoning_content"] = full_reasoning
+        if not saw_chunk:
+            return AIMessageChunk(content=full_text)
+        return AIMessageChunk(
+            content=full_text,
+            tool_calls=final_tool_calls,
+            tool_call_chunks=final_tc_chunks,
+            usage_metadata=latest_usage,
+            additional_kwargs=merged_additional_kwargs,
+            response_metadata=merged_response_metadata,
+        )
+
+    async def _notify_retry(exc: Exception, current_attempt: int) -> None:
+        delay = _backoff_delay(current_attempt, exc)
+        from logger import warning
+
+        warning(
+            "api.request.retry",
+            attempt=current_attempt + 1,
+            reason=str(exc),
+            delay=delay,
+        )
+        logger.warning(
+            "API stream interrupted, retry in {:.1f}s (attempt {}/{}): {}",
+            delay,
+            current_attempt + 1,
+            _MAX_RETRIES,
+            exc,
+        )
+        if on_retry_attempt:
+            on_retry_attempt(current_attempt + 1, _MAX_RETRIES)
+        if on_retry:
+            on_retry()
+        await asyncio.sleep(delay)
+
     # Между ретраями on_chunk получает ПОЛНЫЙ текст с нуля. Чтобы при повторе
     # после частичного стрима не «откатить» UI назад и не продублировать вывод,
     # эмитим on_chunk только когда накопленный текст длиннее уже отданного.
     emitted_text_len = 0
-    for attempt in range(_MAX_RETRIES):
+    attempt = 0
+    empty_idle_retries = 0
+    partial_idle_retries = 0
+    best_partial = None
+    while attempt < _MAX_RETRIES:
         full_text = ""
         full_reasoning = ""
         tool_acc: dict[int, dict] = {}
@@ -245,8 +380,21 @@ async def stream_with_throttle_retry(
         latest_usage: dict = {}
         latest_direct_tool_calls: list = []
         saw_chunk = False
+        idle_timeout = _stream_idle_timeout()
+        stream = astream_factory()
+        iterator = stream.__aiter__()
+        stream_idle = False
         try:
-            async for chunk in astream_factory():
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        iterator.__anext__(), timeout=idle_timeout
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    stream_idle = True
+                    break
                 saw_chunk = True
                 # Unescape tool_call_chunks args ДО аккумуляции, чтобы
                 # on_tool_chunk и финальный tool_call видели одинаковые args.
@@ -307,39 +455,89 @@ async def stream_with_throttle_retry(
                         if inspect.isawaitable(callback_result):
                             await callback_result
 
-            final_tc_chunks = _finalize_tool_chunks(tool_acc, tool_order)
-            final_tool_calls = _tc_chunks_to_tool_calls(final_tc_chunks)
-            if not final_tool_calls and latest_direct_tool_calls:
-                final_tool_calls = latest_direct_tool_calls
-            if full_reasoning:
-                merged_additional_kwargs["reasoning_content"] = full_reasoning
-            return (
-                AIMessageChunk(
-                    content=full_text,
-                    tool_calls=final_tool_calls,
-                    tool_call_chunks=final_tc_chunks,
-                    usage_metadata=latest_usage,
-                    additional_kwargs=merged_additional_kwargs,
-                    response_metadata=merged_response_metadata,
-                )
-                if saw_chunk
-                else AIMessageChunk(content=full_text)
-            )
-        except Exception as e:
-            if is_throttled(e) and attempt < _MAX_RETRIES - 1:
-                delay = _backoff_delay(attempt, e)
-                from logger import warning
-
-                warning("api.request.retry", attempt=attempt + 1, reason=str(e), delay=delay)
+            if stream_idle:
+                aclose = getattr(iterator, "aclose", None)
+                if callable(aclose):
+                    await aclose()
+                if not saw_chunk:
+                    if empty_idle_retries < _EMPTY_IDLE_RETRIES:
+                        empty_idle_retries += 1
+                        logger.warning(
+                            "API stream idle for {:.1f}s before first chunk; retrying once",
+                            idle_timeout,
+                        )
+                        continue
+                    raise StreamIdleTimeout(
+                        f"API stream stalled: no chunks for "
+                        f"{idle_timeout:.0f}s after retry"
+                    )
+                merged_response_metadata["stream_incomplete"] = True
                 logger.warning(
-                    f"API stream throttled, retry in {delay:.1f}s (attempt {attempt + 1}/{_MAX_RETRIES}): {e}"
+                    "API stream idle for {:.1f}s after partial response",
+                    idle_timeout,
                 )
-                if on_retry_attempt:
-                    on_retry_attempt(attempt + 1, _MAX_RETRIES)
-                if on_retry:
-                    on_retry()
-                await asyncio.sleep(delay)
+            result = _result_chunk(
+                full_text=full_text,
+                full_reasoning=full_reasoning,
+                tool_acc=tool_acc,
+                tool_order=tool_order,
+                latest_direct_tool_calls=latest_direct_tool_calls,
+                latest_usage=latest_usage,
+                merged_additional_kwargs=merged_additional_kwargs,
+                merged_response_metadata=merged_response_metadata,
+                saw_chunk=saw_chunk,
+            )
+            if not merged_response_metadata.get("stream_incomplete"):
+                return result
+
+            if best_partial is None or len(full_text) > len(best_partial.content or ""):
+                best_partial = result
+            can_retry = attempt < _MAX_RETRIES - 1
+            if stream_idle:
+                can_retry = can_retry and partial_idle_retries < _PARTIAL_IDLE_RETRIES
+                partial_idle_retries += 1
+            if not can_retry:
+                return best_partial
+
+            incomplete = StreamIncompleteError(
+                "API stream ended without a terminal event"
+            )
+            await _notify_retry(incomplete, attempt)
+            attempt += 1
+            continue
+        except Exception as e:
+            if isinstance(e, StreamIdleTimeout):
+                from logger import error
+
+                error("api.request.error", exception=str(e), attempts=attempt + 1)
+                raise
+            retryable = is_throttled(e)
+            if retryable and saw_chunk:
+                merged_response_metadata["stream_incomplete"] = True
+                partial = _result_chunk(
+                    full_text=full_text,
+                    full_reasoning=full_reasoning,
+                    tool_acc=tool_acc,
+                    tool_order=tool_order,
+                    latest_direct_tool_calls=latest_direct_tool_calls,
+                    latest_usage=latest_usage,
+                    merged_additional_kwargs=merged_additional_kwargs,
+                    merged_response_metadata=merged_response_metadata,
+                    saw_chunk=True,
+                )
+                if best_partial is None or len(partial.content or "") > len(
+                    best_partial.content or ""
+                ):
+                    best_partial = partial
+            if retryable and attempt < _MAX_RETRIES - 1:
+                await _notify_retry(e, attempt)
+                attempt += 1
                 continue
+            if retryable and best_partial is not None:
+                logger.warning(
+                    "API stream retries exhausted; returning the longest partial response"
+                )
+                return best_partial
             from logger import error
 
             error("api.request.error", exception=str(e), attempts=attempt + 1)

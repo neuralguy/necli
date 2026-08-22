@@ -1,7 +1,6 @@
-"""patch_file — точечное редактирование файлов: patches/find-replace/insert/delete."""
+"""patch_file — atomic targeted edits through a canonical patches list."""
 
 import difflib
-import re
 
 from config._atomic import atomic_write_text
 from logger import logger
@@ -28,16 +27,6 @@ def _line_of(text: str, needle: str) -> int:
     if idx < 0:
         return 1
     return text.count("\n", 0, idx) + 1
-
-
-def _detect_eol(text: str) -> str:
-    if "\r\n" in text:
-        return "\r\n"
-    if "\n" in text:
-        return "\n"
-    if "\r" in text:
-        return "\r"
-    return "\n"
 
 
 def _build_patch_changes(original: str, modified: str) -> list[dict]:
@@ -101,31 +90,6 @@ def _not_found_output(path_str: str, find: str, current_text: str, *, patch_inde
     )
 
 
-def _parse_delete_lines(value, total: int) -> tuple[set[int] | None, str | None]:
-    """Parse 1-based `3`, `3-5`, or comma-separated ranges."""
-    if isinstance(value, int):
-        raw = str(value)
-    else:
-        raw = str(value or "").strip()
-    if not raw:
-        return None, "delete_lines is empty"
-
-    selected: set[int] = set()
-    for part in raw.split(","):
-        part = part.strip()
-        m = re.fullmatch(r"(\d+)(?:\s*-\s*(\d+))?", part)
-        if not m:
-            return None, f"Invalid delete_lines range: {value!r}. Use e.g. 3, 3-5, or 2,5-7."
-        start = int(m.group(1))
-        end = int(m.group(2) or start)
-        if start > end:
-            start, end = end, start
-        if start < 1 or end > total:
-            return None, f"delete_lines {start}-{end} is outside file range 1-{total}."
-        selected.update(range(start, end + 1))
-    return selected, None
-
-
 def _run_fuzzy(text: str, find: str, replace: str) -> tuple[str, bool]:
     """Compatibility wrapper: tests/plugins may monkeypatch old 2-tuple implementation."""
     result = _fuzzy_find_replace(text, find, replace)
@@ -135,8 +99,20 @@ def _run_fuzzy(text: str, find: str, replace: str) -> tuple[str, bool]:
 
 
 def patch_file(call: ToolCall) -> ToolResult:
-    """Atomic targeted edit: patches | find/replace | line/insert | delete_lines."""
+    """Atomic targeted edit through one canonical `patches` list."""
     args = call.args
+    unexpected = sorted(k for k in args if k not in {"path", "patches"})
+    if unexpected:
+        return ToolResult(
+            name="patch_file",
+            status="error",
+            output=(
+                "Unexpected patch_file parameter(s): "
+                f"{', '.join(unexpected)}. Use only path and patches."
+            ),
+            exit_code=1,
+            command=call.command,
+        )
     path_str = clean_path(args.get("path", ""))
     if not path_str:
         return ToolResult(
@@ -172,142 +148,74 @@ def patch_file(call: ToolCall) -> ToolResult:
     changes: list[str] = []
     line_starts: list[int] = []
 
-    if args.get("patches"):
-        patches = args["patches"]
-        if not isinstance(patches, list):
+    patches = args.get("patches")
+    if not isinstance(patches, list) or not patches:
+        return ToolResult(
+            name="patch_file",
+            status="error",
+            output="Specify a non-empty patches list of {find, replace} objects.",
+            exit_code=1,
+            command=call.command,
+        )
+
+    for i, patch in enumerate(patches):
+        if not isinstance(patch, dict) or "find" not in patch or "replace" not in patch:
             return ToolResult(
                 name="patch_file",
                 status="error",
-                output="'patches' must be a list of {find, replace} objects.",
+                output=(
+                    f"patches[{i}]: each patch must contain exactly 'find' and 'replace'. "
+                    "No changes were written."
+                ),
                 exit_code=1,
                 command=call.command,
             )
-        for i, patch in enumerate(patches):
-            if not isinstance(patch, dict) or "find" not in patch:
-                return ToolResult(
-                    name="patch_file",
-                    status="error",
-                    output=f"patches[{i}]: each patch must have 'find' key. No changes were written.",
-                    exit_code=1,
-                    command=call.command,
-                )
-            find = str(patch["find"])
-            replace = str(patch.get("replace", ""))
-            if not find:
-                return ToolResult(
-                    name="patch_file",
-                    status="error",
-                    output=f"patches[{i}]: empty 'find' string. No changes were written.",
-                    exit_code=1,
-                    command=call.command,
-                )
-            if find in modified:
-                line_starts.append(_line_of(modified, find))
-                modified = modified.replace(find, replace, 1)
-                changes.append(f"  patches[{i}] find/replace: applied 1")
-                continue
-
-            fuzzy_modified, found = _run_fuzzy(modified, find, replace)
-            if not found:
-                return ToolResult(
-                    name="patch_file",
-                    status="error",
-                    output=_not_found_output(path_str, find, modified, patch_index=i),
-                    exit_code=1,
-                    command=call.command,
-                )
-            modified = fuzzy_modified
-            changes.append(f"  patches[{i}] find/replace (fuzzy): applied 1")
-
-    elif "find" in args:
-        find = str(args["find"])
-        replace = str(args.get("replace", ""))
-        if not find:
+        if set(patch) != {"find", "replace"}:
             return ToolResult(
                 name="patch_file",
                 status="error",
-                output="Empty 'find' string — nothing to search for. No changes were written.",
+                output=(
+                    f"patches[{i}]: unexpected keys; use only 'find' and 'replace'. "
+                    "No changes were written."
+                ),
+                exit_code=1,
+                command=call.command,
+            )
+        find = patch["find"]
+        replace = patch["replace"]
+        if not isinstance(find, str) or not find:
+            return ToolResult(
+                name="patch_file",
+                status="error",
+                output=f"patches[{i}]: 'find' must be a non-empty string. No changes were written.",
+                exit_code=1,
+                command=call.command,
+            )
+        if not isinstance(replace, str):
+            return ToolResult(
+                name="patch_file",
+                status="error",
+                output=f"patches[{i}]: 'replace' must be a string. No changes were written.",
                 exit_code=1,
                 command=call.command,
             )
         if find in modified:
             line_starts.append(_line_of(modified, find))
             modified = modified.replace(find, replace, 1)
-            changes.append("  find/replace: applied 1")
-        else:
-            fuzzy_modified, found_fuzzy = _run_fuzzy(modified, find, replace)
-            if not found_fuzzy:
-                return ToolResult(
-                    name="patch_file",
-                    status="error",
-                    output=_not_found_output(path_str, find, modified),
-                    exit_code=1,
-                    command=call.command,
-                )
-            modified = fuzzy_modified
-            changes.append("  find/replace (fuzzy): applied 1")
+            changes.append(f"  patches[{i}] find/replace: applied 1")
+            continue
 
-    elif "insert" in args:
-        try:
-            line = int(args.get("line"))
-        except (TypeError, ValueError):
+        fuzzy_modified, found = _run_fuzzy(modified, find, replace)
+        if not found:
             return ToolResult(
                 name="patch_file",
                 status="error",
-                output="INSERT requires a 1-based integer 'line'. No changes were written.",
+                output=_not_found_output(path_str, find, modified, patch_index=i),
                 exit_code=1,
                 command=call.command,
             )
-        source_lines = modified.splitlines(keepends=True)
-        if line < 1 or line > len(source_lines) + 1:
-            return ToolResult(
-                name="patch_file",
-                status="error",
-                output=f"INSERT line {line} is outside valid range 1-{len(source_lines) + 1}. No changes were written.",
-                exit_code=1,
-                command=call.command,
-            )
-        idx = line - 1
-        eol = _detect_eol(modified)
-        prefix = "".join(source_lines[:idx])
-        suffix = "".join(source_lines[idx:])
-        insert = str(args.get("insert", ""))
-        if prefix and not prefix.endswith(("\n", "\r")):
-            prefix += eol
-        if insert and suffix and not insert.endswith(("\n", "\r")):
-            insert += eol
-        elif insert and not suffix and original.endswith(("\n", "\r")) and not insert.endswith(("\n", "\r")):
-            insert += eol
-        modified = prefix + insert + suffix
-        line_starts.append(line)
-        changes.append(f"  insert @ line {line}: applied")
-
-    elif "delete_lines" in args:
-        source_lines = modified.splitlines(keepends=True)
-        selected, error = _parse_delete_lines(args.get("delete_lines"), len(source_lines))
-        if error:
-            return ToolResult(
-                name="patch_file",
-                status="error",
-                output=f"{error} No changes were written.",
-                exit_code=1,
-                command=call.command,
-            )
-        assert selected is not None
-        first = min(selected)
-        last = max(selected)
-        modified = "".join(line for i, line in enumerate(source_lines, start=1) if i not in selected)
-        line_starts.append(first)
-        changes.append(f"  delete lines {first}-{last}: applied")
-
-    else:
-        return ToolResult(
-            name="patch_file",
-            status="error",
-            output="Specify patches, find/replace, insert+line, or delete_lines.",
-            exit_code=1,
-            command=call.command,
-        )
+        modified = fuzzy_modified
+        changes.append(f"  patches[{i}] find/replace (fuzzy): applied 1")
 
     if modified == original:
         return ToolResult(

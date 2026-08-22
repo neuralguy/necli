@@ -77,7 +77,9 @@ def _serialize_tool_result(result: tools.ToolResult) -> dict:
         out["line_starts"] = list(ls)
     patch_changes = getattr(result, "patch_changes", None)
     if patch_changes:
-        out["patch_changes"] = [dict(change) for change in patch_changes if isinstance(change, dict)]
+        out["patch_changes"] = [
+            dict(change) for change in patch_changes if isinstance(change, dict)
+        ]
     return out
 
 
@@ -123,9 +125,13 @@ def _deserialize_tool_result(d: dict) -> tools.ToolResult:
     patch_changes = d.get("patch_changes")
     if isinstance(patch_changes, list):
         try:
-            r.patch_changes = [dict(change) for change in patch_changes if isinstance(change, dict)]
+            r.patch_changes = [
+                dict(change) for change in patch_changes if isinstance(change, dict)
+            ]
         except Exception:
-            logger.debug("render_store: patch_changes deserialize failed", exc_info=True)
+            logger.debug(
+                "render_store: patch_changes deserialize failed", exc_info=True
+            )
     return r
 
 

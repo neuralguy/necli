@@ -113,6 +113,10 @@ def _parse_items(raw: str) -> list[dict]:
 
 
 async def extract_memories(transcript: str, working_dir: str | None = None) -> int:
+    from config.settings import get
+
+    if not bool(get("memory_enabled", True)):
+        return 0
     """Извлекает и сохраняет долговременные факты. Возвращает число записанных.
 
     Никогда не бросает наружу — при любой ошибке возвращает 0.
@@ -164,18 +168,23 @@ def apply_memory_decisions(items: list[dict], working_dir: str | None = None) ->
             continue
         try:
             if action == "delete":
-                target = read_memory(memory_path(name, working_dir=working_dir, scope=scope))
+                target = read_memory(
+                    memory_path(name, working_dir=working_dir, scope=scope)
+                )
                 if (
                     target is not None
                     and not _is_pinned(target)
-                    and delete_memory(name, working_dir=working_dir, scope=scope) is not None
+                    and delete_memory(name, working_dir=working_dir, scope=scope)
+                    is not None
                 ):
                     changed += 1
                 continue
             if not body:
                 continue
             if action in {"update", "merge"}:
-                target = read_memory(memory_path(name, working_dir=working_dir, scope=scope))
+                target = read_memory(
+                    memory_path(name, working_dir=working_dir, scope=scope)
+                )
                 if action == "update" and target is None:
                     continue
             write_memory(
@@ -190,16 +199,23 @@ def apply_memory_decisions(items: list[dict], working_dir: str | None = None) ->
             if action == "merge":
                 for source in item.get("sources", []):
                     source_name = str(source).strip()
-                    source_path = memory_path(source_name, working_dir=working_dir, scope=scope)
-                    source_memory = read_memory(source_path) if source_path.exists() else None
+                    source_path = memory_path(
+                        source_name, working_dir=working_dir, scope=scope
+                    )
+                    source_memory = (
+                        read_memory(source_path) if source_path.exists() else None
+                    )
                     if (
                         source_name
-                        and source_path != memory_path(name, working_dir=working_dir, scope=scope)
+                        and source_path
+                        != memory_path(name, working_dir=working_dir, scope=scope)
                         and source_memory is not None
                         and not _is_pinned(source_memory)
                     ):
                         delete_memory(source_name, working_dir=working_dir, scope=scope)
         except Exception as e:
-            logger.debug("memory.extract: action '{}' failed: {}", name, e, exc_info=True)
+            logger.debug(
+                "memory.extract: action '{}' failed: {}", name, e, exc_info=True
+            )
     logger.info("memory.extract: applied %d/%d decision(s)", changed, len(items))
     return changed

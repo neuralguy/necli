@@ -11,6 +11,25 @@ from tools._paths import get_working_dir
 from tools.models import ToolCall, ToolResult
 
 
+def _memory_enabled() -> bool:
+    try:
+        from config.settings import get
+
+        return bool(get("memory_enabled", True))
+    except Exception:
+        return True
+
+
+def _unavailable(call: ToolCall) -> ToolResult:
+    return ToolResult(
+        name="memory",
+        status="error",
+        output="Инструмент памяти недоступен: память отключена в /settings.",
+        exit_code=1,
+        command=call.command,
+    )
+
+
 def _write(call: ToolCall) -> ToolResult:
     """args: {name, body, type?, scope?}  — создать/обновить memory-файл."""
     from memory import write_memory
@@ -241,6 +260,8 @@ _ACTIONS = {
 
 def memory(call: ToolCall) -> ToolResult:
     """Управляет памятью через args.action: write/list/read/delete."""
+    if not _memory_enabled():
+        return _unavailable(call)
     action = str((call.args or {}).get("action", "")).strip().lower()
     handler = _ACTIONS.get(action)
     if handler is None:

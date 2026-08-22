@@ -79,14 +79,10 @@ class PlanStep:
 
     title: str
     status: StepStatus = StepStatus.PENDING
-    notes: str = ""
 
     def _to_dict(self) -> dict:
         """Internal serialization for Plan._to_dict."""
-        d = {"title": self.title, "status": self.status.value}
-        if self.notes:
-            d["notes"] = self.notes
-        return d
+        return {"title": self.title, "status": self.status.value}
 
     @classmethod
     def _from_dict(cls, d: dict) -> "PlanStep":
@@ -96,7 +92,6 @@ class PlanStep:
         return cls(
             title=str(title),
             status=status_enum,
-            notes=str(d.get("notes", "")),
         )
 
 
@@ -145,7 +140,6 @@ class Plan:
         self,
         index: int,
         status: str | None = None,
-        notes: str | None = None,
     ):
         """Update one step while preserving a single-current-step invariant."""
         if index not in range(len(self.steps)):
@@ -164,9 +158,7 @@ class Plan:
                 if normalized in (StepStatus.DONE, StepStatus.SKIPPED):
                     self.ensure_progress(preferred_start=index + 1)
 
-        if notes is not None:
-            self.steps[index].notes = notes
-        self.updated_at = time.time()
+                self.updated_at = time.time()
 
     def add_step(
         self,
@@ -174,13 +166,12 @@ class Plan:
         index: int | None = None,
         *,
         status: str | None = None,
-        notes: str = "",
     ):
-        """Add a step and honor optional status/notes from the tool schema."""
+        """Add a step and honor the optional status from the tool schema."""
         normalized = _normalize_status(status) if status else StepStatus.PENDING
         if normalized is None:
             normalized = StepStatus.PENDING
-        step = PlanStep(title=title, status=normalized, notes=str(notes or ""))
+        step = PlanStep(title=title, status=normalized)
         if index is not None and index in range(len(self.steps) + 1):
             self.steps.insert(index, step)
             inserted = index
@@ -274,8 +265,6 @@ class Plan:
             step = self.steps[i]
             icon = status_icons[step.status]
             line = f"  {i + 1}. {icon} {step.title}"
-            if step.notes:
-                line += f" — {step.notes}"
             lines.append(line)
 
         return "\n".join(lines)
@@ -549,7 +538,6 @@ def apply_plan_commands(
                             plan.update_step(
                                 step_idx,
                                 status=item.get("status"),
-                                notes=item.get("notes"),
                             )
                 else:
                     raw_index = cmd.data.get("index")
@@ -563,7 +551,6 @@ def apply_plan_commands(
                             plan.update_step(
                                 step_idx,
                                 status=cmd.data.get("status"),
-                                notes=cmd.data.get("notes"),
                             )
                         if not resolved:
                             logger.warning(
@@ -577,7 +564,6 @@ def apply_plan_commands(
                             plan.update_step(
                                 step_idx,
                                 status=cmd.data.get("status"),
-                                notes=cmd.data.get("notes"),
                             )
                         else:
                             logger.warning(
@@ -605,7 +591,6 @@ def apply_plan_commands(
                         title,
                         index=insert_index,
                         status=cmd.data.get("status"),
-                        notes=cmd.data.get("notes", ""),
                     )
                     plan.ensure_progress(preferred_start=insert_index or 0)
 
@@ -683,15 +668,11 @@ def render_plan_panel(
         else:
             lines.append(step.title, style="dim")
 
-        # Заметки
-        if step.notes:
-            lines.append(f"  ({step.notes})", style="dim italic")
-
         if i != last_visible_idx:
             lines.append("\n")
 
     # Заголовок панели
-    title = f"📋 Plan [{plan.progress_str}]"
+    title = f"☷ Plan [{plan.progress_str}]"
     if plan.is_complete:
         title += " ✓"
         border_style = t("success")
@@ -725,10 +706,10 @@ PLAN_FILENAME = ".plan.md"
 
 def _render_plan_markdown(plan: Plan) -> str:
     status_icons = {
-        StepStatus.PENDING: "⏳",
-        StepStatus.IN_PROGRESS: "🔄",
-        StepStatus.DONE: "✅",
-        StepStatus.SKIPPED: "⏭️",
+        StepStatus.PENDING: "⧖",
+        StepStatus.IN_PROGRESS: "↻",
+        StepStatus.DONE: "✓",
+        StepStatus.SKIPPED: "»",
     }
     lines = [f"# Plan: {plan.goal}", ""]
     lines.append(f"Progress: {plan.done_count}/{plan.total}")
@@ -736,8 +717,6 @@ def _render_plan_markdown(plan: Plan) -> str:
     for i, step in enumerate(plan.steps):
         icon = status_icons[step.status]
         line = f"{i + 1}. {icon} {step.title}"
-        if step.notes:
-            line += f" — {step.notes}"
         lines.append(line)
     lines.append("")
     return "\n".join(lines)
@@ -787,9 +766,13 @@ def _parse_plan_markdown(text: str) -> Plan | None:
         return None
 
     icon_to_status = {
+        "⧖": StepStatus.PENDING,
         "⏳": StepStatus.PENDING,
+        "↻": StepStatus.IN_PROGRESS,
         "🔄": StepStatus.IN_PROGRESS,
+        "✓": StepStatus.DONE,
         "✅": StepStatus.DONE,
+        "»": StepStatus.SKIPPED,
         "⏭️": StepStatus.SKIPPED,
         "⏭": StepStatus.SKIPPED,
     }
@@ -803,12 +786,7 @@ def _parse_plan_markdown(text: str) -> Plan | None:
         icon = m.group(2)
         rest = m.group(3)
         status = icon_to_status.get(icon, StepStatus.PENDING)
-        notes = ""
-        if " — " in rest:
-            title, notes = rest.split(" — ", 1)
-        else:
-            title = rest
-        steps.append(PlanStep(title=title.strip(), status=status, notes=notes.strip()))
+        steps.append(PlanStep(title=rest.strip(), status=status))
 
     if not steps:
         return None

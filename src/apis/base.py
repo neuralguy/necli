@@ -63,7 +63,9 @@ def _format_api_error(
     low_text = text.lower()
     low_prefix = low_text[:500]
     low_content_type = (content_type or "").lower()
-    is_html = "text/html" in low_content_type or low_prefix.startswith(("<!doctype html", "<html"))
+    is_html = "text/html" in low_content_type or low_prefix.startswith(
+        ("<!doctype html", "<html")
+    )
     is_cloudflare = "cloudflare" in low_text or "cf-error" in low_text
 
     if is_html:
@@ -99,7 +101,9 @@ class _BoundProvider:
     код мог переключать режим (см. agent_adapter fallback).
     """
 
-    def __init__(self, provider: BaseProvider, tools: list[dict], tool_choice: str = "auto"):
+    def __init__(
+        self, provider: BaseProvider, tools: list[dict], tool_choice: str = "auto"
+    ):
         self._provider = provider
         self._tools = tools
         self._tool_choice = tool_choice
@@ -123,7 +127,9 @@ class _BoundProvider:
             **kwargs,
         )
 
-    def astream(self, messages: list[BaseMessage], **kwargs) -> AsyncIterator[AIMessageChunk]:
+    def astream(
+        self, messages: list[BaseMessage], **kwargs
+    ) -> AsyncIterator[AIMessageChunk]:
         return self._provider.astream(
             messages,
             tools=self._tools,
@@ -219,7 +225,9 @@ class BaseProvider:
 
     # ── Привязка инструментов ──
 
-    def bind_tools(self, tools: list[dict], tool_choice: str = "auto") -> _BoundProvider:
+    def bind_tools(
+        self, tools: list[dict], tool_choice: str = "auto"
+    ) -> _BoundProvider:
         return _BoundProvider(self, list(tools), tool_choice)
 
     # ── Override в наследниках ──
@@ -227,15 +235,15 @@ class BaseProvider:
     def _get_api_key(self) -> str:
         if not self._api_credentials:
             return ""
-        return self._api_credentials[self._credential_index % len(self._api_credentials)].get(
-            "key", ""
-        )
+        return self._api_credentials[
+            self._credential_index % len(self._api_credentials)
+        ].get("key", "")
 
     def _get_proxy(self) -> str:
         if self._api_credentials:
-            proxy = self._api_credentials[self._credential_index % len(self._api_credentials)].get(
-                "proxy", ""
-            )
+            proxy = self._api_credentials[
+                self._credential_index % len(self._api_credentials)
+            ].get("proxy", "")
             if proxy:
                 return proxy
         return self._proxy
@@ -276,7 +284,9 @@ class BaseProvider:
         поднимает _all_credentials_failed_error.
         """
         if rate_limit_rotations >= len(_RATE_LIMIT_DELAYS):
-            raise self._all_credentials_failed_error(status_code, last_error) from last_error
+            raise self._all_credentials_failed_error(
+                status_code, last_error
+            ) from last_error
         delay = _RATE_LIMIT_DELAYS[rate_limit_rotations]
         rate_limit_rotations += 1
         if self._credential_count() > 1:
@@ -338,7 +348,9 @@ class BaseProvider:
         """
         inp = float(usage.get("input_tokens") or usage.get("input") or 0)
         out = float(usage.get("output_tokens") or usage.get("output") or 0)
-        cache_read = float(usage.get("cache_read_input_tokens") or usage.get("cache_read") or 0)
+        cache_read = float(
+            usage.get("cache_read_input_tokens") or usage.get("cache_read") or 0
+        )
         cache_creation = float(
             usage.get("cache_creation_input_tokens") or usage.get("cache_creation") or 0
         )
@@ -372,7 +384,9 @@ class BaseProvider:
             return
         from apis.config import spend_api_credential
 
-        cred = self._api_credentials[self._credential_index % len(self._api_credentials)]
+        cred = self._api_credentials[
+            self._credential_index % len(self._api_credentials)
+        ]
         new_balance = spend_api_credential(self._provider_id, cred["key"], cost)
         if new_balance is not None:
             cred["balance"] = new_balance
@@ -444,7 +458,8 @@ class BaseProvider:
             return True
         if mode in {"on", "true"}:
             return (
-                "claude" in (self.model or "").lower() or "anthropic/" in (self.model or "").lower()
+                "claude" in (self.model or "").lower()
+                or "anthropic/" in (self.model or "").lower()
             )
         model = (self.model or "").lower()
         return "claude" in model or "anthropic/" in model
@@ -534,7 +549,9 @@ class BaseProvider:
 
         last_error: Exception | None = None
 
-        async def _retry_or_reraise(exc: Exception, reason: str, *, partial_aborts: bool) -> None:
+        async def _retry_or_reraise(
+            exc: Exception, reason: str, *, partial_aborts: bool
+        ) -> None:
             # Единая обработка ретраябельных ошибок стрима. partial_aborts=True
             # означает, что при уже отданной части ответа повтор продублирует
             # контент → пробрасываем наверх. Иначе спим перед следующей попыткой.
@@ -562,7 +579,10 @@ class BaseProvider:
                 return
             except _RetryableStreamError as e:
                 last_error = e
-                if e.status_code in self._CREDENTIAL_ROTATE_STATUS_CODES and not yielded_any:
+                if (
+                    e.status_code in self._CREDENTIAL_ROTATE_STATUS_CODES
+                    and not yielded_any
+                ):
                     rate_limit_rotations = await self._handle_rate_limit(
                         e.status_code,
                         last_error,
@@ -574,9 +594,13 @@ class BaseProvider:
                 continue
             except (asyncio.TimeoutError, httpx.TimeoutException) as e:
                 last_error = TimeoutError(f"Stream timeout: {e}")
-                await _retry_or_reraise(last_error, "timeout", partial_aborts=False)
+                await _retry_or_reraise(last_error, "timeout", partial_aborts=True)
                 attempt += 1
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ProtocolError) as e:
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.ProtocolError,
+            ) as e:
                 # Сервер оборвал SSE-стрим (peer closed / incomplete chunked read).
                 last_error = e
                 await _retry_or_reraise(
@@ -588,7 +612,9 @@ class BaseProvider:
             f"{self._provider_name} stream error after {self.max_retries} attempts: {last_error}"
         )
 
-    async def _astream_attempt(self, params: dict[str, Any]) -> AsyncIterator[AIMessageChunk]:
+    async def _astream_attempt(
+        self, params: dict[str, Any]
+    ) -> AsyncIterator[AIMessageChunk]:
         await self._throttle_rpm()
         proxy = self._get_proxy() or None
         dynamic_timeout = self._calc_timeout(params)
@@ -693,6 +719,14 @@ class BaseProvider:
                             code = int(code) if code is not None else None
                         except (TypeError, ValueError):
                             code = None
+                        if code in (
+                            *self._RETRYABLE_STATUS_CODES,
+                            *self._CREDENTIAL_ROTATE_STATUS_CODES,
+                        ):
+                            raise _RetryableStreamError(
+                                code,
+                                f"{self._provider_name} stream error: {msg}",
+                            )
                         # Ложный 401 от прокси (Perplexity/invalid_api_key)
                         # детектим по тексту — поле code приходит в разном
                         # виде (int/str/None), полагаться на него нельзя.
@@ -720,11 +754,15 @@ class BaseProvider:
 
                     delta = choices[0].get("delta", {})
                     content = delta.get("content") or ""
-                    reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    reasoning = (
+                        delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    )
                     if reasoning:
                         full_reasoning += reasoning
 
-                    tool_call_chunks = self._parse_streaming_tool_calls(delta.get("tool_calls"))
+                    tool_call_chunks = self._parse_streaming_tool_calls(
+                        delta.get("tool_calls")
+                    )
 
                     usage = chunk.get("usage")
                     usage_metadata = self._convert_usage(usage) if usage else {}
@@ -738,7 +776,9 @@ class BaseProvider:
                     yield AIMessageChunk(
                         content=content,
                         tool_call_chunks=tool_call_chunks,
-                        additional_kwargs=({"reasoning_content": reasoning} if reasoning else {}),
+                        additional_kwargs=(
+                            {"reasoning_content": reasoning} if reasoning else {}
+                        ),
                         response_metadata={
                             "finish_reason": finish_reason,
                             "stream_complete": bool(finish_reason is not None),
@@ -796,7 +836,8 @@ class BaseProvider:
                 content = ""
             elif isinstance(content, list):
                 has_image = any(
-                    isinstance(p, dict) and p.get("type") == "image_url" for p in content
+                    isinstance(p, dict) and p.get("type") == "image_url"
+                    for p in content
                 )
                 if has_image:
                     normalized: list[Any] = []
@@ -882,11 +923,15 @@ class BaseProvider:
                 continue
             try:
                 args = (
-                    json.loads(func_args_str) if isinstance(func_args_str, str) else func_args_str
+                    json.loads(func_args_str)
+                    if isinstance(func_args_str, str)
+                    else func_args_str
                 )
             except json.JSONDecodeError:
                 args = {}
-            result.append({"name": func_name, "args": args, "id": tc_id, "type": "tool_call"})
+            result.append(
+                {"name": func_name, "args": args, "id": tc_id, "type": "tool_call"}
+            )
         return result
 
     def _parse_response(self, data: dict[str, Any]) -> AIMessage:
@@ -899,7 +944,9 @@ class BaseProvider:
             content = message.get("content", "") or ""
 
             raw_tool_calls = message.get("tool_calls")
-            tool_calls = self._parse_tool_calls(raw_tool_calls) if raw_tool_calls else []
+            tool_calls = (
+                self._parse_tool_calls(raw_tool_calls) if raw_tool_calls else []
+            )
 
             usage = data.get("usage", {})
             usage_metadata = self._convert_usage(usage)

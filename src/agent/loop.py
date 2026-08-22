@@ -17,6 +17,8 @@ from agent.executor import execute_and_show_async
 from agent.messages import (
     _build_result_extras,
     _build_result_message,
+    _build_tool_results_payload,
+    _truncate,
     build_first_message,
     truncate_history_content,
 )
@@ -62,7 +64,9 @@ from tools.subagent import set_subagent_context
 _subagent_background_tasks: set[asyncio.Task] = set()
 
 _MAX_STOP_HOOK_CONTINUES = 3
-_STOP_HOOK_CONTINUE_PROMPT = "The Stop hook blocked completion. Continue the current task."
+_STOP_HOOK_CONTINUE_PROMPT = (
+    "The Stop hook blocked completion. Continue the current task."
+)
 
 
 async def stop_background_subagent_tasks() -> None:
@@ -81,7 +85,9 @@ def _api_uses_native_tools() -> bool:
         from apis.agent_adapter import get_api_session
 
         api_sess = get_api_session()
-        return api_sess is not None and bool(getattr(api_sess, "use_native_tools", False))
+        return api_sess is not None and bool(
+            getattr(api_sess, "use_native_tools", False)
+        )
     except Exception:
         logger.debug("native-tools detection failed", exc_info=True)
         return False
@@ -218,7 +224,9 @@ def _handle_hard_interrupt(session, full_response, model, last_usage) -> str:
 
         close_pending_native_tool_calls()
     except Exception:
-        logger.debug("close pending native calls after hard interrupt failed", exc_info=True)
+        logger.debug(
+            "close pending native calls after hard interrupt failed", exc_info=True
+        )
     try:
         from agent.working import finish_working_round
 
@@ -239,9 +247,13 @@ def _is_control_only_response(
     if parse_think_blocks(text or "") and not clean_text:
         return True
     native_names = [
-        (tc.get("name") or "") for tc in (native_tool_calls or []) if isinstance(tc, dict)
+        (tc.get("name") or "")
+        for tc in (native_tool_calls or [])
+        if isinstance(tc, dict)
     ]
-    return bool(native_names and all(name in ("think", "plan") for name in native_names))
+    return bool(
+        native_names and all(name in ("think", "plan") for name in native_names)
+    )
 
 
 def _is_raw_reasoning_only_response(text: str, reasoning_content: str) -> bool:
@@ -302,7 +314,7 @@ def _format_background_notice(results: list[tools.ToolResult]) -> str:
     """Текстовый блок результатов фоновых процессов и субагентов."""
     if not results:
         return ""
-    parts = [r.output for r in results if r.output]
+    parts = [_truncate(r.output) for r in results if r.output]
     return "[BACKGROUND WORK FINISHED]\n" + "\n---\n".join(parts)
 
 
@@ -340,7 +352,15 @@ def _dedupe_tool_calls(calls: list[tools.ToolCall]) -> list[tools.ToolCall]:
 
 
 async def _stream_send(
-    text, model, ctx, session=None, images=None, message_num=1, tool_results=None, extras=None
+    text,
+    model,
+    ctx,
+    session=None,
+    images=None,
+    message_num=1,
+    tool_results=None,
+    extras=None,
+    persist_text=None,
 ):
     """Отправляет сообщение со стримингом через API.
 
@@ -385,11 +405,17 @@ async def _stream_send(
             _refresh_agent_status(ctx)
         # tools нужны ТОЛЬКО в native — в fenced они игнорируются (не биндятся),
         # а синтаксис вызова описан в системном промте. Не считаем схемы зря.
-        api_tools = get_tool_schemas(ctx.mode, active_skills) if _resolve_native_tools() else None
+        api_tools = (
+            get_tool_schemas(ctx.mode, active_skills)
+            if _resolve_native_tools()
+            else None
+        )
         # Track API request start
         info(
             "api.request.start",
-            provider=getattr(session, "provider_id", "unknown") if session else "unknown",
+            provider=getattr(session, "provider_id", "unknown")
+            if session
+            else "unknown",
             model=model,
             tools=len(api_tools) if api_tools else 0,
         )
@@ -406,6 +432,7 @@ async def _stream_send(
             images=images,
             tool_results=tool_results,
             extras=extras,
+            persist_text=persist_text,
         )
         working = getattr(ctx, "working_round", None)
         if working is not None:
@@ -421,7 +448,9 @@ async def _stream_send(
             # Track API metrics
             if usage:
                 input_tok = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-                output_tok = usage.get("output_tokens") or usage.get("completion_tokens") or 0
+                output_tok = (
+                    usage.get("output_tokens") or usage.get("completion_tokens") or 0
+                )
                 if hasattr(stream, "_ttfb") and stream._ttfb is not None:
                     ttfb = stream._ttfb
                 else:
@@ -482,7 +511,11 @@ async def _stream_send(
         stream.stop(show_final=True)
         response = stream.buffer
     except Exception as e:
-        error("api.request.error", exception=str(e), duration=time.monotonic() - stream.start_time)
+        error(
+            "api.request.error",
+            exception=str(e),
+            duration=time.monotonic() - stream.start_time,
+        )
         stream.cancel_pending_executions()
         stream.stop(cancelled=True)
         from agent.working import finish_working_round
@@ -503,7 +536,9 @@ async def _stream_send(
         stream.stop(show_final=True)
     if _resolve_native_tools() and native_tool_calls:
         _process_plan_commands(response, ctx, native_tool_calls=native_tool_calls)
-        stream._plan_processed_count = len(parse_native_plan_commands(native_tool_calls))
+        stream._plan_processed_count = len(
+            parse_native_plan_commands(native_tool_calls)
+        )
     working = getattr(ctx, "working_round", None)
     if working is not None:
         # Usage относится ко всему текущему AI response, а не к отдельным
@@ -513,7 +548,9 @@ async def _stream_send(
         working.set_usage(usage, stream_index=message_num)
         if _resolve_native_tools():
             call_names = [
-                str(call.get("name") or "") for call in native_tool_calls if isinstance(call, dict)
+                str(call.get("name") or "")
+                for call in native_tool_calls
+                if isinstance(call, dict)
             ]
         else:
             call_names = [call.tool_name for call in tools.parse_tool_calls(response)]
@@ -540,6 +577,7 @@ async def _send_via_api(
     images,
     tool_results=None,
     extras=None,
+    persist_text=None,
     return_result: bool = False,
     system_prompt="",
 ):
@@ -569,19 +607,24 @@ async def _send_via_api(
         images=images,
         tool_results=tool_results,
         extras=extras,
+        persist_text=persist_text,
     )
     # Usage здесь не аккумулируется по истории (run_agent — служебная ветка без
     # сессии/биллинга), но уходит опциональным обработчикам: headless строит по
     # нему сводку «✓ Worked» и полный JSON-отчёт.
     if isinstance(result, dict):
-        on_response = getattr(getattr(ctx, "event_handler", None), "on_model_response", None)
+        on_response = getattr(
+            getattr(ctx, "event_handler", None), "on_model_response", None
+        )
         if callable(on_response):
             try:
                 on_response(result.get("text") or "", result.get("usage"))
             except Exception:
                 logger.debug("on_model_response hook failed", exc_info=True)
     if return_result:
-        return result if isinstance(result, dict) else {"text": result, "tool_calls": []}
+        return (
+            result if isinstance(result, dict) else {"text": result, "tool_calls": []}
+        )
     return result["text"] if isinstance(result, dict) else result
 
 
@@ -612,7 +655,11 @@ def _process_plan_commands(
         ctx.plan = plan_before
         if ctx.event_handler and ctx.plan:
             for action, focus_index, status in plan_events:
-                if action == "update" and status == "in_progress" and not ctx.plan.is_complete:
+                if (
+                    action == "update"
+                    and status == "in_progress"
+                    and not ctx.plan.is_complete
+                ):
                     continue
                 ctx.event_handler.on_plan_update(
                     ctx.plan,
@@ -650,11 +697,13 @@ def _run_user_prompt_hooks(user_message: str, ctx: AgentContext) -> str | None:
         )
         for msg in outcome.system_messages:
             if ctx.event_handler:
-                ctx.event_handler.on_status(f"🪝 {msg}", level="info")
+                ctx.event_handler.on_status(f"↪ {msg}", level="info")
         if outcome.blocked or outcome.stop:
             if ctx.event_handler:
-                reason = outcome.block_reason or "Prompt blocked by UserPromptSubmit hook."
-                ctx.event_handler.on_status(f"⛔ {reason}", level="warning")
+                reason = (
+                    outcome.block_reason or "Prompt blocked by UserPromptSubmit hook."
+                )
+                ctx.event_handler.on_status(f"⚠︎ {reason}", level="warning")
             return None
         return outcome.context_text
     except Exception as e:
@@ -704,7 +753,7 @@ def _fire_stop_hooks(
         )
         for msg in outcome.system_messages:
             if ctx.event_handler:
-                ctx.event_handler.on_status(f"🪝 {msg}", level="info")
+                ctx.event_handler.on_status(f"↪ {msg}", level="info")
         if outcome.blocked and not outcome.stop:
             prompt_parts = [outcome.block_reason, outcome.context_text]
             prompt = "\n\n".join(part for part in prompt_parts if part.strip())
@@ -802,13 +851,17 @@ async def _run_agent_impl(
         if _is_api_proxy_error(full_response):
             if ctx.event_handler:
                 ctx.event_handler.on_status(
-                    "⚠ API returned an error — auto-continuing…",
+                    "⚠︎ API returned an error — auto-continuing…",
                     level="warning",
                 )
-            api_result = await _send_via_api("continue", on_chunk, None, return_result=True)
+            api_result = await _send_via_api(
+                "continue", on_chunk, None, return_result=True
+            )
             full_response = _sanitize_agent_response(api_result["text"])
             native_tool_calls = api_result.get("tool_calls") or []
-            _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
+            _process_plan_commands(
+                full_response, ctx, native_tool_calls=native_tool_calls
+            )
             continue
 
         if _api_uses_native_tools():
@@ -818,9 +871,13 @@ async def _run_agent_impl(
         calls = [c for c in calls if c.tool_name not in ("think", "plan")]
         if calls:
             stop_hook_count = 0
-        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(last_tool_name, calls)
+        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(
+            last_tool_name, calls
+        )
         if not calls:
-            if _is_control_only_response(full_response, native_tool_calls=native_tool_calls):
+            if _is_control_only_response(
+                full_response, native_tool_calls=native_tool_calls
+            ):
                 extras = _build_result_extras(
                     plan=ctx.plan,
                     working_dir=ctx.working_dir,
@@ -846,7 +903,9 @@ async def _run_agent_impl(
                     )
                 full_response = _sanitize_agent_response(api_result["text"])
                 native_tool_calls = api_result.get("tool_calls") or []
-                _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
+                _process_plan_commands(
+                    full_response, ctx, native_tool_calls=native_tool_calls
+                )
                 continue
 
             if _is_likely_truncated(full_response):
@@ -855,7 +914,9 @@ async def _run_agent_impl(
                 )
                 full_response = _sanitize_agent_response(api_result["text"])
                 native_tool_calls = api_result.get("tool_calls") or []
-                _process_plan_commands(full_response, ctx, native_tool_calls=native_tool_calls)
+                _process_plan_commands(
+                    full_response, ctx, native_tool_calls=native_tool_calls
+                )
                 continue
 
             final_text = _clean_for_save(full_response).strip()
@@ -868,7 +929,7 @@ async def _run_agent_impl(
                 stop_hook_count += 1
                 if ctx.event_handler:
                     ctx.event_handler.on_status(
-                        "🪝 Stop hook blocked completion — continuing…",
+                        "↪ Stop hook blocked completion — continuing…",
                         level="warning",
                     )
                 api_result = await _send_via_api(
@@ -887,7 +948,7 @@ async def _run_agent_impl(
                 continue
             if blocked and ctx.event_handler:
                 ctx.event_handler.on_status(
-                    "🪝 Stop hook continuation limit reached; ending the round.",
+                    "↪ Stop hook continuation limit reached; ending the round.",
                     level="warning",
                 )
             return final_text
@@ -896,9 +957,13 @@ async def _run_agent_impl(
         # в порядке появления в ответе модели (web_search/subagent исполняются
         # отдельными путями, но их результаты должны вернуться на свои места).
         ws_calls = [
-            (i, c) for i, c in enumerate(calls) if c.tool_name in ("web_search", "web_fetch")
+            (i, c)
+            for i, c in enumerate(calls)
+            if c.tool_name in ("web_search", "web_fetch")
         ]
-        subagent_calls = [(i, c) for i, c in enumerate(calls) if c.tool_name == "subagent"]
+        subagent_calls = [
+            (i, c) for i, c in enumerate(calls) if c.tool_name == "subagent"
+        ]
         plain_calls = [
             (i, c)
             for i, c in enumerate(calls)
@@ -942,7 +1007,11 @@ async def _run_agent_impl(
             if bg_notice:
                 extras = (extras + "\n\n" + bg_notice) if extras else bg_notice
             if repeat_tool_notice:
-                extras = (extras + "\n\n" + repeat_tool_notice) if extras else repeat_tool_notice
+                extras = (
+                    (extras + "\n\n" + repeat_tool_notice)
+                    if extras
+                    else repeat_tool_notice
+                )
             api_result = await _send_via_api(
                 "",
                 on_chunk,
@@ -969,6 +1038,7 @@ async def _run_agent_impl(
                 result_msg,
                 on_chunk,
                 result_images or None,
+                persist_text=_build_tool_results_payload(results),
                 return_result=True,
             )
             full_response = api_result["text"]
@@ -1004,7 +1074,8 @@ async def run_agent(
             close_pending_native_tool_calls()
         except Exception:
             logger.debug(
-                "close pending native calls after headless cancellation failed", exc_info=True
+                "close pending native calls after headless cancellation failed",
+                exc_info=True,
             )
         return "[Interrupted]"
 
@@ -1017,7 +1088,11 @@ async def _execute_subagent_call(
     background: bool = True,
 ) -> tools.ToolResult:
     """Запускает subagent в фоне и сразу возвращает управление главному агенту."""
-    from agent.subagent import SubagentOrchestrator, SubagentTask, format_subagent_results
+    from agent.subagent import (
+        SubagentOrchestrator,
+        SubagentTask,
+        format_subagent_results,
+    )
     from agent.subagent_render import SubagentBuffer, SubagentTracker
     from tools.subagent_specs import build_subagent_task_specs
 
@@ -1054,12 +1129,16 @@ async def _execute_subagent_call(
     api_sess_for_label = get_api_session()
     default_pid = api_sess_for_label.provider_id if api_sess_for_label else ""
     default_mid = (
-        api_sess_for_label.model_id if api_sess_for_label else (model or config.TARGET_MODEL)
+        api_sess_for_label.model_id
+        if api_sess_for_label
+        else (model or config.TARGET_MODEL)
     )
     task_models: list[str] = []
     for t_ in tasks:
         try:
-            _pid, mid = resolve_subagent_model(getattr(t_, "model", None), default_pid, default_mid)
+            _pid, mid = resolve_subagent_model(
+                getattr(t_, "model", None), default_pid, default_mid
+            )
         except Exception:
             mid = default_mid
         task_models.append(mid or "")
@@ -1086,7 +1165,8 @@ async def _execute_subagent_call(
         phased=(
             isinstance(raw_args.get("phases"), list)
             or (
-                isinstance(raw_args.get("items"), list) and isinstance(raw_args.get("stages"), list)
+                isinstance(raw_args.get("items"), list)
+                and isinstance(raw_args.get("stages"), list)
             )
         ),
     )
@@ -1279,7 +1359,9 @@ async def _run_agent_interactive_impl(
                 ctx.event_handler = _wrap_with_telegram(RichEventHandler())
         set_current_ctx(ctx)
     else:
-        ctx = get_current_ctx() or AgentContext(working_dir=working_dir or os.getcwd(), mode=mode)
+        ctx = get_current_ctx() or AgentContext(
+            working_dir=working_dir or os.getcwd(), mode=mode
+        )
         ctx.mode = mode
         set_current_ctx(ctx)
 
@@ -1395,7 +1477,7 @@ async def _run_agent_interactive_impl(
         if _is_api_proxy_error(full_response):
             if ctx.event_handler:
                 ctx.event_handler.on_status(
-                    "⚠ API returned an error — auto-continuing…",
+                    "⚠︎ API returned an error — auto-continuing…",
                     level="warning",
                 )
             if session:
@@ -1475,7 +1557,9 @@ async def _run_agent_interactive_impl(
             return final
 
         if _api_uses_native_tools():
-            all_calls = _dedupe_tool_calls(native_tool_calls_to_calls(native_tool_calls))
+            all_calls = _dedupe_tool_calls(
+                native_tool_calls_to_calls(native_tool_calls)
+            )
         else:
             all_calls = _dedupe_tool_calls(tools.parse_tool_calls(full_response))
         # think — не исполняемый инструмент, а отображаемая мысль.
@@ -1489,7 +1573,9 @@ async def _run_agent_interactive_impl(
             # response gets a fresh bounded continuation budget.
             auto_continue_count = 0
             stop_hook_count = 0
-        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(last_tool_name, all_calls)
+        repeat_tool_notice, last_tool_name = build_repeat_tool_notice(
+            last_tool_name, all_calls
+        )
         executed_counts = Counter(inline_call_keys)
         remaining_calls = []
         for c in all_calls:
@@ -1535,7 +1621,9 @@ async def _run_agent_interactive_impl(
                 _refresh_agent_status(ctx)
 
         if remaining_calls:
-            results = await execute_and_show_async(remaining_calls, event_handler=ctx.event_handler)
+            results = await execute_and_show_async(
+                remaining_calls, event_handler=ctx.event_handler
+            )
             inline_results.extend(results)
             fatal = next((r for r in results if r.fatal), None)
             if fatal:
@@ -1571,7 +1659,9 @@ async def _run_agent_interactive_impl(
             # запрос упадёт в 400 на парности) и выполнение оборвётся сразу
             # после создания плана. Поэтому шлём пустой раунд (tool_results=[]
             # закроет plan-ack через _control_ack в адаптере) и продолжаем.
-            if _is_control_only_response(full_response, plan_processed, native_tool_calls):
+            if _is_control_only_response(
+                full_response, plan_processed, native_tool_calls
+            ):
                 if session:
                     session.add_assistant_message(
                         full_response,
@@ -1629,9 +1719,12 @@ async def _run_agent_interactive_impl(
                             ctx,
                             session,
                             message_num=msg_num,
+                            persist_text="",
                         )
                 except asyncio.CancelledError:
-                    return _handle_hard_interrupt(session, full_response, model, last_usage)
+                    return _handle_hard_interrupt(
+                        session, full_response, model, last_usage
+                    )
                 _process_plan_commands(
                     full_response,
                     ctx,
@@ -1653,7 +1746,7 @@ async def _run_agent_interactive_impl(
             if needs_auto_continue and auto_continue_count < max_auto_continues:
                 if ctx.event_handler and stream_incomplete:
                     ctx.event_handler.on_status(
-                        "⚠ Stream ended unexpectedly, requesting continuation…",
+                        "⚠︎ Stream ended unexpectedly, requesting continuation…",
                         level="warning",
                     )
                 if session:
@@ -1686,7 +1779,9 @@ async def _run_agent_interactive_impl(
                         message_num=msg_num,
                     )
                 except asyncio.CancelledError:
-                    return _handle_hard_interrupt(session, full_response, model, last_usage)
+                    return _handle_hard_interrupt(
+                        session, full_response, model, last_usage
+                    )
                 _process_plan_commands(
                     full_response,
                     ctx,
@@ -1701,7 +1796,8 @@ async def _run_agent_interactive_impl(
             if _is_likely_truncated(full_response):
                 if ctx.event_handler:
                     ctx.event_handler.on_status(
-                        "⚠ Response truncated, requesting continuation…", level="warning"
+                        "⚠︎ Response truncated, requesting continuation…",
+                        level="warning",
                     )
 
                 cont = _build_continue_message()
@@ -1735,7 +1831,9 @@ async def _run_agent_interactive_impl(
                         message_num=msg_num,
                     )
                 except asyncio.CancelledError:
-                    return _handle_hard_interrupt(session, full_response, model, last_usage)
+                    return _handle_hard_interrupt(
+                        session, full_response, model, last_usage
+                    )
 
                 _process_plan_commands(
                     full_response,
@@ -1800,7 +1898,9 @@ async def _run_agent_interactive_impl(
                             message_num=msg_num,
                         )
                 except asyncio.CancelledError:
-                    return _handle_hard_interrupt(session, full_response, model, last_usage)
+                    return _handle_hard_interrupt(
+                        session, full_response, model, last_usage
+                    )
                 _process_plan_commands(
                     full_response,
                     ctx,
@@ -1819,13 +1919,13 @@ async def _run_agent_interactive_impl(
                 stop_hook_count += 1
                 if ctx.event_handler:
                     ctx.event_handler.on_status(
-                        "🪝 Stop hook blocked completion — continuing…",
+                        "↪ Stop hook blocked completion — continuing…",
                         level="warning",
                     )
                 if session:
-                    thoughts = _extract_thoughts(full_response) + _extract_native_thoughts(
-                        native_tool_calls
-                    )
+                    thoughts = _extract_thoughts(
+                        full_response
+                    ) + _extract_native_thoughts(native_tool_calls)
                     session.add_assistant_message(
                         final_text,
                         model=model or "",
@@ -1854,7 +1954,9 @@ async def _run_agent_interactive_impl(
                         message_num=msg_num,
                     )
                 except asyncio.CancelledError:
-                    return _handle_hard_interrupt(session, full_response, model, last_usage)
+                    return _handle_hard_interrupt(
+                        session, full_response, model, last_usage
+                    )
                 _process_plan_commands(
                     full_response,
                     ctx,
@@ -1864,7 +1966,7 @@ async def _run_agent_interactive_impl(
                 continue
             if blocked and ctx.event_handler:
                 ctx.event_handler.on_status(
-                    "🪝 Stop hook continuation limit reached; ending the round.",
+                    "↪ Stop hook continuation limit reached; ending the round.",
                     level="warning",
                 )
 
@@ -1932,7 +2034,9 @@ async def _run_agent_interactive_impl(
                 session.add_tool_call_message(
                     _native_calls_json(native_tool_calls), model=model or ""
                 )
-                session.add_tool_result(_native_results_payload(inline_results), model=model or "")
+                session.add_tool_result(
+                    _native_results_payload(inline_results), model=model or ""
+                )
             extras = _build_result_extras(
                 plan=ctx.plan,
                 working_dir=ctx.working_dir,
@@ -1943,7 +2047,11 @@ async def _run_agent_interactive_impl(
             if bg_notice:
                 extras = (extras + "\n\n" + bg_notice) if extras else bg_notice
             if repeat_tool_notice:
-                extras = (extras + "\n\n" + repeat_tool_notice) if extras else repeat_tool_notice
+                extras = (
+                    (extras + "\n\n" + repeat_tool_notice)
+                    if extras
+                    else repeat_tool_notice
+                )
             ctx.step_tracker.reset()
             msg_num += 1
             try:
@@ -2004,6 +2112,7 @@ async def _run_agent_interactive_impl(
                     session,
                     images=result_images or None,
                     message_num=msg_num,
+                    persist_text=_build_tool_results_payload(inline_results),
                 )
             except asyncio.CancelledError:
                 return _handle_hard_interrupt(session, full_response, model, last_usage)

@@ -1,48 +1,37 @@
-"""Персистентная память агента (memdir).
+"""Public persistent-memory facade with lazy imports."""
 
-Порт memory-системы Claude Code под necli. Хранит долговременные факты,
-не выводимые из текущего состояния проекта (предпочтения пользователя,
-обратная связь, контекст работы, внешние референсы), в markdown-файлах с
-frontmatter в .data/memory/<project>/.
+from __future__ import annotations
 
-Память:
-  - подмешивается в системный промпт следующих сессий через
-    format_memory_block() (см. system_prompt._build_memory_block);
-  - редактируется основной моделью напрямую через инструмент memory;
-  - периодически проверяется и упорядочивается отдельным аудитом раз в три дня.
+from importlib import import_module
 
-Публичный API:
-  scan_memories(working_dir)        -> list[MemoryFile]
-  format_memory_block(working_dir)  -> str   (для системного промпта)
-  read_memory / write_memory / delete_memory -> CRUD
-"""
+_LAZY = {
+    'MEMORY_TYPES': ('memory.memdir', 'MEMORY_TYPES'),
+    'MemoryFile': ('memory.memdir', 'MemoryFile'),
+    'delete_memory': ('memory.memdir', 'delete_memory'),
+    'find_similar_memories': ('memory.memdir', 'find_similar_memories'),
+    'format_manifest': ('memory.memdir', 'format_manifest'),
+    'format_memory_block': ('memory.memdir', 'format_memory_block'),
+    'format_similar_memories': ('memory.memdir', 'format_similar_memories'),
+    'maybe_cleanup_memories': ('memory.cleanup', 'maybe_cleanup_memories'),
+    'memory_path': ('memory.memdir', 'memory_path'),
+    'read_memory': ('memory.memdir', 'read_memory'),
+    'scan_memories': ('memory.memdir', 'scan_memories'),
+    'write_memory': ('memory.memdir', 'write_memory'),
+}
 
-from .cleanup import maybe_cleanup_memories
-from .memdir import (
-    MEMORY_TYPES,
-    MemoryFile,
-    delete_memory,
-    find_similar_memories,
-    format_manifest,
-    format_memory_block,
-    format_similar_memories,
-    memory_path,
-    read_memory,
-    scan_memories,
-    write_memory,
-)
 
-__all__ = [
-    "MEMORY_TYPES",
-    "MemoryFile",
-    "delete_memory",
-    "find_similar_memories",
-    "format_manifest",
-    "format_memory_block",
-    "format_similar_memories",
-    "maybe_cleanup_memories",
-    "memory_path",
-    "read_memory",
-    "scan_memories",
-    "write_memory",
-]
+def __getattr__(name: str):
+    target = _LAZY.get(name)
+    if target is None:
+        raise AttributeError(name)
+    module_name, attr = target
+    value = getattr(import_module(module_name), attr)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY))
+
+
+__all__ = list(_LAZY)

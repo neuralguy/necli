@@ -12,7 +12,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-ElementType = Literal["text", "shape", "picture", "group", "table", "chart", "passthrough"]
+ElementType = Literal[
+    "text", "shape", "picture", "group", "table", "chart", "passthrough"
+]
 Fill = dict[str, Any]
 
 
@@ -186,7 +188,9 @@ def text_from_body(body: TextBody | None) -> str:
     return "\n".join("".join(run.text for run in para.runs) for para in body.paragraphs)
 
 
-def element_by_id(slide: Slide, element_id: str, recursive: bool = True) -> Element | None:
+def element_by_id(
+    slide: Slide, element_id: str, recursive: bool = True
+) -> Element | None:
     for element in slide.elements:
         if element.id == element_id:
             return element

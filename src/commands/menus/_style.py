@@ -149,7 +149,8 @@ class CardMenu(overlays.SelectOverlay):
         self._widths: dict[int, tuple] = {}
         self._show_search = (
             split_focus
-            or sum(not self._is_original_skipped(item) for item in self._all_items) >= 10
+            or sum(not self._is_original_skipped(item) for item in self._all_items)
+            >= 10
         )
 
     def hint(self) -> str:
@@ -175,7 +176,13 @@ class CardMenu(overlays.SelectOverlay):
         Кроме курсора в карточке ничего не анимируется, поэтому на кадрах без
         нажатий рендер можно не повторять вовсе.
         """
-        return (self.selected, len(self.items), len(self.checked), self.text, self.search_focused)
+        return (
+            self.selected,
+            len(self.items),
+            len(self.checked),
+            self.text,
+            self.search_focused,
+        )
 
     def _original_index(self, visible_index: int | None = None) -> int:
         pos = self.selected if visible_index is None else visible_index
@@ -282,7 +289,9 @@ class CardMenu(overlays.SelectOverlay):
             return cached
         live = [it for i, it in enumerate(self.items) if not self._is_skipped(i)]
         icon_w = (
-            3 if self.multi else max((cell_width(it.get("icon", "")) for it in live), default=0)
+            3
+            if self.multi
+            else max((cell_width(it.get("icon", "")) for it in live), default=0)
         )
         label_w = max((cell_width(it.get("label", "")) for it in live), default=0)
         badge_w = max((cell_width(it.get("badge", "")) for it in live), default=0)
@@ -290,7 +299,11 @@ class CardMenu(overlays.SelectOverlay):
         n_cols = max((len(it.get("cols", ())) for it in live), default=0)
         col_w = [
             max(
-                (cell_width(it.get("cols", ())[i]) for it in live if len(it.get("cols", ())) > i),
+                (
+                    cell_width(it.get("cols", ())[i])
+                    for it in live
+                    if len(it.get("cols", ())) > i
+                ),
                 default=0,
             )
             for i in range(n_cols)
@@ -312,12 +325,16 @@ class CardMenu(overlays.SelectOverlay):
         hint_w = max(0, free - fixed - min(label_w, label_cap) - 2)
         if hint_w < 8:
             hint_w = 0
-        label_w = min(max(label_w, 1), max(8, free - fixed - (hint_w + 2 if hint_w else 0)))
+        label_w = min(
+            max(label_w, 1), max(8, free - fixed - (hint_w + 2 if hint_w else 0))
+        )
         res = (icon_w, label_w, hint_w, badge_w, swatch_w, col_w)
         self._widths[width] = res
         return res
 
-    def _head(self, width: int, pal: Palette, counter: str, facts: Sequence[str]) -> list[str]:
+    def _head(
+        self, width: int, pal: Palette, counter: str, facts: Sequence[str]
+    ) -> list[str]:
         lines: list[str] = []
         if self.card_title:
             if self.status:
@@ -327,7 +344,11 @@ class CardMenu(overlays.SelectOverlay):
                     right += f"  {DIM}{counter}{RESET}"
                 lines.append(
                     two_column(
-                        paint(clip(self.card_title, max(8, width - 34)), "accent", bold=True),
+                        paint(
+                            clip(self.card_title, max(8, width - 34)),
+                            "accent",
+                            bold=True,
+                        ),
                         right,
                         width=width,
                     )
@@ -335,7 +356,11 @@ class CardMenu(overlays.SelectOverlay):
             else:
                 lines.append(
                     two_column(
-                        paint(clip(self.card_title, max(8, width - 16)), "accent", bold=True),
+                        paint(
+                            clip(self.card_title, max(8, width - 16)),
+                            "accent",
+                            bold=True,
+                        ),
                         f"{DIM}{counter}{RESET}" if counter else "",
                         width=width,
                     )
@@ -349,7 +374,11 @@ class CardMenu(overlays.SelectOverlay):
         pal = Palette()
         total = len(self.items)
         budget = max(4, overlay_rows())
-        footer = self.footer_fn(self._original_index()) if self.footer_fn and self.items else ""
+        footer = (
+            self.footer_fn(self._original_index())
+            if self.footer_fn and self.items
+            else ""
+        )
         footer_lines = footer.rstrip("\n").split("\n") if footer else []
 
         # Порядок жертв при нехватке высоты: список → факты шапки → превью.
@@ -410,7 +439,9 @@ class CardMenu(overlays.SelectOverlay):
                     else spacer()
                 )
                 continue
-            selected = i == self.selected and not (self.split_focus and self.search_focused)
+            selected = i == self.selected and not (
+                self.split_focus and self.search_focused
+            )
             if self.multi:
                 checked = self._original_index(i) in self.checked
                 mark = "[x]" if checked else "[ ]"
@@ -421,7 +452,9 @@ class CardMenu(overlays.SelectOverlay):
             label_style = getattr(pal, item.get("role", ""), "")
             if item.get("action") and not item.get("role"):
                 label_style = pal.accent + pal.bold
-            cells: list[tuple[str, str]] = [(cell(item.get("label", ""), label_w), label_style)]
+            cells: list[tuple[str, str]] = [
+                (cell(item.get("label", ""), label_w), label_style)
+            ]
             if hint_w:
                 cells.append(("  " + cell(item.get("hint", ""), hint_w), DIM))
             if swatch_w:
@@ -436,7 +469,12 @@ class CardMenu(overlays.SelectOverlay):
                 if not cw:
                     continue
                 values = item.get("cols", ())
-                cells.append(("  " + cell(values[n] if len(values) > n else "", cw, "right"), DIM))
+                cells.append(
+                    (
+                        "  " + cell(values[n] if len(values) > n else "", cw, "right"),
+                        DIM,
+                    )
+                )
             if badge_w:
                 cells.append(
                     (

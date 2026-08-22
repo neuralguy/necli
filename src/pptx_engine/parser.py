@@ -38,7 +38,9 @@ from .xmlutil import (
     tag_ranges,
 )
 
-_FRAGMENT_PREFIX = f'<root xmlns:p="{NS["p"]}" xmlns:a="{A_NS}" xmlns:r="{R_NS}" xmlns:c="{C_NS}">'
+_FRAGMENT_PREFIX = (
+    f'<root xmlns:p="{NS["p"]}" xmlns:a="{A_NS}" xmlns:r="{R_NS}" xmlns:c="{C_NS}">'
+)
 _FRAGMENT_SUFFIX = "</root>"
 
 
@@ -60,7 +62,7 @@ def parse_theme(xml: str | None) -> dict[str, str]:
 
 
 def _fragment(xml: str) -> ET.Element:
-    return ET.fromstring((_FRAGMENT_PREFIX + xml + _FRAGMENT_SUFFIX).encode("utf-8"))
+    return parse_xml(_FRAGMENT_PREFIX + xml + _FRAGMENT_SUFFIX)
 
 
 def _find_xfrm(node: ET.Element) -> Transform:
@@ -72,14 +74,21 @@ def _find_xfrm(node: ET.Element) -> Transform:
     off = xfrm.find("a:off", NS)
     ext = xfrm.find("a:ext", NS)
     return Transform(
-        EmuRect(attr_int(off, "x"), attr_int(off, "y"), attr_int(ext, "cx"), attr_int(ext, "cy")),
+        EmuRect(
+            attr_int(off, "x"),
+            attr_int(off, "y"),
+            attr_int(ext, "cx"),
+            attr_int(ext, "cy"),
+        ),
         attr_int(xfrm, "rot"),
         xfrm.get("flipH") in {"1", "true"},
         xfrm.get("flipV") in {"1", "true"},
     )
 
 
-def _parse_fill(parent: ET.Element | None, theme: dict[str, str]) -> dict[str, Any] | None:
+def _parse_fill(
+    parent: ET.Element | None, theme: dict[str, str]
+) -> dict[str, Any] | None:
     if parent is None:
         return None
     no_fill = parent.find("a:noFill", NS)
@@ -93,7 +102,10 @@ def _parse_fill(parent: ET.Element | None, theme: dict[str, str]) -> dict[str, A
         stops: list[dict[str, Any]] = []
         for gs in grad.findall(".//a:gs", NS):
             stops.append(
-                {"pos": attr_float(gs, "pos") / 100000.0, "color": colour_from_node(gs, theme)}
+                {
+                    "pos": attr_float(gs, "pos") / 100000.0,
+                    "color": colour_from_node(gs, theme),
+                }
             )
         lin = grad.find("a:lin", NS)
         path = grad.find("a:path", NS)
@@ -119,7 +131,9 @@ def _parse_fill(parent: ET.Element | None, theme: dict[str, str]) -> dict[str, A
     return None
 
 
-def _parse_stroke(parent: ET.Element | None, theme: dict[str, str]) -> dict[str, Any] | None:
+def _parse_stroke(
+    parent: ET.Element | None, theme: dict[str, str]
+) -> dict[str, Any] | None:
     if parent is None:
         return None
     line = parent.find("a:ln", NS)
@@ -138,15 +152,25 @@ def _parse_stroke(parent: ET.Element | None, theme: dict[str, str]) -> dict[str,
     for source, key in (("a:headEnd", "head_end"), ("a:tailEnd", "tail_end")):
         end = line.find(source, NS)
         if end is not None and end.get("type") not in {None, "none"}:
-            stroke[key] = {"type": end.get("type"), "w": end.get("w"), "len": end.get("len")}
+            stroke[key] = {
+                "type": end.get("type"),
+                "w": end.get("w"),
+                "len": end.get("len"),
+            }
     return stroke
 
 
 def _parse_run(node: ET.Element, theme: dict[str, str]) -> TextRun:
     rpr = node.find("a:rPr", NS)
     text_node = node.find("a:t", NS)
-    text = ("\n" if local(node.tag) == "br" else "") if text_node is None else text_node.text or ""
-    font_size = attr_float(rpr, "sz") / 100.0 if rpr is not None and rpr.get("sz") else None
+    text = (
+        ("\n" if local(node.tag) == "br" else "")
+        if text_node is None
+        else text_node.text or ""
+    )
+    font_size = (
+        attr_float(rpr, "sz") / 100.0 if rpr is not None and rpr.get("sz") else None
+    )
     latin = rpr.find("a:latin", NS) if rpr is not None else None
     color_fill = rpr.find("a:solidFill", NS) if rpr is not None else None
     hyperlink = None
@@ -163,7 +187,9 @@ def _parse_run(node: ET.Element, theme: dict[str, str]) -> TextRun:
         if rpr is not None and rpr.get("i") is not None
         else None,
         underline=(rpr.get("u") not in {None, "none"}) if rpr is not None else None,
-        strike=(rpr.get("strike") not in {None, "noStrike"}) if rpr is not None else None,
+        strike=(rpr.get("strike") not in {None, "noStrike"})
+        if rpr is not None
+        else None,
         font_size=font_size,
         font_family=latin.get("typeface") if latin is not None else None,
         color=colour_from_node(color_fill, theme) if color_fill is not None else None,
@@ -185,7 +211,9 @@ def _parse_paragraph(node: ET.Element, theme: dict[str, str]) -> Paragraph:
         align=align_map.get(ppr.get("algn")) if ppr is not None else None,
         level=attr_int(ppr, "lvl") if ppr is not None and ppr.get("lvl") else None,
         mar_l=attr_int(ppr, "marL") if ppr is not None and ppr.get("marL") else None,
-        indent=attr_int(ppr, "indent") if ppr is not None and ppr.get("indent") else None,
+        indent=attr_int(ppr, "indent")
+        if ppr is not None and ppr.get("indent")
+        else None,
     )
     if ppr is not None:
         line = ppr.find("a:lnSpc/a:spcPct", NS)
@@ -210,7 +238,10 @@ def _parse_paragraph(node: ET.Element, theme: dict[str, str]) -> Paragraph:
         elif bu_char is not None:
             paragraph.bullet = {"type": "char", "char": bu_char.get("char", "•")}
         elif bu_num is not None:
-            paragraph.bullet = {"type": "number", "num_type": bu_num.get("type", "arabicPeriod")}
+            paragraph.bullet = {
+                "type": "number",
+                "num_type": bu_num.get("type", "arabicPeriod"),
+            }
     for child in node:
         if local(child.tag) in {"r", "fld", "br"}:
             paragraph.runs.append(_parse_run(child, theme))
@@ -264,7 +295,10 @@ def _non_visual(node: ET.Element) -> tuple[str, str | None, str | None, str | No
 
 
 def _parse_shape(
-    node: ET.Element, anchor: ByteAnchor, theme: dict[str, str], relations: dict[str, str]
+    node: ET.Element,
+    anchor: ByteAnchor,
+    theme: dict[str, str],
+    relations: dict[str, str],
 ) -> Element:
     identifier, name, descr, nv_id = _non_visual(node)
     sp_pr = node.find("p:spPr", NS)
@@ -276,7 +310,9 @@ def _parse_shape(
             preset = geometry.get("prst")
             for guide in geometry.findall(".//a:gd", NS):
                 with contextlib.suppress(ValueError):
-                    adjust[guide.get("name", "adj")] = int(guide.get("fmla", "val 0").split()[-1])
+                    adjust[guide.get("name", "adj")] = int(
+                        guide.get("fmla", "val 0").split()[-1]
+                    )
     placeholder_node = node.find(".//p:ph", NS)
     return Element(
         identifier,
@@ -296,7 +332,10 @@ def _parse_shape(
 
 
 def _parse_picture(
-    node: ET.Element, anchor: ByteAnchor, theme: dict[str, str], relations: dict[str, str]
+    node: ET.Element,
+    anchor: ByteAnchor,
+    theme: dict[str, str],
+    relations: dict[str, str],
 ) -> Element:
     identifier, name, descr, nv_id = _non_visual(node)
     blip_fill = node.find("p:blipFill", NS)
@@ -306,7 +345,9 @@ def _parse_picture(
     src = blip_fill.find("a:srcRect", NS) if blip_fill is not None else None
     src_rect = None
     if src is not None:
-        src_rect = {key: attr_float(src, key) / 100000.0 for key in ("l", "t", "r", "b")}
+        src_rect = {
+            key: attr_float(src, key) / 100000.0 for key in ("l", "t", "r", "b")
+        }
     opacity = None
     alpha = blip.find("a:alphaModFix", NS) if blip is not None else None
     if alpha is not None:
@@ -334,7 +375,9 @@ def _parse_picture(
     )
 
 
-def _parse_table(node: ET.Element, anchor: ByteAnchor, theme: dict[str, str]) -> Element:
+def _parse_table(
+    node: ET.Element, anchor: ByteAnchor, theme: dict[str, str]
+) -> Element:
     identifier, name, descr, nv_id = _non_visual(node)
     tbl = node.find(".//a:tbl", NS)
     if tbl is None:
@@ -419,7 +462,10 @@ def _parse_chart(chart_xml: str | None) -> dict[str, Any]:
 
 
 def _parse_group(
-    node: ET.Element, anchor: ByteAnchor, theme: dict[str, str], relations: dict[str, str]
+    node: ET.Element,
+    anchor: ByteAnchor,
+    theme: dict[str, str],
+    relations: dict[str, str],
 ) -> Element:
     identifier, name, descr, nv_id = _non_visual(node)
     group_pr = node.find("p:grpSpPr", NS)
@@ -462,7 +508,10 @@ def _parse_group(
 
 
 def _parse_node(
-    node: ET.Element, anchor: ByteAnchor, theme: dict[str, str], relations: dict[str, str]
+    node: ET.Element,
+    anchor: ByteAnchor,
+    theme: dict[str, str],
+    relations: dict[str, str],
 ) -> Element | None:
     kind = local(node.tag)
     if kind == "sp":
@@ -515,7 +564,7 @@ def _parse_node(
 
 def _parse_background(xml: str, theme: dict[str, str]) -> dict[str, Any] | None:
     """Извлекает заливку <p:bg> (если есть) из XML слайда."""
-    bg = re.search(r"<p:bg\b[^>]*>.*?</p:bg>", xml, re.S)
+    bg = re.search(r"<p:bg\b[^>]*>.*?</p:bg>", xml, re.DOTALL)
     if not bg:
         return None
     try:
@@ -537,21 +586,35 @@ def parse_slide(
     background = _parse_background(xml, theme)
     sp_tree_match = re.search(r"<p:spTree\b[^>]*>", xml)
     if not sp_tree_match:
-        return Slide(path, xml, xml, "", [], layout_path, master_path, background=background)
+        return Slide(
+            path, xml, xml, "", [], layout_path, master_path, background=background
+        )
     # find the matching spTree closing token. It is the only such subtree in a slide.
     close = xml.find("</p:spTree>", sp_tree_match.end())
     if close < 0:
-        return Slide(path, xml, xml, "", [], layout_path, master_path, background=background)
+        return Slide(
+            path, xml, xml, "", [], layout_path, master_path, background=background
+        )
     close + len("</p:spTree>")
     direct = tag_ranges(
-        xml, ("p:sp", "p:pic", "p:grpSp", "p:graphicFrame", "p:cxnSp"), sp_tree_match.end(), close
+        xml,
+        ("p:sp", "p:pic", "p:grpSp", "p:graphicFrame", "p:cxnSp"),
+        sp_tree_match.end(),
+        close,
     )
     if not direct:
         # Keep the opening spTree and its mandatory group properties in the
         # prefix, but leave the closing tag in the suffix. New elements must
         # be inserted *inside* p:spTree, not after it.
         return Slide(
-            path, xml, xml[:close], xml[close:], [], layout_path, master_path, background=background
+            path,
+            xml,
+            xml[:close],
+            xml[close:],
+            [],
+            layout_path,
+            master_path,
+            background=background,
         )
     elements: list[Element] = []
     for i, (_, start, end) in enumerate(direct):
@@ -562,7 +625,10 @@ def parse_slide(
         gap_after = xml[end : direct[i + 1][1] if i + 1 < len(direct) else close]
         try:
             parsed = _parse_node(
-                _fragment(raw)[0], ByteAnchor(i, raw, (start, end), gap_after), theme, relations
+                _fragment(raw)[0],
+                ByteAnchor(i, raw, (start, end), gap_after),
+                theme,
+                relations,
             )
         except (ET.ParseError, IndexError):
             parsed = Element(
@@ -613,7 +679,11 @@ def _apply_placeholder_geometry(
     layout = _placeholder_transforms(layout_xml)
     master = _placeholder_transforms(master_xml)
     for element in slide.elements:
-        if not element.placeholder or element.transform.offset.cx or element.transform.offset.cy:
+        if (
+            not element.placeholder
+            or element.transform.offset.cx
+            or element.transform.offset.cy
+        ):
             continue
         inherited = layout.get(element.placeholder) or master.get(element.placeholder)
         if inherited:
@@ -622,7 +692,9 @@ def _apply_placeholder_geometry(
 
 def parse_deck(archive: PackageArchive) -> Deck:
     size, paths = archive.read_presentation()
-    first_chain = archive.resolve_slide_chain(paths[0]) if paths else {"theme_path": None}
+    first_chain = (
+        archive.resolve_slide_chain(paths[0]) if paths else {"theme_path": None}
+    )
     theme = parse_theme(archive.read_text(first_chain.get("theme_path") or ""))
     slides: list[Slide] = []
     for path in paths:
@@ -638,7 +710,12 @@ def parse_deck(archive: PackageArchive) -> Deck:
                 else resolve_target(path, relation.target)
             )
         slide = parse_slide(
-            xml, path, theme, relations, chain.get("layout_path"), chain.get("master_path")
+            xml,
+            path,
+            theme,
+            relations,
+            chain.get("layout_path"),
+            chain.get("master_path"),
         )
         _apply_placeholder_geometry(
             slide,

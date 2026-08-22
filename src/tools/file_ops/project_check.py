@@ -56,7 +56,9 @@ def run_project_check(working_dir: str, changed_files: set[str]) -> str:
     if not root.is_dir():
         return ""
 
-    ts_files = [f for f in changed_files if Path(f).suffix in _TS_EXT and (root / f).is_file()]
+    ts_files = [
+        f for f in changed_files if Path(f).suffix in _TS_EXT and (root / f).is_file()
+    ]
 
     blocks: list[str] = []
 
@@ -64,10 +66,14 @@ def run_project_check(working_dir: str, changed_files: set[str]) -> str:
     if ts_files and _has_tsconfig(root) and shutil.which("tsc"):
         rc, out = _run(["tsc", "--noEmit", "-p", "."], cwd=root)
         if rc != 0 and out and "[not installed]" not in out:
-            blocks.append(f"⚠ tsc --noEmit:\n{_truncate(out)}")
+            blocks.append(f"⚠︎ tsc --noEmit:\n{_truncate(out)}")
         logger.debug("project_check.tsc rc={}", rc)
 
     if not blocks:
         return ""
 
-    return "\n\n--- PROJECT CHECK ---\n" + "\n\n".join(blocks) + "\n--- END PROJECT CHECK ---"
+    return (
+        "\n\n--- PROJECT CHECK ---\n"
+        + "\n\n".join(blocks)
+        + "\n--- END PROJECT CHECK ---"
+    )

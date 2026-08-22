@@ -87,7 +87,10 @@ def _schema_index() -> dict[str, dict]:
     try:
         from apis.tool_schemas import TOOL_SCHEMAS
     except Exception:  # pragma: no cover - схемы недоступны → валидация выключена
-        logger.debug("arg_validation: TOOL_SCHEMAS unavailable, validation disabled", exc_info=True)
+        logger.debug(
+            "arg_validation: TOOL_SCHEMAS unavailable, validation disabled",
+            exc_info=True,
+        )
         _schema_index._cache = index  # type: ignore[attr-defined]
         return index
     for s in TOOL_SCHEMAS:
@@ -147,7 +150,11 @@ def _coerce(value, prop_schema: dict):
 
 
 def _is_empty(value) -> bool:
-    return value is None or (isinstance(value, str) and value.strip() == "")
+    return (
+        value is None
+        or (isinstance(value, str) and value.strip() == "")
+        or (isinstance(value, (list, tuple, dict, set)) and not value)
+    )
 
 
 def _describe_params(params: dict) -> str:
@@ -209,6 +216,57 @@ def validate_and_normalize(
         prop_schema = props.get(key)
         if isinstance(prop_schema, dict):
             out[key] = _coerce(val, prop_schema)
+
+    # patch_file intentionally has one strict edit shape. Validate top-level
+    # and nested keys here because this lightweight layer does not otherwise
+    # implement full JSON Schema additionalProperties/items validation.
+    if tool_name == "patch_file":
+        unexpected = [k for k in out if k not in props]
+        if unexpected:
+            return out, (
+                "Invalid arguments for patch_file: unexpected parameter(s): "
+                f"{', '.join(sorted(unexpected))}. Use only path and patches; "
+                "each patch must contain find and replace."
+            )
+        if "patches" in out:
+            patches = out.get("patches")
+            if not isinstance(patches, list) or not patches:
+                return (
+                    out,
+                    "Invalid arguments for patch_file: 'patches' must be a non-empty list.",
+                )
+            normalized_patches = []
+            for index, patch in enumerate(patches):
+                if not isinstance(patch, dict):
+                    return (
+                        out,
+                        f"Invalid arguments for patch_file: patches[{index}] must be an object.",
+                    )
+                extra_keys = [k for k in patch if k not in {"find", "replace"}]
+                if extra_keys:
+                    return out, (
+                        f"Invalid arguments for patch_file: patches[{index}] has unexpected "
+                        f"parameter(s): {', '.join(sorted(extra_keys))}."
+                    )
+                if "find" not in patch or "replace" not in patch:
+                    return out, (
+                        f"Invalid arguments for patch_file: patches[{index}] must contain both "
+                        "'find' and 'replace'."
+                    )
+                find = patch.get("find")
+                replace = patch.get("replace")
+                if not isinstance(find, str) or not find:
+                    return (
+                        out,
+                        f"Invalid arguments for patch_file: patches[{index}].find must be a non-empty string.",
+                    )
+                if not isinstance(replace, str):
+                    return (
+                        out,
+                        f"Invalid arguments for patch_file: patches[{index}].replace must be a string.",
+                    )
+                normalized_patches.append({"find": find, "replace": replace})
+            out["patches"] = normalized_patches
 
     # 3) enum-проверка.
     for key, val in out.items():

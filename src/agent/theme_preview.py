@@ -47,7 +47,7 @@ def _hdr(
     status: tuple[str, str] | None = None,
     status_color: str | None = None,
 ) -> Text:
-    """Заголовок блока: `⏺ Shell(ls -la src/)  ✓ 0.1s`."""
+    """Заголовок блока: `● Shell(ls -la src/)  ✓ 0.1s`."""
     name, role = _tool_disp(tool)
     color = colors.get(role, colors.get("warning"))
     txt = Text()
@@ -138,7 +138,13 @@ def render_theme_preview(colors: dict, width: int = 76) -> str:
 
     # Create — заголовок без контента (мгновенная тихая операция)
     parts.append(
-        _hdr("create_file", "new_handler.py", colors, status=("✓", ""), status_color=success)
+        _hdr(
+            "create_file",
+            "new_handler.py",
+            colors,
+            status=("✓", ""),
+            status_color=success,
+        )
     )
     parts.append(Text(""))
 
@@ -162,9 +168,9 @@ def render_theme_preview(colors: dict, width: int = 76) -> str:
     parts.append(working_sum)
     parts.append(Text(""))
 
-    # Строка ввода: «🚀agent ❯»
+    # Строка ввода: «⇢ agent ❯»
     prompt = Text()
-    prompt.append("🚀agent ", style=f"bold {accent}")
+    prompt.append("⇢ agent ", style=f"bold {accent}")
     prompt.append("❯", style=f"bold {success}")
     parts.append(prompt)
 

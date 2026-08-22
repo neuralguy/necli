@@ -290,6 +290,7 @@ def _replay_item(
         ai_requests = int(p.get("ai_requests", 0) or 0)
         outcome = str(p.get("outcome") or "worked")
         has_split_tokens = "input_tokens" in p or "output_tokens" in p
+        cache_read_tokens = int(p.get("cache_read_tokens", 0) or 0)
         input_tokens = int(p.get("input_tokens", 0) or 0)
         output_tokens = int(
             p.get("output_tokens", 0) or (p.get("tokens", 0) if not has_split_tokens else 0)
@@ -300,13 +301,19 @@ def _replay_item(
         details = Text("   ⎿  ", style=theme("dim_text"))
         details.append(f"{ai_requests} ⟳", style=theme("fg_primary"))
         details.append(" · ", style="dim")
-        details.append(f"{calls} 🛠", style=theme("fg_primary"))
+        details.append(f"{calls} ⚒︎", style=theme("fg_primary"))
         details.append(" · ", style="dim")
+        details.append(f"c{format_tokens(cache_read_tokens)}", style=theme("fg_primary"))
+        details.append(" ", style="dim")
         details.append(f"↑{format_tokens(input_tokens)}", style=theme("fg_primary"))
         details.append(" ", style="dim")
         details.append(f"↓{output_prefix}{format_tokens(output_tokens)}", style=theme("fg_primary"))
         _out().print(header)
         _out().print(details)
+        return
+
+    if kind == "history_cleared":
+        print_history_cleared_marker(p.get("timestamp") or getattr(item, "ts", None))
         return
 
     if kind == "raw_console":
@@ -324,6 +331,25 @@ def _replay_item(
             # Сырой ANSI как есть — в тот же поток, что и всё остальное.
             _raw(output if output.endswith("\n") else output + "\n")
         return
+
+
+def print_history_cleared_marker(timestamp: float | None = None) -> float:
+    """Write a quiet /new boundary next to its timestamp in terminal history."""
+    import time
+
+    from config.i18n import t as _tr
+    from config.themes import t as _theme
+    from session._time import format_msk
+
+    ts = time.time() if timestamp is None else float(timestamp)
+    time_text = format_msk(ts).rsplit(" ", 1)[-1]
+    marker = Text(justify="right")
+    marker_style = f"bold {_theme('warning')}"
+    marker.append("⌫ ", style=marker_style)
+    marker.append(_tr("sh.history_cleared"), style=marker_style)
+    marker.append(f" · {time_text}", style=marker_style)
+    _out().print(marker)
+    return ts
 
 
 def print_session_history(necli_session, *, max_messages: int = 20) -> None:
@@ -559,6 +585,7 @@ def _render_worked(content: str) -> None:
     ai_requests = int(p.get("ai_requests", 0) or 0)
     outcome = str(p.get("outcome") or "worked")
     has_split_tokens = "input_tokens" in p or "output_tokens" in p
+    cache_read_tokens = int(p.get("cache_read_tokens", 0) or 0)
     input_tokens = int(p.get("input_tokens", 0) or 0)
     output_tokens = int(
         p.get("output_tokens", 0) or (p.get("tokens", 0) if not has_split_tokens else 0)
@@ -568,10 +595,12 @@ def _render_worked(content: str) -> None:
     _out().print()
     header = _finished_header(elapsed, outcome)
     details = Text("   ⎿  ", style=theme("dim_text"))
-    details.append(f"{ai_requests} 🔄", style=theme("fg_primary"))
+    details.append(f"{ai_requests} ↻", style=theme("fg_primary"))
     details.append(" · ", style="dim")
-    details.append(f"{calls} 🛠", style=theme("fg_primary"))
+    details.append(f"{calls} ⚒︎", style=theme("fg_primary"))
     details.append(" · ", style="dim")
+    details.append(f"c{format_tokens(cache_read_tokens)}", style=theme("fg_primary"))
+    details.append(" ", style="dim")
     details.append(f"↑{format_tokens(input_tokens)}", style=theme("fg_primary"))
     details.append(" ", style="dim")
     details.append(f"↓{output_prefix}{format_tokens(output_tokens)}", style=theme("fg_primary"))
@@ -675,8 +704,8 @@ def _print_user_line(text: str, status: str = "", time_str: str = "") -> None:
         _out().print(Text("\u2500" * w, style=theme("muted")))
 
     # Эхо ввода: bright white на фоне bg_code, padding на всю ширину,
-    # multiline с префиксом "🚀 agent > " на первой строке — как _echo_submitted.
-    mode_prefix = "🚀 agent > "
+    # multiline с префиксом "⇢ agent > " на первой строке — как _echo_submitted.
+    mode_prefix = "⇢ agent > "
     bg = theme("bg_code")
     bg_seq = ""
     if isinstance(bg, str) and bg.startswith("#") and len(bg) == 7:
@@ -744,7 +773,6 @@ def _replay_plan(plan: dict, action: str = "", focus_index=None) -> None:
             PlanStep(
                 title=s.get("title", ""),
                 status=status,
-                notes=s.get("notes") or "",
             )
         )
     p = Plan(goal=plan.get("goal", ""), steps=steps)

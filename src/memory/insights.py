@@ -29,10 +29,10 @@ import re
 import time
 from pathlib import Path
 
-import session.storage as storage
 from config.i18n import get_lang
 from config.paths import BASE_DIR
 from logger import logger
+from session import storage
 
 from .memdir import MEMORY_TYPES, format_manifest, write_memory
 
@@ -125,7 +125,9 @@ def collect_metrics(loaded: list[dict]) -> dict:
                     )
                     error_hits += 1
                 elif "permission denied" in low:
-                    error_kinds["Permission denied"] = error_kinds.get("Permission denied", 0) + 1
+                    error_kinds["Permission denied"] = (
+                        error_kinds.get("Permission denied", 0) + 1
+                    )
                     error_hits += 1
                 elif "fragment not found" in low or "not found" in low:
                     error_kinds["Not found"] = error_kinds.get("Not found", 0) + 1
@@ -151,8 +153,12 @@ def collect_metrics(loaded: list[dict]) -> dict:
 
     top_tools = sorted(tool_counts.items(), key=lambda kv: kv[1], reverse=True)
     top_errors = sorted(error_kinds.items(), key=lambda kv: kv[1], reverse=True)
-    avg_user_len = round(sum(user_msg_lengths) / len(user_msg_lengths)) if user_msg_lengths else 0
-    avg_session_size = round(sum(session_sizes) / len(session_sizes), 1) if session_sizes else 0
+    avg_user_len = (
+        round(sum(user_msg_lengths) / len(user_msg_lengths)) if user_msg_lengths else 0
+    )
+    avg_session_size = (
+        round(sum(session_sizes) / len(session_sizes), 1) if session_sizes else 0
+    )
     msgs_per_day = round(total_user / len(active_days), 1) if active_days else 0
 
     periods = [
@@ -161,7 +167,9 @@ def collect_metrics(loaded: list[dict]) -> dict:
         ("Evening (18-24)", range(18, 24)),
         ("Night (0-6)", range(6)),
     ]
-    time_of_day = [(label, sum(hour_counts.get(h, 0) for h in rng)) for label, rng in periods]
+    time_of_day = [
+        (label, sum(hour_counts.get(h, 0) for h in rng)) for label, rng in periods
+    ]
 
     return {
         "total_sessions": len(loaded),
@@ -293,7 +301,7 @@ def parse_analysis(raw: str) -> dict:
     except (json.JSONDecodeError, ValueError):
         m = _JSON_BLOCK_RE.search(text)
         if not m:
-            raise ValueError("no JSON object in model response")  # noqa: B904
+            raise ValueError("no JSON object in model response") from None
         data = json.loads(m.group(0))
     if not isinstance(data, dict):
         raise ValueError("model response is not a JSON object")
@@ -323,10 +331,19 @@ def save_memories(analysis: dict, working_dir: str | None = None) -> int:
         if not name or not body:
             continue
         try:
-            write_memory(name, body, mtype=mtype, today=today, working_dir=working_dir, scope=scope)
+            write_memory(
+                name,
+                body,
+                mtype=mtype,
+                today=today,
+                working_dir=working_dir,
+                scope=scope,
+            )
             saved += 1
         except Exception as e:
-            logger.debug("insights: write memory '{}' failed: {}", name, e, exc_info=True)
+            logger.debug(
+                "insights: write memory '{}' failed: {}", name, e, exc_info=True
+            )
     logger.info("insights: saved {}/{} memory fact(s)", saved, len(items))
     return saved
 
@@ -378,9 +395,7 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
         ("ambitious", "Ambitious workflows"),
     ):
         if glance.get(key):
-            glance_html += (
-                f'<div class="glance-section"><strong>{label}:</strong> {_esc(glance[key])}</div>'
-            )
+            glance_html += f'<div class="glance-section"><strong>{label}:</strong> {_esc(glance[key])}</div>'
 
     areas_html = (
         "".join(
@@ -408,7 +423,9 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
     for x in a.get("friction") or []:
         if not isinstance(x, dict):
             continue
-        ex = "".join(f"<li>{_esc(e)}</li>" for e in (x.get("examples") or []) if str(e).strip())
+        ex = "".join(
+            f"<li>{_esc(e)}</li>" for e in (x.get("examples") or []) if str(e).strip()
+        )
         ex_block = f'<ul class="friction-examples">{ex}</ul>' if ex else ""
         friction_html += (
             f'<div class="friction-category"><div class="friction-title">{_esc(x.get("title", ""))}</div>'
@@ -488,7 +505,11 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
         if not isinstance(x, dict):
             continue
         txt = x.get("text", "")
-        why = f'<div class="cmd-why">{_esc(x.get("why", ""))}</div>' if x.get("why") else ""
+        why = (
+            f'<div class="cmd-why">{_esc(x.get("why", ""))}</div>'
+            if x.get("why")
+            else ""
+        )
         agents_items += (
             f'<div class="claude-md-item">'
             f'<input type="checkbox" id="cmd-{i}" class="cmd-checkbox" checked data-text="{_esc(txt)}">'
@@ -506,7 +527,11 @@ def render_html(analysis: dict, metrics: dict, saved_memories: int, lang: str) -
         )
 
     intents_bars = _bars(
-        [(x.get("label"), x.get("count")) for x in (a.get("intents") or []) if isinstance(x, dict)],
+        [
+            (x.get("label"), x.get("count"))
+            for x in (a.get("intents") or [])
+            if isinstance(x, dict)
+        ],
         "#2563eb",
     )
     sess_bars = _bars(
@@ -735,7 +760,9 @@ def write_report(html_text: str) -> Path:
 # ── Оркестрация ──────────────────────────────────────────────────────────────
 
 
-async def generate_insights(working_dir: str | None = None, *, persist_memory: bool = True) -> dict:
+async def generate_insights(
+    working_dir: str | None = None, *, persist_memory: bool = True
+) -> dict:
     """Полный цикл: собрать → проанализировать моделью → отрендерить → записать.
 
     Возвращает dict: {report_path, metrics, analysis, saved_memories}.
@@ -768,7 +795,11 @@ async def generate_insights(working_dir: str | None = None, *, persist_memory: b
     raw = await api_insights(prompt)
     analysis = parse_analysis(raw)
 
-    saved = await asyncio.to_thread(save_memories, analysis, working_dir) if persist_memory else 0
+    saved = (
+        await asyncio.to_thread(save_memories, analysis, working_dir)
+        if persist_memory
+        else 0
+    )
     html_text = await asyncio.to_thread(render_html, analysis, metrics, saved, lang)
     path = await asyncio.to_thread(write_report, html_text)
 

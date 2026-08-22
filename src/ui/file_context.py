@@ -77,7 +77,9 @@ def _build_tree(dir_path, max_depth=3):
         if depth > max_depth:
             return
         try:
-            entries = sorted(path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+            entries = sorted(
+                path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+            )
         except (PermissionError, OSError):
             return
         filtered = [e for e in entries if not _should_ignore(e.name, e.is_dir())]
@@ -199,7 +201,9 @@ def expand_at_references(text, working_dir):
 
             for rel_name, fpath in dir_files:
                 if total_size >= _MAX_TOTAL_SIZE:
-                    parts.append(f"... [context size limit reached, {total_size} bytes] ...")
+                    parts.append(
+                        f"... [context size limit reached, {total_size} bytes] ..."
+                    )
                     break
                 content, _ = _read_file_content(fpath, _MAX_FILE_SIZE)
                 if content is not None:
@@ -215,7 +219,9 @@ def expand_at_references(text, working_dir):
             # Single file
             content, _truncated = _read_file_content(ref.resolved_path)
             if content is not None:
-                block = f"--- @{ref.path_str} ---\n{content}\n--- end @{ref.path_str} ---"
+                block = (
+                    f"--- @{ref.path_str} ---\n{content}\n--- end @{ref.path_str} ---"
+                )
                 ref.content = block
                 context_parts.append(block)
                 total_size += len(content)

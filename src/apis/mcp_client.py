@@ -195,7 +195,9 @@ class MCPManager:
         cfg = server.config
         transport = cfg.get("transport", "stdio")
         if transport != "stdio":
-            raise NotImplementedError(f"transport '{transport}' not supported yet (only stdio)")
+            raise NotImplementedError(
+                f"transport '{transport}' not supported yet (only stdio)"
+            )
         if not cfg.get("command"):
             raise ValueError("server config missing 'command'")
 
@@ -213,7 +215,9 @@ class MCPManager:
             from mcp.client.stdio import stdio_client
         except ImportError:
             if not ready.done():
-                ready.set_exception(RuntimeError("mcp package not installed. Run: uv add mcp"))
+                ready.set_exception(
+                    RuntimeError("mcp package not installed. Run: uv add mcp")
+                )
             return
 
         from contextlib import AsyncExitStack
@@ -250,7 +254,9 @@ class MCPManager:
             try:
                 await stack.aclose()
             except Exception:
-                logger.debug("mcp stack aclose after connect failure failed", exc_info=True)
+                logger.debug(
+                    "mcp stack aclose after connect failure failed", exc_info=True
+                )
             if not ready.done():
                 ready.set_exception(e)
             return
@@ -337,7 +343,9 @@ class MCPManager:
 
     # ── вызов tool ──────────────────────────────────────────────
 
-    def call_tool(self, full_name: str, args: dict, timeout: float = 120.0) -> ToolResult:
+    def call_tool(
+        self, full_name: str, args: dict, timeout: float = 120.0
+    ) -> ToolResult:
         parsed = _parse_tool_name(full_name)
         if not parsed:
             return ToolResult(
@@ -518,7 +526,9 @@ def get_mcp_tool_schemas() -> list[dict]:
     """OpenAI-совместимые JSON-схемы для всех подключённых MCP-инструментов."""
     schemas = []
     for tool in list_mcp_tools():
-        desc = tool.description or f"MCP tool '{tool.name}' from server '{tool.server_id}'"
+        desc = (
+            tool.description or f"MCP tool '{tool.name}' from server '{tool.server_id}'"
+        )
         # Префикс описания подсказывает модели источник
         desc = f"[MCP/{tool.server_id}] {desc}"
         schemas.append(
@@ -527,7 +537,8 @@ def get_mcp_tool_schemas() -> list[dict]:
                 "function": {
                     "name": tool.full_name,
                     "description": desc,
-                    "parameters": tool.input_schema or {"type": "object", "properties": {}},
+                    "parameters": tool.input_schema
+                    or {"type": "object", "properties": {}},
                 },
             }
         )

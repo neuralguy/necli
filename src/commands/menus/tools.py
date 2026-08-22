@@ -42,7 +42,9 @@ async def tools_interactive():
             [
                 {
                     "label": _("tools.disable") if enabled else _("tools.enable"),
-                    "hint": _("tools.disable_hint") if enabled else _("tools.enable_hint"),
+                    "hint": _("tools.disable_hint")
+                    if enabled
+                    else _("tools.enable_hint"),
                     "icon": "○" if enabled else "●",
                     "icon_style": "warning" if enabled else "success",
                     "action": True,

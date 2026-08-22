@@ -32,7 +32,9 @@ def math_tokens_of(xml: str) -> list[str]:
 
 # ---------- OMML -> MathML ----------
 def _content_children(node):
-    return [c for c in children_of(node) if name_of(c) and not name_of(c).endswith("Pr")]
+    return [
+        c for c in children_of(node) if name_of(c) and not name_of(c).endswith("Pr")
+    ]
 
 
 def _mml_children(nodes):
@@ -94,9 +96,13 @@ def _run_text_to_mml(text, plain):
 
 def _run_to_mml(run):
     sty = _prop_val(run, "m:rPr", "m:sty")
-    plain = sty == "p" or find_child(find_child(run, "m:rPr") or {}, "m:nor") is not None
+    plain = (
+        sty == "p" or find_child(find_child(run, "m:rPr") or {}, "m:nor") is not None
+    )
     return "".join(
-        _run_text_to_mml(text_of(c), plain) for c in children_of(run) if name_of(c) == "m:t"
+        _run_text_to_mml(text_of(c), plain)
+        for c in children_of(run)
+        if name_of(c) == "m:t"
     )
 
 
@@ -402,7 +408,10 @@ MATH_STYLE_SPECIALS = {
     },
     "mathfrak": {"C": "ℭ", "H": "ℌ", "I": "ℑ", "R": "ℜ", "Z": "ℨ"},
 }
-MATH_STYLE_NAMES = {"mathcal": "MATHEMATICAL SCRIPT", "mathfrak": "MATHEMATICAL FRAKTUR"}
+MATH_STYLE_NAMES = {
+    "mathcal": "MATHEMATICAL SCRIPT",
+    "mathfrak": "MATHEMATICAL FRAKTUR",
+}
 
 
 def _styled_math_text(style: str, value: str) -> str:
@@ -432,7 +441,8 @@ def _styled_math_text(style: str, value: str) -> str:
                 result.append(chr(digits + ord(character) - ord("0")))
             else:
                 raise LatexError(
-                    f"\\{style} supports only Latin letters" + (" and digits" if digits else "")
+                    f"\\{style} supports only Latin letters"
+                    + (" and digits" if digits else "")
                 )
             continue
         if style in MATH_STYLE_NAMES and character.isascii() and character.isalpha():
@@ -442,7 +452,9 @@ def _styled_math_text(style: str, value: str) -> str:
                 continue
             case = "CAPITAL" if character.isupper() else "SMALL"
             result.append(
-                unicodedata.lookup(f"{MATH_STYLE_NAMES[style]} {case} {character.upper()}")
+                unicodedata.lookup(
+                    f"{MATH_STYLE_NAMES[style]} {case} {character.upper()}"
+                )
             )
             continue
         raise LatexError(f"\\{style} supports only Latin letters")
@@ -650,9 +662,13 @@ def _parse_sequence(p, stop):
                     f"<m:sSubSup><m:e>{base}</m:e><m:sub>{sub}</m:sub><m:sup>{sup}</m:sup></m:sSubSup>"
                 )
             elif ch == "^":
-                atoms.append(f"<m:sSup><m:e>{base}</m:e><m:sup>{script}</m:sup></m:sSup>")
+                atoms.append(
+                    f"<m:sSup><m:e>{base}</m:e><m:sup>{script}</m:sup></m:sSup>"
+                )
             else:
-                atoms.append(f"<m:sSub><m:e>{base}</m:e><m:sub>{script}</m:sub></m:sSub>")
+                atoms.append(
+                    f"<m:sSub><m:e>{base}</m:e><m:sub>{script}</m:sub></m:sSub>"
+                )
             continue
         atoms.append(_parse_atom(p))
     return "".join(atoms)
@@ -750,7 +766,8 @@ def _matrix_omml(p, env):
         return matrix
     return (
         "<m:d><m:dPr>" + f'<m:begChr m:val="{escape_xml_attr(delims[0])}"/>'
-        f'<m:endChr m:val="{escape_xml_attr(delims[1])}"/>' + f"</m:dPr><m:e>{matrix}</m:e></m:d>"
+        f'<m:endChr m:val="{escape_xml_attr(delims[1])}"/>'
+        + f"</m:dPr><m:e>{matrix}</m:e></m:d>"
     )
 
 
@@ -900,7 +917,8 @@ def _parse_control(p):
         end = _read_delimiter(p)
         return (
             "<m:d><m:dPr>" + f'<m:begChr m:val="{escape_xml_attr(beg)}"/>'
-            f'<m:endChr m:val="{escape_xml_attr(end)}"/>' + f"</m:dPr><m:e>{body}</m:e></m:d>"
+            f'<m:endChr m:val="{escape_xml_attr(end)}"/>'
+            + f"</m:dPr><m:e>{body}</m:e></m:d>"
         )
     if name == "substack":
         return _substack_omml(p)
@@ -942,7 +960,11 @@ def latex_to_omml(latex: str) -> str:
 
 def math_paragraph_xml(omml: str, align="center") -> str:
     val = str(align or "center")
-    jc = "" if val == "center" else f'<w:pPr><w:jc w:val="{escape_xml_attr(val)}"/></w:pPr>'
+    jc = (
+        ""
+        if val == "center"
+        else f'<w:pPr><w:jc w:val="{escape_xml_attr(val)}"/></w:pPr>'
+    )
     return (
         f'<w:p>{jc}<m:oMathPara><m:oMathParaPr><m:jc m:val="{escape_xml_attr(val)}"/></m:oMathParaPr>'
         f"<m:oMath>{omml}</m:oMath></m:oMathPara></w:p>"

@@ -93,7 +93,14 @@ _PROVIDER_PRESETS = [
         "openai_compatible",
         "openai",
     ),
-    ("xai", "xAI Grok", "api.x.ai", "https://api.x.ai/v1", "openai_compatible", "openai"),
+    (
+        "xai",
+        "xAI Grok",
+        "api.x.ai",
+        "https://api.x.ai/v1",
+        "openai_compatible",
+        "openai",
+    ),
     (
         "ollama",
         "Ollama 🏠",
@@ -148,7 +155,9 @@ def _hero_panel(step: int, total: int, title_key: str) -> Panel:
             line2.append("○", style=muted)
         if i < total:
             line2.append(" ─ ", style=muted)
-    line2.append(f"   {_('onboarding.step', n=step, total=total)}: {_(title_key)}", style="dim")
+    line2.append(
+        f"   {_('onboarding.step', n=step, total=total)}: {_(title_key)}", style="dim"
+    )
 
     body = Text("\n").join([line1, line2])
     return Panel(Align.left(body), border_style=accent, padding=(1, 2))
@@ -183,7 +192,15 @@ async def _step_language(start: int = 0) -> tuple[bool, int]:
 
 def _theme_list_panel(names: list[str], selected: int, current: str, width: int) -> str:
     bg_select = tc("bg_select")
-    swatch_roles = ("accent", "success", "warning", "error", "info", "magenta", "purple")
+    swatch_roles = (
+        "accent",
+        "success",
+        "warning",
+        "error",
+        "info",
+        "magenta",
+        "purple",
+    )
 
     table = Table(
         show_header=False,
@@ -231,7 +248,11 @@ def _theme_list_panel(names: list[str], selected: int, current: str, width: int)
     )
     buf = StringIO()
     Console(
-        file=buf, highlight=False, force_terminal=True, width=width, color_system="truecolor"
+        file=buf,
+        highlight=False,
+        force_terminal=True,
+        width=width,
+        color_system="truecolor",
     ).print(panel)
     return buf.getvalue()
 
@@ -288,8 +309,12 @@ async def _step_provider(start: int = 0) -> tuple[bool, int]:
 
     _show_hero(3, 3, "onboarding.title_provider")
 
-    items = [{"label": name, "hint": host} for _pid, name, host, *_ in _PROVIDER_PRESETS]
-    items.append({"label": _("onboarding.skip_provider"), "hint": _("onboarding.skip_hint")})
+    items = [
+        {"label": name, "hint": host} for _pid, name, host, *_ in _PROVIDER_PRESETS
+    ]
+    items.append(
+        {"label": _("onboarding.skip_provider"), "hint": _("onboarding.skip_hint")}
+    )
 
     choice = await overlays.select_menu(
         items,
@@ -366,7 +391,9 @@ async def _ask_chatgpt_login() -> None:
     except ChatGPTAuthError as exc:
         print_static(f"[{tc('warning')}]⚠[/{tc('warning')}] {exc}")
     else:
-        print_static(f"[{tc('success')}]✓[/{tc('success')}] {_('api.chatgpt_connected')}")
+        print_static(
+            f"[{tc('success')}]✓[/{tc('success')}] {_('api.chatgpt_connected')}"
+        )
 
 
 def _ensure_default_provider() -> None:
@@ -381,7 +408,9 @@ def _ensure_default_provider() -> None:
             if pid:
                 defn = get_definition(pid)
                 if defn:
-                    model_id = defn.default_model or (defn.models[0].id if defn.models else "")
+                    model_id = defn.default_model or (
+                        defn.models[0].id if defn.models else ""
+                    )
                     if model_id:
                         config.set_active_api(pid)
                         config.set_active_api_model(model_id)

@@ -149,7 +149,9 @@ async def show_history(session: Session, n: int) -> None:
 
     # Группируем: каждый USER → ASSISTANT...→ TOOL_RESULT...→ ASSISTANT...
     # Действие = одно сообщение (user/assistant/tool_result), отображаем раздельно.
-    msgs = [m for m in session.messages if m.role in ("user", "assistant", "tool_result")]
+    msgs = [
+        m for m in session.messages if m.role in ("user", "assistant", "tool_result")
+    ]
     if not msgs:
         return
 
@@ -157,7 +159,8 @@ async def show_history(session: Session, n: int) -> None:
 
     # Блок без рамки и линеек-разделителей показывается как динамическое notice.
     title = Text(
-        "  " + _("history.title", n=len(selected), total=len(msgs)), style=f"bold {t('accent')}"
+        "  " + _("history.title", n=len(selected), total=len(msgs)),
+        style=f"bold {t('accent')}",
     )
     body = Text()
     for i, msg in enumerate(selected):
@@ -169,10 +172,10 @@ async def show_history(session: Session, n: int) -> None:
             body.append(f"  👤 {_('history.user')}\n", style=f"bold {t('user')}")
             body.append(_indent(msg.content))
         elif msg.role == "assistant":
-            body.append(f"  🤖 {_('history.assistant')}\n", style=f"bold {t('accent')}")
+            body.append(f"  ◉ {_('history.assistant')}\n", style=f"bold {t('accent')}")
             body.append(_render_assistant(msg.content))
         elif msg.role == "tool_result":
-            body.append(f"  ⚙ {_('history.tool')} → ", style=f"bold {t('success')}")
+            body.append(f"  ⚙︎ {_('history.tool')} → ", style=f"bold {t('success')}")
             body.append(_render_tool_result(msg.content), style="dim")
 
     shell = get_shell()

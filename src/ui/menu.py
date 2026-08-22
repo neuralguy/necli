@@ -1,16 +1,18 @@
-"""Интерактивные меню.
+"""Interactive menus.
 
-Панельные виджеты (`select_session_menu`, `select_api_model_menu`) живут в
-нижней зоне постоянного Application — см. `ui/shell.py`.
+Panel widgets (`select_session_menu`, `select_api_model_menu`) live in the
+bottom zone of the persistent Application — see `ui/shell.py`.
 
-Здесь же лежат текстовые примитивы безрамочных виджетов (`cell`, `pad`, `fit`,
-`row_line`, `section_line`). Они нужны и меню в `commands/menus/*`, поэтому
-живут в ui-слое: обратная зависимость `ui → commands` закольцевала бы импорты,
-так как `ui/overlays.py` откатывается на этот модуль в headless-режиме.
+This module also hosts the text primitives of the borderless widgets (`cell`,
+`pad`, `fit`, `row_line`, `section_line`). They are needed by the menus in
+`commands/menus/*` as well, so they live in the ui layer: a reverse dependency
+`ui → commands` would have cycled the imports, since `ui/overlays.py` falls
+back to this module in headless mode.
 
-Синхронные `select_menu` и `_panel_menu_direct` остаются рабочими: пока
-Application не поднят (headless, не-TTY, ранний старт, онбординг), рисовать
-некому, и `ui/overlays.py` сознательно падает обратно на них.
+The synchronous `select_menu` and `_panel_menu_direct` remain functional:
+while the Application is not up (headless, non-TTY, early start, onboarding)
+there is nothing to render, and `ui/overlays.py` deliberately falls back to
+them.
 """
 
 import asyncio
@@ -49,17 +51,18 @@ from ui.overlays import (
 logger = logging.getLogger(__name__)
 
 
-# ─────────────── мост «синхронный вызывающий → асинхронный виджет» ───────────
-# Виджеты стали корутинами, но два пути к ним остались синхронными и переписать
-# их здесь нельзя: исполнение инструментов (`executor._execute_single`) и первый
-# запуск (click-команда `interactive` зовёт онбординг ДО `asyncio.run`).
-# Поэтому мост, а не «await» через силу. Как только `_execute_single` станет
-# корутиной — вызовы через `run_ui_sync` заменяются на прямой await, и всё это
-# уходит целиком.
+# ─────────────── bridge «synchronous caller → async widget» ───────────
+# The widgets became coroutines, but two call paths into them are still
+# synchronous and cannot be rewritten here: tool execution
+# (`executor._execute_single`) and first startup (the click command
+# `interactive` calls onboarding BEFORE `asyncio.run`).
+# Hence a bridge rather than a forced "await". As soon as `_execute_single`
+# becomes a coroutine, calls through `run_ui_sync` are replaced with a direct
+# await and all of this goes away entirely.
 
 
 def _shell_loop():
-    """Event loop, в котором крутится Application, либо None."""
+    """The event loop the Application runs in, or None."""
     try:
         from ui.shell import get_shell
 
@@ -74,11 +77,12 @@ def _shell_loop():
 
 
 def _drive_without_loop(coro):
-    """Прокрутить корутину, которая обязана завершиться без единого await.
+    """Drive a coroutine that must complete without a single await.
 
-    Так и происходит, когда `get_shell()` пуст: оверлеи внутри уходят на
-    синхронный путь и ничего не ждут. Если корутина всё же ушла в await —
-    честно падаем, а не вешаемся: без работающего loop'а её никто не разбудит.
+    That is exactly what happens when `get_shell()` is empty: the overlays
+    inside take the synchronous path and wait for nothing. If the coroutine
+    does hit an await — fail honestly instead of hanging: without a running
+    loop nothing will ever wake it up.
     """
     try:
         coro.send(None)
@@ -89,21 +93,24 @@ def _drive_without_loop(coro):
 
 
 def _run_detached(coro):
-    """Синхронный вызывающий сидит В loop'е Application — отдать оверлей нельзя.
+    """A synchronous caller sitting INSIDE the Application loop — no overlay allowed.
 
-    Так исполняются fenced-инструменты: `apis/_retry` зовёт `on_chunk`
-    синхронно из корутины стрима, дальше `stream.on_text_update` →
-    `executor._execute_single`. Пока мы здесь, loop стоит, клавиш Application не
-    разбирает, и оверлей никогда не получит ответ. Докрутить loop руками asyncio
-    не даёт («Cannot enter into task … while another task is being executed»).
+    This is how fenced tools run: `apis/_retry` calls `on_chunk` synchronously
+    from the stream coroutine, then `stream.on_text_update` →
+    `executor._execute_single`. While we are here the loop is blocked, it does
+    not process Application keys, and the overlay would never get a reply.
+    asyncio refuses to spin the loop by hand ("Cannot enter into task … while
+    another task is being executed").
 
-    Поэтому на этот один вызов честно откатываемся к прежнему поведению: гасим
-    отрисовку Application, снимаем singleton (виджеты уходят синхронным путём),
-    возвращаем настоящие stdout/stderr вместо прокси patch_stdout — тот
-    складывает вывод в буфер и сливает его через loop, который стоит. После
-    ответа singleton возвращается, Application перерисовывается.
+    So for this single call we honestly fall back to the previous behavior:
+    silence Application rendering, drop the singleton (widgets take the
+    synchronous path), restore the real stdout/stderr instead of the
+    patch_stdout proxy — it buffers output and flushes it through the loop,
+    which is blocked. After the response the singleton is restored and the
+    Application is redrawn.
 
-    Уйдёт вместе с этой функцией, как только `_execute_single` станет корутиной.
+    Will disappear together with this function as soon as `_execute_single`
+    becomes a coroutine.
     """
     from ui.shell import Shell
 
@@ -129,7 +136,7 @@ def _run_detached(coro):
 
 
 def run_ui_sync(coro):
-    """Выполнить корутину виджета из синхронного кода и вернуть её результат."""
+    """Run a widget coroutine from synchronous code and return its result."""
     try:
         running = asyncio.get_running_loop()
     except RuntimeError:
@@ -140,14 +147,14 @@ def run_ui_sync(coro):
 
     loop = _shell_loop()
     if loop is not None and loop.is_running():
-        # Рабочий поток executor'а: блокируем только его, loop живёт дальше и
-        # спокойно рисует оверлей.
+        # Executor worker thread: we block only it; the loop keeps running and
+        # quietly renders the overlay.
         return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
-    # Loop'а нет вовсе — обычный ранний старт (онбординг) или headless.
-    # Если singleton Shell'а всё ещё висит, но его loop уже мёртв (выход из
-    # приложения), оверлеи ждали бы клавиш от несуществующего Application,
-    # поэтому на время прогона снимаем singleton.
+    # No loop at all — a normal early start (onboarding) or headless.
+    # If the Shell singleton is still hanging around but its loop is already
+    # dead (app exit), overlays would wait for keys from a nonexistent
+    # Application, so we drop the singleton for the duration of the run.
     from ui.shell import Shell
 
     stale = Shell.instance()

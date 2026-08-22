@@ -4,10 +4,10 @@ import os
 import sys
 
 _STATUS_EMOJI = {
-    "idle": "💤",
-    "working": "⚙️",
-    "poll": "❓",
-    "done": "✅",
+    "idle": "∼",
+    "working": "⚙︎",
+    "poll": "?",
+    "done": "✓",
 }
 _CURRENT_STATUS = "idle"
 

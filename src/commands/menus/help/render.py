@@ -35,13 +35,13 @@ def render_block(block: HBlock, width: int) -> list[str]:
 
     if kind == "tip":
         lines = _wrap_text(block.content, w - 3)
-        return ["💡 " + paint(lines[0], "success")] + [
+        return ["✦ " + paint(lines[0], "success")] + [
             "   " + paint(ln, "success") for ln in lines[1:]
         ]
 
     if kind == "warn":
         lines = _wrap_text(block.content, w - 3)
-        return ["⚠ " + paint(lines[0], "warning")] + [
+        return ["⚠︎ " + paint(lines[0], "warning")] + [
             "  " + paint(ln, "warning") for ln in lines[1:]
         ]
 
@@ -66,17 +66,17 @@ def render_block(block: HBlock, width: int) -> list[str]:
         lines = block.content.split("\n")
         out = []
         for ln in lines:
-            if ln.startswith(("●", "🔧", "⏺")):
+            if ln.startswith(("●", "⚒︎")):
                 out.append(paint(ln, "success"))
             elif ln.startswith("❯"):
                 out.append(paint(ln, "accent", bold=True))
             elif ln.strip().startswith("⎿"):
                 out.append(paint(ln, "dim_text"))
-            elif ln.startswith("💭"):
+            elif ln.startswith("⋯"):
                 out.append(paint(ln, "purple"))
-            elif ln.startswith("🤖"):
+            elif ln.startswith("◉"):
                 out.append(paint(ln, "magenta"))
-            elif ln.startswith("⚠"):
+            elif ln.startswith(("⚠", "⚠︎")):
                 out.append(paint(ln, "warning"))
             else:
                 out.append(ln)

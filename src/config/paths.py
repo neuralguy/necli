@@ -40,6 +40,7 @@ APIS_FILE = BASE_DIR / "apis.json"
 CHATGPT_AUTH_FILE = BASE_DIR / "chatgpt_auth.json"
 UI_FILE = BASE_DIR / "ui.json"
 HOOKS_FILE = BASE_DIR / "hooks.json"
+USER_PROMPT_FILE = BASE_DIR / "user_prompt.md"
 MEMORY_DIR = BASE_DIR / "memory"
 
 
@@ -109,7 +110,9 @@ def _seed_bundled(rel: str) -> None:
     try:
         shutil.copytree(src, dst)
     except OSError as exc:
-        logger.warning("Не удалось скопировать встроенный ресурс %s → %s: %s", src, dst, exc)
+        logger.warning(
+            "Не удалось скопировать встроенный ресурс %s → %s: %s", src, dst, exc
+        )
 
 
 def ensure_dirs() -> None:

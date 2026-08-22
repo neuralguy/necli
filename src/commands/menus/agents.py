@@ -43,9 +43,13 @@ async def agents_interactive():
             }
             for p in presets
         ]
-        items.append({"label": "Create preset...", "hint": str(get_agents_dir()), "action": True})
+        items.append(
+            {"label": "Create preset...", "hint": str(get_agents_dir()), "action": True}
+        )
 
-        choice = await card_menu(items, title="Agent presets", facts=[f"{len(presets)} preset(s)"])
+        choice = await card_menu(
+            items, title="Agent presets", facts=[f"{len(presets)} preset(s)"]
+        )
         if choice is None:
             return
         if choice == len(presets):

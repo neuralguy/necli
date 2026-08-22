@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import textwrap
 
 from rich.console import Group
 from rich.panel import Panel
@@ -12,6 +13,8 @@ from rich.text import Text
 from agent.display import (
     SPINNER_FRAMES,
     TOOL_DISPLAY,
+    _apply_create_background,
+    _format_path_for_title,
     is_block_expanded,
 )
 from agent.markdown import ResponseMarkdown
@@ -30,13 +33,19 @@ from config.ui import ui
 THINKING_FRAMES = SPINNER_FRAMES
 
 
-_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+(?:\s*:?-{3,}:?\s*)?\|?\s*$")
+_TABLE_SEPARATOR_RE = re.compile(
+    r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+(?:\s*:?-{3,}:?\s*)?\|?\s*$"
+)
 
 
 def _starts_table(text: str) -> bool:
     """Return whether the first two lines form a GitHub-flavored table."""
     lines = text.splitlines()
-    return len(lines) >= 2 and "|" in lines[0] and bool(_TABLE_SEPARATOR_RE.match(lines[1]))
+    return (
+        len(lines) >= 2
+        and "|" in lines[0]
+        and bool(_TABLE_SEPARATOR_RE.match(lines[1]))
+    )
 
 
 def _is_markdown_block(first_line: str, rest: str) -> bool:
@@ -133,7 +142,11 @@ def _compact_stream_block(text):
     if total <= max_visible:
         return text
     skipped = total - max_visible
-    return _i18n("stream.lines_above", n=skipped) + "\n\n" + "\n".join(lines[-max_visible:])
+    return (
+        _i18n("stream.lines_above", n=skipped)
+        + "\n\n"
+        + "\n".join(lines[-max_visible:])
+    )
 
 
 def _extract_path_from_body(body):
@@ -142,7 +155,7 @@ def _extract_path_from_body(body):
 
 
 _PATCH_SECTION_RE = re.compile(
-    r"^[ \t]*---[ \t]+(FIND|REPLACE|INSERT)[ \t]+---[ \t]*$",
+    r"^[ \t]*---[ \t]+(FIND|REPLACE)[ \t]+---[ \t]*$",
     re.MULTILINE,
 )
 
@@ -161,16 +174,25 @@ def _lang_from_path(path: str | None) -> str:
 def _partial_json_arguments(body: str) -> list[tuple[str, str]]:
     """Extract complete and in-progress JSON arguments without exposing the call syntax."""
     values: list[tuple[str, str]] = []
-    for match in re.finditer(r'"([^"\\]+)"\s*:\s*(?:"((?:\\.|[^"\\])*)"|([^,}\]\s"]+))', body):
+    for match in re.finditer(
+        r'"([^"\\]+)"\s*:\s*(?:"((?:\\.|[^"\\])*)"|([^,}\]\s"]+))', body
+    ):
         key, quoted, bare = match.groups()
         value = quoted if quoted is not None else bare
-        values.append((key, value.replace(r"\n", "\n").replace(r"\t", "\t").replace(r"\"", '"')))
+        values.append(
+            (key, value.replace(r"\n", "\n").replace(r"\t", "\t").replace(r"\"", '"'))
+        )
     if values:
         return values
 
     partial = re.search(r'"([^"\\]+)"\s*:\s*"((?:\\.|[^"\\])*)$', body)
     if partial:
-        return [(partial.group(1), partial.group(2).replace(r"\n", "\n").replace(r"\t", "\t"))]
+        return [
+            (
+                partial.group(1),
+                partial.group(2).replace(r"\n", "\n").replace(r"\t", "\t"),
+            )
+        ]
     return []
 
 
@@ -199,6 +221,8 @@ def _render_partial_arguments(
         for key, value in args[-8:]:
             row = Text("  ")
             row.append(f"{key}: ", style="dim")
+            if key in {"path", "file", "file_path"}:
+                value = _format_path_for_title(value)
             row.append(value, style=t("dim_text"))
             rows.append(row)
     return Group(*rows)
@@ -227,7 +251,7 @@ def _format_patch_body_for_stream(body: str, attrs_header: str):
         if start < len(body) and body[start] == "\n":
             start += 1
         end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-        content = body[start:end].rstrip("\n")
+        content = textwrap.dedent(body[start:end].rstrip("\n"))
         pref_del = ui.get("diff_colors.prefix_delete", "- ")
         pref_add = ui.get("diff_colors.prefix_add", "+ ")
         prefix = {"FIND": pref_del, "REPLACE": pref_add, "INSERT": pref_add}[kind]
@@ -277,7 +301,10 @@ def _decode_json_body_for_display(body, tool_name, attrs_header: str = ""):
     stripped = body.lstrip()
     if stripped.startswith(("{", "[")):
         decoded = (
-            body.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"').replace("\\\\", "\\")
+            body.replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace('\\"', '"')
+            .replace("\\\\", "\\")
         )
         return decoded, file_path, "text"
     return body, file_path, "text"
@@ -329,7 +356,7 @@ def _tool_header(
     header.append(display_name, style=f"bold {color}")
     if file_path:
         header.append("(", style=f"bold {color}")
-        header.append(file_path, style=f"bold {color}")
+        header.append(_format_path_for_title(file_path), style=f"bold {color}")
         header.append(")", style=f"bold {color}")
     if elapsed_seconds > 0:
         header.append(
@@ -348,7 +375,7 @@ def _render_compact_write_preview(
 ):
     """Compact-стрим для write_file/create_file — формат как в финале.
 
-    ✨ Create(path)  N.Ns
+    ✦ Create(path)  N.Ns
         ... N lines
         1 line one
         2 line two
@@ -357,14 +384,24 @@ def _render_compact_write_preview(
     from agent.display import COMPACT_PREVIEW_LINES
     from agent.syntax import _EXT_LEXER_MAP
 
-    cpl = None if is_block_expanded(tool_name) else (COMPACT_PREVIEW_LINES() if callable(COMPACT_PREVIEW_LINES) else COMPACT_PREVIEW_LINES)
+    cpl = (
+        None
+        if is_block_expanded(tool_name)
+        else (
+            COMPACT_PREVIEW_LINES()
+            if callable(COMPACT_PREVIEW_LINES)
+            else COMPACT_PREVIEW_LINES
+        )
+    )
     display_name, color = TOOL_DISPLAY.get(tool_name, ("Tool", t("warning")))
     raw_lines = display_text.split("\n")
     if raw_lines and raw_lines[-1] == "":
         raw_lines = raw_lines[:-1]
     total = len(raw_lines)
 
-    header = _tool_header(display_name, color, file_path, elapsed_seconds, spinner_frame)
+    header = _tool_header(
+        display_name, color, file_path, elapsed_seconds, spinner_frame
+    )
 
     parts = [header]
 
@@ -375,7 +412,9 @@ def _render_compact_write_preview(
     lexer = _EXT_LEXER_MAP.get(ext_m.group(1).lower(), "text") if ext_m else "text"
 
     tail_n = cpl
-    tail_lines = raw_lines[-tail_n:] if cpl is not None and total > tail_n else raw_lines
+    tail_lines = (
+        raw_lines[-tail_n:] if cpl is not None and total > tail_n else raw_lines
+    )
     start_idx = total - len(tail_lines) + 1
     num_w = len(str(total))
 
@@ -396,9 +435,16 @@ def _render_compact_write_preview(
             ).highlight(ln or " ")
             if code.plain.endswith("\n"):
                 code.right_crop(1)
-            parts.append(num + code)
+            code_width = max(
+                1, shutil.get_terminal_size((80, 24)).columns - len(num.plain)
+            )
+            parts.append(num + _apply_create_background(code, width=code_width))
         except Exception:
-            parts.append(num + Text(ln))
+            text = Text(ln)
+            code_width = max(
+                1, shutil.get_terminal_size((80, 24)).columns - len(num.plain)
+            )
+            parts.append(num + _apply_create_background(text, width=code_width))
 
     return Group(*parts)
 
@@ -424,9 +470,6 @@ def _patch_preview_args_from_body(body: str, file_path: str | None) -> dict | No
         pairs: list[dict[str, str]] = []
         pending_find = None
         for kind, content in sections:
-            if kind == "INSERT":
-                args["insert"] = content
-                return args
             if kind == "FIND":
                 pending_find = content
             elif kind == "REPLACE" and pending_find is not None:
@@ -434,9 +477,7 @@ def _patch_preview_args_from_body(body: str, file_path: str | None) -> dict | No
                 pending_find = None
         if pending_find is not None:
             pairs.append({"find": pending_find, "replace": ""})
-        if len(pairs) == 1:
-            args.update(pairs[0])
-        elif pairs:
+        if pairs:
             args["patches"] = pairs
         return args if len(args) > 1 else None
 
@@ -448,23 +489,45 @@ def _patch_preview_args_from_body(body: str, file_path: str | None) -> dict | No
             if isinstance(decoded, dict):
                 data = decoded
         except json.JSONDecodeError:
-            # While a native call is streaming, complete scalar string
-            # arguments are still useful for a live find/replace preview.
-            partial = dict(_partial_json_arguments(body))
-            if "find" in partial and "replace" in partial:
-                data = partial
-            elif "insert" in partial:
-                data = partial
+            # An unfinished patches array is counted directly from the streamed
+            # body below; there is no second patch shape to reconstruct.
+            data = None
     if not isinstance(data, dict):
         return None
 
     args = {"path": str(data.get("path") or file_path or "")}
-    for key in ("find", "replace", "patches", "insert", "line", "delete_lines"):
-        if key in data:
-            args[key] = data[key]
-    if not any(key in args for key in ("find", "patches", "insert", "delete_lines")):
+    if "patches" not in data:
         return None
+    args["patches"] = data["patches"]
     return args
+
+
+def _patch_stream_stats(body: str, args: dict | None) -> tuple[int, int]:
+    """Best-effort (patch count, changed-line count) for a partial tool call."""
+    patches = (args or {}).get("patches") if isinstance(args, dict) else None
+    if isinstance(patches, list):
+        count = 0
+        lines = 0
+        for patch in patches:
+            if not isinstance(patch, dict):
+                continue
+            count += 1
+            old = str(patch.get("find") or "").splitlines()
+            new = str(patch.get("replace") or "").splitlines()
+            lines += max(len(old), len(new), 1)
+        return count, lines
+    # Native JSON is often incomplete and not parseable yet.  Count complete
+    # `find` keys in the patches array so the one-line indicator still grows.
+    count = len(re.findall(r'"find"\s*:', body or ""))
+    if count:
+        line_count = len((body or "").splitlines())
+        return count, max(count, line_count)
+
+    # Fenced calls: a FIND starts a patch even before REPLACE has finished.
+    find_count = len(re.findall(r"(?m)^---\s*FIND\s*---\s*$", body or ""))
+    if find_count:
+        return find_count, max(find_count, len((body or "").splitlines()))
+    return 0, 0
 
 
 def _render_compact_patch_preview(
@@ -474,27 +537,23 @@ def _render_compact_patch_preview(
     elapsed_seconds: float,
     spinner_frame: str,
 ):
-    """Compact-стрим для patch_file — финальный формат diff'а с минусами/плюсами."""
-    import tools as _tools
-    from agent.display import _compact_patch_preview
-
+    """Dynamic patch indicator: one stable line, like shell execution."""
     display_name, color = TOOL_DISPLAY.get("patch_file", ("Tool", t("warning")))
-
-    header = _tool_header(display_name, color, file_path, elapsed_seconds, spinner_frame)
-
     args = _patch_preview_args_from_body(body, file_path)
-    if args is None:
-        return Group(header)
-
-    fake_result = _tools.ToolResult(
-        name="patch_file",
-        status="ok",
-        output="",
-        exit_code=0,
-        command="patch_file",
+    resolved_path = str((args or {}).get("path") or file_path or "") or None
+    header = _tool_header(
+        display_name, color, resolved_path, elapsed_seconds, spinner_frame
     )
-    preview = _compact_patch_preview(args, fake_result)
-    return Group(header, *preview)
+    patch_count, line_count = _patch_stream_stats(body, args)
+    if patch_count:
+        header.append(
+            f" · {patch_count} patch{'es' if patch_count != 1 else ''}", style="dim"
+        )
+    if line_count:
+        header.append(
+            f" · {line_count} line{'s' if line_count != 1 else ''}", style="dim"
+        )
+    return Group(header)
 
 
 def _shorten_subagent_text(value: object, limit: int = 72) -> str:
@@ -537,7 +596,9 @@ def _extract_subagent_tasks_for_stream(body: str) -> list[dict]:
     return []
 
 
-def _render_subagent_partial_preview(body: str, elapsed_seconds: float, spinner_frame: str):
+def _render_subagent_partial_preview(
+    body: str, elapsed_seconds: float, spinner_frame: str
+):
     tasks = _extract_subagent_tasks_for_stream(body)
     total = len(tasks)
     title_color = TOOL_DISPLAY.get("subagent", ("Subagent", t("magenta")))[1]
@@ -562,7 +623,9 @@ def _render_subagent_partial_preview(body: str, elapsed_seconds: float, spinner_
     else:
         max_rows = 8
         for idx, task in enumerate(tasks[:max_rows], start=1):
-            role = _shorten_subagent_text(task.get("role") or task.get("preset") or "agent", 18)
+            role = _shorten_subagent_text(
+                task.get("role") or task.get("preset") or "agent", 18
+            )
             mode = _shorten_subagent_text(task.get("mode") or "agent", 10)
             model = _shorten_subagent_text(task.get("model") or "", 18)
             label = _shorten_subagent_text(
@@ -584,7 +647,10 @@ def _render_subagent_partial_preview(body: str, elapsed_seconds: float, spinner_
             rows.append(row)
         if total > max_rows:
             rows.append(
-                Text(f"      … +{total - max_rows} agents", style=f"italic {t('dim_text')}")
+                Text(
+                    f"      … +{total - max_rows} agents",
+                    style=f"italic {t('dim_text')}",
+                )
             )
 
     return Panel(
@@ -593,7 +659,10 @@ def _render_subagent_partial_preview(body: str, elapsed_seconds: float, spinner_
         padding=(0, 1),
         width=max(
             40,
-            min(int(ui.get("subagent.max_width", 100)), shutil.get_terminal_size((80, 24)).columns),
+            min(
+                int(ui.get("subagent.max_width", 100)),
+                shutil.get_terminal_size((80, 24)).columns,
+            ),
         ),
     )
 
@@ -614,7 +683,9 @@ def render_partial_tool(
         return _render_subagent_partial_preview(body, elapsed_seconds, spinner_frame)
     display_name, color = TOOL_DISPLAY.get(tool_name, ("Tool", "yellow"))
 
-    display_text, file_path, lang = _decode_json_body_for_display(body, tool_name, attrs_header)
+    display_text, file_path, lang = _decode_json_body_for_display(
+        body, tool_name, attrs_header
+    )
 
     # Стрим для write/create — тот же формат, что и в финале
     if tool_name == "create_file":
@@ -639,7 +710,9 @@ def render_partial_tool(
     # JSON-инструменты получают те же читабельные argument rows в fenced и
     # native режимах, вместо промежуточного сырого JSON тела вызова.
     if tool_name != "shell" and body.lstrip().startswith(("{", "[")):
-        return _render_partial_arguments(body, tool_name, spinner_frame, elapsed_seconds)
+        return _render_partial_arguments(
+            body, tool_name, spinner_frame, elapsed_seconds
+        )
 
     lines = display_text.split("\n")
     total_lines = len(lines)
@@ -648,7 +721,11 @@ def render_partial_tool(
         lang = "text"
 
     cursor = ui.get("symbols.cursor", "\u258c")
-    compact = display_text if is_block_expanded(tool_name) else _compact_stream_block(display_text)
+    compact = (
+        display_text
+        if is_block_expanded(tool_name)
+        else _compact_stream_block(display_text)
+    )
     if tool_name == "shell" and "\n" not in display_text:
         code = f"$ {compact}{cursor}"
     else:
@@ -676,11 +753,15 @@ def render_partial_tool(
     if line_info:
         header.append(line_info, style="dim")
     return Group(
-        header, Text(ui.get("symbols.compact_separator_prefix", "└─"), style="dim"), syntax
+        header,
+        Text(ui.get("symbols.compact_separator_prefix", "└─"), style="dim"),
+        syntax,
     )
 
 
-def render_reasoning_panel(text: str, streaming: bool = False, elapsed: float | None = None):
+def render_reasoning_panel(
+    text: str, streaming: bool = False, elapsed: float | None = None
+):
     """Скрывает активный reasoning, сохраняя прежний статический рендер."""
     from rich.table import Table
 
@@ -689,8 +770,8 @@ def render_reasoning_panel(text: str, streaming: bool = False, elapsed: float | 
     from ui.formatting import latex_to_unicode
 
     muted = t("dim_text")
-    emoji = ui.get("symbols.thinking_emoji", "💭")
-    label = _i18n("ui.thinking") + " (raw)"
+    emoji = ui.get("symbols.thinking_emoji", "⋯")
+    label = _i18n("ui.thinking")
 
     raw = text
     if not raw.strip():
@@ -703,7 +784,7 @@ def render_reasoning_panel(text: str, streaming: bool = False, elapsed: float | 
     if is_compact:
         expanded = is_block_full("reasoning", compact=not is_expanded_preview())
         header = Text()
-        header.append(f"{emoji} {label}", style=f"bold {t('magenta')}")
+        header.append(f"{emoji} {label}", style=t("dim_alt"))
         prefix = ui.get("symbols.summary_prefix", "⎿  ")
         try:
             import os

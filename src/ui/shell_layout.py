@@ -22,7 +22,12 @@ from prompt_toolkit.layout.processors import AppendAutoSuggestion
 from .overlay import Overlay
 from .rendering import ansi_rows
 from .terminal import term_size
-from .text_layout import WordWrapProcessor, _word_wrapped_rows, clip_visible, visible_width
+from .text_layout import (
+    WordWrapProcessor,
+    _word_wrapped_rows,
+    clip_visible,
+    visible_width,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +155,8 @@ class ShellLayoutMixin:
 
         head = "─── "
         has_bar = all(
-            m in text for m in (BAR_FILLED_START, BAR_FILLED_END, BAR_EMPTY_START, BAR_EMPTY_END)
+            m in text
+            for m in (BAR_FILLED_START, BAR_FILLED_END, BAR_EMPTY_START, BAR_EMPTY_END)
         )
         if not has_bar:
             tail = max(0, w - len(head) - visible_width(text) - 1)
@@ -187,10 +193,10 @@ class ShellLayoutMixin:
 
     def _mode_prompt(self) -> str:
         if self.mode == "planning":
-            return "🧠plan"
+            return "◈ plan"
         if self.mode == "swarm":
-            return "🔮swarm"
-        return "🚀agent"
+            return "◊ swarm"
+        return "⇢ agent"
 
     def _prompt_fragments(self):
         if self.overlay:
@@ -198,7 +204,9 @@ class ShellLayoutMixin:
         out = [("class:mode", self._mode_prompt() + " "), ("class:arrow", "❯ ")]
         hint = self._queue_edit_hint()
         if hint:
-            out.append(("class:queue.hint", clip_visible(hint, max(1, self._width() - 2))))
+            out.append(
+                ("class:queue.hint", clip_visible(hint, max(1, self._width() - 2)))
+            )
         return out
 
     def _prompt_width(self) -> int:
@@ -243,7 +251,10 @@ class ShellLayoutMixin:
         return max(3, min(available, capped))
 
     def _confirm_exit_active(self) -> bool:
-        return self._confirm_exit_until is not None and time.monotonic() < self._confirm_exit_until
+        return (
+            self._confirm_exit_until is not None
+            and time.monotonic() < self._confirm_exit_until
+        )
 
     def _overlay_ansi(self) -> str:
         overlay = self.overlay
@@ -260,7 +271,13 @@ class ShellLayoutMixin:
         # вообще: большая таблица `/models` иначе рендерилась бы на каждом
         # кадре. Без версии (None) кэш живёт один кадр — этого достаточно,
         # чтобы лямбда высоты и контрол содержимого делили один рендер.
-        key = (id(overlay), version, w, budget, self._frame_id() if version is None else None)
+        key = (
+            id(overlay),
+            version,
+            w,
+            budget,
+            self._frame_id() if version is None else None,
+        )
         cached = self._ovl_cache
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -313,7 +330,9 @@ class ShellLayoutMixin:
         extra = 2 if self._confirm_exit_active() else 0
         if self.overlay is not None:
             return extra + (1 if (self._notice_text or self.overlay.hint()) else 0)
-        return extra + len(self._visible_rows()) + (1 if self._hidden_row_summary() else 0)
+        return (
+            extra + len(self._visible_rows()) + (1 if self._hidden_row_summary() else 0)
+        )
 
     def _frame_height(self) -> int:
         """У меню нет рамки поля ввода; у обычного ввода обе линии видимы."""
@@ -339,7 +358,7 @@ class ShellLayoutMixin:
         """
         if self.overlay is not None:
             return 0
-        # Поле ввода лежит справа от промпта ("🚀agent ❯"), поэтому перенос
+        # Поле ввода лежит справа от промпта ("⇢ agent ❯"), поэтому перенос
         # происходит на ширине width - prompt_width, а не width - 2. Если
         # считать не ту ширину, строка, которую рендер уже завернул, попадает
         # в расчёт одной строкой — окно ввода оказывается ниже нужного и текст
@@ -394,7 +413,9 @@ class ShellLayoutMixin:
             ),
             # Когда свободных строк нет вовсе, список не показываем: иначе он
             # выдавит саму рамку ввода за край экрана.
-            filter=has_completions & ~is_done & Condition(lambda: self._menu_max_height() > 0),
+            filter=has_completions
+            & ~is_done
+            & Condition(lambda: self._menu_max_height() > 0),
         )
 
     def _build_layout(self) -> None:

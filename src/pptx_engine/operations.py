@@ -43,7 +43,9 @@ def apply_operation(document: PptxDocument, op: dict[str, Any]) -> dict[str, Any
     if name == "add_picture":
         if op.get("image_path"):
             data = Path(op["image_path"]).read_bytes()
-            extension = Path(op["image_path"]).suffix.lstrip(".") or op.get("extension", "png")
+            extension = Path(op["image_path"]).suffix.lstrip(".") or op.get(
+                "extension", "png"
+            )
         elif op.get("data_base64"):
             data = b64decode(op["data_base64"])
             extension = op.get("extension", "png")
@@ -80,14 +82,20 @@ def apply_operation(document: PptxDocument, op: dict[str, Any]) -> dict[str, Any
         return {"op": name, "replacements": count}
     if name in {"transform", "set_transform"}:
         element = document.transform(
-            _slide_index(op), str(op["element_id"]), op.get("patch", op.get("transform", {}))
+            _slide_index(op),
+            str(op["element_id"]),
+            op.get("patch", op.get("transform", {})),
         )
         return {"op": name, "element_id": element.id}
     if name == "set_fill":
-        element = document.set_fill(_slide_index(op), str(op["element_id"]), dict(op["fill"]))
+        element = document.set_fill(
+            _slide_index(op), str(op["element_id"]), dict(op["fill"])
+        )
         return {"op": name, "element_id": element.id}
     if name == "set_stroke":
-        element = document.set_stroke(_slide_index(op), str(op["element_id"]), op.get("stroke"))
+        element = document.set_stroke(
+            _slide_index(op), str(op["element_id"]), op.get("stroke")
+        )
         return {"op": name, "element_id": element.id}
     if name == "set_font":
         element = document.set_font(
@@ -120,7 +128,11 @@ def apply_operation(document: PptxDocument, op: dict[str, Any]) -> dict[str, Any
         element = document.group(
             _slide_index(op), list(map(str, op["element_ids"])), op.get("name")
         )
-        return {"op": name, "element_id": element.id, "children": [x.id for x in element.children]}
+        return {
+            "op": name,
+            "element_id": element.id,
+            "children": [x.id for x in element.children],
+        }
     if name == "ungroup":
         children = document.ungroup(_slide_index(op), str(op["element_id"]))
         return {"op": name, "element_ids": [child.id for child in children]}
@@ -145,17 +157,31 @@ def apply_operation(document: PptxDocument, op: dict[str, Any]) -> dict[str, Any
         document.set_slide_hidden(_slide_index(op), bool(op.get("hidden", True)))
         return {"op": name, "slide_index": _slide_index(op)}
     if name == "duplicate_slide":
-        slide = document.duplicate_slide(_slide_index(op), bool(op.get("clear_text", False)))
-        return {"op": name, "slide_index": document.deck.slides.index(slide), "path": slide.path}
+        slide = document.duplicate_slide(
+            _slide_index(op), bool(op.get("clear_text", False))
+        )
+        return {
+            "op": name,
+            "slide_index": document.deck.slides.index(slide),
+            "path": slide.path,
+        }
     if name == "insert_blank_slide":
         slide = document.insert_blank_slide(_slide_index(op))
-        return {"op": name, "slide_index": document.deck.slides.index(slide), "path": slide.path}
+        return {
+            "op": name,
+            "slide_index": document.deck.slides.index(slide),
+            "path": slide.path,
+        }
     if name == "delete_slide":
         slide = document.delete_slide(_slide_index(op))
         return {"op": name, "path": slide.path}
     if name == "move_slide":
         document.move_slide(int(op["from_index"]), int(op["to_index"]))
-        return {"op": name, "from_index": int(op["from_index"]), "to_index": int(op["to_index"])}
+        return {
+            "op": name,
+            "from_index": int(op["from_index"]),
+            "to_index": int(op["to_index"]),
+        }
     if name == "set_slide_size":
         document.set_slide_size(int(op["cx"]), int(op["cy"]))
         return {"op": name, "cx": int(op["cx"]), "cy": int(op["cy"])}

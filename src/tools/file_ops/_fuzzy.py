@@ -38,7 +38,9 @@ def _apply_window(
     if replace_lines:
         if flatten_indent:
             pad = " " * orig_indent
-            replace_lines = [pad + ln.lstrip() if ln.strip() else ln for ln in replace_lines]
+            replace_lines = [
+                pad + ln.lstrip() if ln.strip() else ln for ln in replace_lines
+            ]
         else:
             find_indent = len(find_lines[0]) - len(find_lines[0].lstrip())
             indent_diff = orig_indent - find_indent
@@ -59,7 +61,11 @@ def _apply_window(
     new_replace = eol.join(replace_lines)
     if window:
         last_line = window[-1]
-        if last_line.endswith(("\n", "\r")) and new_replace and not new_replace.endswith(("\n", "\r")):
+        if (
+            last_line.endswith(("\n", "\r"))
+            and new_replace
+            and not new_replace.endswith(("\n", "\r"))
+        ):
             new_replace += eol
     return "".join([*text_lines[:start], new_replace, *text_lines[start + count :]])
 
@@ -133,10 +139,17 @@ def _fuzzy_find_replace(text: str, find: str, replace: str) -> tuple[str, bool]:
     strip_find = [ln.strip() for ln in find_lines if ln.strip()]
     if strip_find:
         for i in range(len(text_lines) - len(strip_find) + 1):
-            window = [ln.rstrip("\r\n").strip() for ln in text_lines[i : i + len(strip_find)]]
+            window = [
+                ln.rstrip("\r\n").strip() for ln in text_lines[i : i + len(strip_find)]
+            ]
             if window == strip_find:
                 result = _apply_window(
-                    text_lines, find_lines, replace, i, len(strip_find), flatten_indent=True
+                    text_lines,
+                    find_lines,
+                    replace,
+                    i,
+                    len(strip_find),
+                    flatten_indent=True,
                 )
                 return (result, True) if result is not None else (text, False)
 

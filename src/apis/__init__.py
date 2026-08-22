@@ -1,35 +1,33 @@
-"""
-apis -- система API-провайдеров.
+"""Public API-provider facade. Heavy provider registry imports are resolved only when requested."""
 
-Позволяет подключать LLM через прямые API вместо браузера.
-Каждый провайдер описан JSON-определением (URL, модели, формат)
-и классом-провайдером, наследником BaseProvider.
+from __future__ import annotations
 
-Публичный API:
-    from apis import get_provider, list_providers
-    from apis import add_api_config, remove_api_config
-"""
+from importlib import import_module
 
-from apis.config import (
-    add_api_config,
-    get_api_key,
-    list_api_configs,
-    remove_api_config,
-    set_api_key,
-)
-from apis.registry import (
-    get_provider,
-    list_providers,
-    reload_providers,
-)
+_LAZY = {
+    'add_api_config': ('apis.config', 'add_api_config'),
+    'get_api_key': ('apis.config', 'get_api_key'),
+    'get_provider': ('apis.registry', 'get_provider'),
+    'list_api_configs': ('apis.config', 'list_api_configs'),
+    'list_providers': ('apis.registry', 'list_providers'),
+    'reload_providers': ('apis.registry', 'reload_providers'),
+    'remove_api_config': ('apis.config', 'remove_api_config'),
+    'set_api_key': ('apis.config', 'set_api_key'),
+}
 
-__all__ = [
-    "add_api_config",
-    "get_api_key",
-    "get_provider",
-    "list_api_configs",
-    "list_providers",
-    "reload_providers",
-    "remove_api_config",
-    "set_api_key",
-]
+
+def __getattr__(name: str):
+    target = _LAZY.get(name)
+    if target is None:
+        raise AttributeError(name)
+    module_name, attr = target
+    value = getattr(import_module(module_name), attr)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY))
+
+
+__all__ = list(_LAZY)

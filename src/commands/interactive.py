@@ -152,12 +152,36 @@ def _status_extra(state: InteractiveState) -> str:
 
     Индикатор режима живёт в самом поле ввода (перед `❯`, см. Shell), а здесь
     только сколько сообщений ждёт своей очереди — иначе отправка во время
-    ответа выглядела бы как «ничего не произошло».
+    ответа выглядела бы как «ничего не произошло». Фоновые процессы вроде
+    memory cleanup получают отдельную динамическую строку, а не забивают status.
     """
     queue = getattr(state, "agent_queue", None)
-    if queue is not None:
-        return queue.status_text()
-    return ""
+    if queue is None:
+        return ""
+    return queue.status_text() or ""
+
+
+def _set_memory_cleanup_indicator(active: bool) -> None:
+    """Show/hide an animated, non-scrollback line for background memory cleanup."""
+    shell = get_shell()
+    if shell is None:
+        return
+    key = "memory-cleanup"
+    if not active:
+        shell.clear_dynamic(key)
+        return
+
+    import time
+
+    from rich.text import Text
+
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def _frame():
+        frame = frames[int(time.monotonic() * 10) % len(frames)]
+        return Text(f"  {frame} {tr('memory.cleanup_running')}", style=t("info"))
+
+    shell.set_dynamic(key, _frame)
 
 
 def _make_status_refresher(state: InteractiveState) -> Callable[[], None]:
@@ -276,7 +300,9 @@ def interactive(model, workdir, resume, api_provider):
             console.print(f"[dim]{tr('boot.add_via_api')}[/dim]")
             return
         saved_model = (
-            config.get_active_api_model() if config.get_active_api() == api_provider else ""
+            config.get_active_api_model()
+            if config.get_active_api() == api_provider
+            else ""
         )
         if saved_model and defn.get_model_info(saved_model):
             api_model = saved_model
@@ -290,7 +316,11 @@ def interactive(model, workdir, resume, api_provider):
         config.set_active_api(api_provider)
         config.set_active_api_model(api_model)
 
-    from commands.onboarding import _ensure_default_provider, needs_onboarding, run_onboarding
+    from commands.onboarding import (
+        _ensure_default_provider,
+        needs_onboarding,
+        run_onboarding,
+    )
 
     # Онбординг идёт ДО event loop и до Shell: он выбирает язык/тему/провайдера,
     # а модель ниже резолвится уже из свежего конфига. Его точка входа
@@ -357,13 +387,15 @@ def interactive(model, workdir, resume, api_provider):
 
         _runtime_logger.start_stall_monitor()
         try:
-            from apis.agent_adapter import create_api_session, restore_api_session_history
+            from apis.agent_adapter import (
+                create_api_session,
+                restore_api_session_history,
+            )
             from apis.registry import get_definition
 
             _api_id = config.get_active_api()
             _api_model = config.get_active_api_model()
             create_api_session(_api_id, _api_model)
-            _maybe_cleanup_memory(state)
             _defn = get_definition(_api_id)
             if _defn and _api_model:
                 _minfo = _defn.get_model_info(_api_model)
@@ -396,10 +428,14 @@ def interactive(model, workdir, resume, api_provider):
                     connected = init_mcp_from_config()
                     infos = list_mcp_servers()
                     tools = sum(
-                        i.get("tool_count", 0) for i in infos if i.get("status") == "connected"
+                        i.get("tool_count", 0)
+                        for i in infos
+                        if i.get("status") == "connected"
                     )
                     errors = [
-                        (i["id"], i.get("error", "")) for i in infos if i.get("status") == "error"
+                        (i["id"], i.get("error", ""))
+                        for i in infos
+                        if i.get("status") == "error"
                     ]
                     return connected, tools, errors
                 except Exception as e:
@@ -423,7 +459,10 @@ def interactive(model, workdir, resume, api_provider):
                         ok, info = await tg_bridge.start(tg_token, int(tg_chat))
                         if ok:
                             tg_info = info
-                            from agent.tg_menu import _build_reply_keyboard, register_tg_menu
+                            from agent.tg_menu import (
+                                _build_reply_keyboard,
+                                register_tg_menu,
+                            )
 
                             register_tg_menu(state)
                             tg_bridge.send(
@@ -434,9 +473,7 @@ def interactive(model, workdir, resume, api_provider):
                                 reply_markup=_build_reply_keyboard(),
                             )
                         else:
-                            tg_warn = (
-                                f"  [{t('warning')}]⚠ Telegram: {escape(info)}[/{t('warning')}]"
-                            )
+                            tg_warn = f"  [{t('warning')}]⚠ Telegram: {escape(info)}[/{t('warning')}]"
                     except Exception as e:
                         tg_warn = f"  [{t('warning')}]⚠ Telegram: {escape(str(e))}[/{t('warning')}]"
                         logger.error("tg start failed: %s", e, exc_info=True)
@@ -543,22 +580,10 @@ def interactive(model, workdir, resume, api_provider):
                     refresh_connected_chatgpt_usage(), name="chatgpt-usage-startup"
                 )
 
-                if not mcp_boot_task.done():
-                    from rich.text import Text
-
-                    _mcp_spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-
-                    def _mcp_startup_frame():
-                        import time as _time
-
-                        frame = int(_time.monotonic() * 10) % len(_mcp_spin)
-                        return Text(f"  {_mcp_spin[frame]} MCP · connecting", style=t("info"))
-
-                    shell.set_dynamic("startup-mcp", _mcp_startup_frame)
-                try:
-                    n_mcp, mcp_tools, mcp_errors = await mcp_boot_task
-                finally:
-                    shell.clear_dynamic("startup-mcp")
+                # MCP still boots concurrently, but startup stays visually quiet:
+                # a one-second “MCP · connecting” flash added noise without giving
+                # the user anything actionable.
+                n_mcp, mcp_tools, mcp_errors = await mcp_boot_task
                 for _sid, _err in mcp_errors:
                     shell.print_static(f"⚠ MCP/{_sid}: {escape(_err)}")
 
@@ -593,7 +618,9 @@ def interactive(model, workdir, resume, api_provider):
                             kind = SUBMIT_SLASH
 
                         if kind == SUBMIT_SLASH:
-                            if is_immediate_slash(text) and (immediate is None or immediate.done()):
+                            if is_immediate_slash(text) and (
+                                immediate is None or immediate.done()
+                            ):
                                 # Команды-виджеты идут мимо очереди, но строго по
                                 # одной: два оверлея одновременно Shell не держит.
                                 immediate = asyncio.create_task(
@@ -605,6 +632,12 @@ def interactive(model, workdir, resume, api_provider):
                             continue
 
                         if kind in (SUBMIT_USER, SUBMIT_TG):
+                            # Keyboard and Telegram filter empty input themselves, but
+                            # internal/event producers may still enqueue a malformed
+                            # payload. Never turn it into an empty user turn.
+                            if not isinstance(text, str) or not text.strip():
+                                logger.warning("ignored empty submission: kind=%s", kind)
+                                continue
                             if kind == SUBMIT_USER:
                                 _mirror_user_to_tg(text, tg_bridge)
                             _set_activity_status(state, "working")
@@ -638,7 +671,9 @@ def interactive(model, workdir, resume, api_provider):
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await asyncio.wait_for(app_task, timeout=3)
                     _cmd = paint(
-                        f"python {sys.argv[0]} cli --resume {state.session.id}", "accent", bold=True
+                        f"python {sys.argv[0]} cli --resume {state.session.id}",
+                        "accent",
+                        bold=True,
                     )
                     shell.print_exit_notice(tr("common.resume_hint", cmd=_cmd))
 
@@ -769,7 +804,9 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     # Маппинг [imageN] → реальный путь, чтобы агент мог открыть
     # вставленные картинки как файлы через инструменты (read и др.).
     if message_images:
-        image_lines = [f"[image{i}] = {p}" for i, p in enumerate(message_images, start=1)]
+        image_lines = [
+            f"[image{i}] = {p}" for i, p in enumerate(message_images, start=1)
+        ]
         image_block = (
             "--- inserted images (open with file tools by path) ---\n"
             + "\n".join(image_lines)
@@ -780,7 +817,7 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
     if file_context_block:
         ref_names = [r.raw for r in file_refs if not r.error]
         files_str = ", ".join(ref_names[:5]) + ("..." if len(ref_names) > 5 else "")
-        _static(f"[dim]📄 {tr('send.context_files', files=files_str)}[/dim]")
+        _static(f"[dim]▱ {tr('send.context_files', files=files_str)}[/dim]")
         agent_message = file_context_block + "\n\n" + agent_message
 
     # Полное описание mode/think — в системном промте (пересобирается
@@ -875,6 +912,10 @@ async def _run_turn(state: InteractiveState, texts: list[str], tg_bridge) -> Non
         state._tg_compress_requested = False
         await _handle_tg_compress(state)
 
+    # Memory consolidation is intentionally deferred until after the first
+    # completed turn.  Starting it during CLI boot could contend with the very
+    # first model request and look like a mysterious input freeze.
+    _maybe_cleanup_memory(state)
     _refresh_status(state)
 
 
@@ -896,7 +937,9 @@ async def _run_slash(state: InteractiveState, text: str) -> None:
     # item — чтобы Ctrl+O replay показал команды. Интерактивные виджеты в
     # capture больше не попадают: их рисует Shell, а не эта Console.
     with console.capture() as _cap:
-        act = await _handle_slash(text, state.cur_model, state.session, state.last_elapsed)
+        act = await _handle_slash(
+            text, state.cur_model, state.session, state.last_elapsed
+        )
         await handle_slash_result(act, state)
     _captured = _cap.get()
     # Никакие служебные сообщения slash-команд не остаются в scrollback.
@@ -904,13 +947,25 @@ async def _run_slash(state: InteractiveState, text: str) -> None:
     try:
         _ctx = get_current_ctx()
         if _ctx is not None and getattr(_ctx, "render_store", None) is not None:
-            _ctx.render_store.add(
-                "raw_console",
-                {
-                    "command": text,
-                    "output": _captured or "",
-                },
-            )
+            if getattr(act, "do_new", False):
+                # /new is a history boundary, not an ordinary slash-log entry.
+                # Keep exactly the same timestamp in Ctrl+O replay as in live scrollback.
+                _ctx.render_store.add(
+                    "history_cleared",
+                    {
+                        "timestamp": float(
+                            getattr(state, "history_cleared_at", 0.0) or 0.0
+                        )
+                    },
+                )
+            else:
+                _ctx.render_store.add(
+                    "raw_console",
+                    {
+                        "command": text,
+                        "output": _captured or "",
+                    },
+                )
     except Exception:
         logger.debug("store slash raw_console failed", exc_info=True)
     _refresh_status(state)
@@ -974,7 +1029,11 @@ async def _bg_pump(state: InteractiveState) -> None:
     текст — пробуждение пропускаем, результат приедет вместе со следующим
     ходом (loop сам подмешивает уведомления в ближайший раунд).
     """
-    from tools.background import clear_finish_event, get_finish_event, has_pending_finished
+    from tools.background import (
+        clear_finish_event,
+        get_finish_event,
+        has_pending_finished,
+    )
 
     while True:
         shell = get_shell()
@@ -983,11 +1042,19 @@ async def _bg_pump(state: InteractiveState) -> None:
             await asyncio.sleep(0.5)
             continue
         await event.wait()
-        clear_finish_event()
         if not _bg_autoresume_enabled() or not has_pending_finished():
+            clear_finish_event(force=True)
             continue
         if (shell.input_buffer.text or "").strip():
+            # Пользователь печатает: оставляем результат до следующего хода,
+            # но сбрасываем уже обработанный сигнал, иначе event.wait() будет
+            # возвращаться без ожидания и займёт цикл busy-loop'ом.
+            clear_finish_event(force=True)
             continue
+        # Сбрасываем обработанный сигнал до enqueue. Иначе следующий event.wait()
+        # вернётся немедленно, и pump займёт UI loop бесконечным put_nowait.
+        # Новый результат после clear взведёт Event заново.
+        clear_finish_event(force=True)
         shell.submissions.put_nowait((SUBMIT_BG_RESUME, None))
 
 
@@ -1036,15 +1103,46 @@ _RECAP_EVERY = 10
 
 
 def _maybe_cleanup_memory(state: InteractiveState) -> None:
-    """Launch the three-day memory audit without delaying CLI startup."""
+    """Run the periodic memory audit in idle time, never before first reply."""
+    from config.settings import get as _get_setting
+
+    if getattr(state, "memory_cleanup_started", False) or not bool(
+        _get_setting("memory_enabled", True)
+    ):
+        return
+    try:
+        from memory.cleanup import cleanup_due
+
+        if not cleanup_due():
+            state.memory_cleanup_started = True
+            return
+    except Exception:
+        logger.debug("memory cleanup due-check failed", exc_info=True)
+        return
+
+    state.memory_cleanup_started = True
 
     async def _run_cleanup():
         try:
+            # The current turn is still marked busy until _run_turn returns.
+            # Wait for an actual idle gap, including already queued messages.
+            while True:
+                queue = getattr(state, "agent_queue", None)
+                if queue is None or (
+                    not queue.busy and not queue.pending and queue.current_kind is None
+                ):
+                    break
+                await asyncio.sleep(0.15)
+            state.memory_cleanup_active = True
+            _set_memory_cleanup_indicator(True)
             from memory import maybe_cleanup_memories
 
             await maybe_cleanup_memories(state.workdir)
         except Exception:
             logger.debug("memory cleanup failed", exc_info=True)
+        finally:
+            state.memory_cleanup_active = False
+            _set_memory_cleanup_indicator(False)
 
     try:
         task = asyncio.create_task(_run_cleanup(), name="memory-cleanup")
@@ -1083,7 +1181,11 @@ def _maybe_launch_recap(state: InteractiveState) -> None:
 
     try:
         state.recap_task = asyncio.ensure_future(_run_recap())
-        logger.info("recap launched at msg #%d (session=%s)", state.msg_num, state.session.id[:16])
+        logger.info(
+            "recap launched at msg #%d (session=%s)",
+            state.msg_num,
+            state.session.id[:16],
+        )
     except Exception:
         logger.debug("recap task launch failed", exc_info=True)
         state.recap_task = None
@@ -1112,7 +1214,7 @@ def _schedule_recap_output(state: InteractiveState) -> None:
         if not text or not text.strip():
             return
         ensure_static_blank()
-        _static(f"[italic grey62]📋 {escape(text.strip())}[/italic grey62]")
+        _static(f"[italic grey62]☷ {escape(text.strip())}[/italic grey62]")
         ensure_static_blank()
 
     try:
@@ -1239,7 +1341,7 @@ async def _maybe_round_compress(state: InteractiveState) -> None:
     # порог не создавал повторные фоновые запросы.
     state._round_compress_rounds = rounds
     compress_prompt = ROUND_COMPRESS_PROMPT + "\n\n" + history_text
-    _static(f"[dim]⚙ {tr('autoprune.round_compress_start', n=rounds)}[/dim]")
+    _static(f"[dim]⚙︎ {tr('autoprune.round_compress_start', n=rounds)}[/dim]")
     state._round_compress_task = asyncio.create_task(
         _generate_round_compress(
             state,
@@ -1367,11 +1469,11 @@ async def _apply_pending_round_compress(state: InteractiveState) -> bool:
 
 async def _maybe_auto_compress(state: InteractiveState) -> None:
     """Запустить safety-сжатие ≥90% в фоне, не занимая очередь агента."""
-    from models import get_context_limit
+    from models import DEFAULT_CONTEXT_LIMIT, get_context_limit
 
     try:
         ctx_tokens = state.session.context_tokens
-        ctx_limit = get_context_limit(state.cur_model) or 200_000
+        ctx_limit = get_context_limit(state.cur_model) or DEFAULT_CONTEXT_LIMIT
         if ctx_limit <= 0:
             return
         ratio = ctx_tokens / ctx_limit
@@ -1436,7 +1538,9 @@ async def _maybe_auto_compress(state: InteractiveState) -> None:
             logger.debug("tg notify auto-compress failed", exc_info=True)
     except Exception as e:
         logger.error("auto-compress failed: %s", e, exc_info=True)
-        _static(f"  [{t('error')}]✗ {tr('send.auto_compress_failed', error=str(e))}[/{t('error')}]")
+        _static(
+            f"  [{t('error')}]✗ {tr('send.auto_compress_failed', error=str(e))}[/{t('error')}]"
+        )
 
 
 async def _resume_agent_for_background(state: InteractiveState) -> bool:

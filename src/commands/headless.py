@@ -46,7 +46,9 @@ class _HeadlessEventHandler:
         inp, out = _usage_parts(usage)
         self.input_tokens += inp
         self.output_tokens += out
-        self.responses.append({"text": text or "", "input_tokens": inp, "output_tokens": out})
+        self.responses.append(
+            {"text": text or "", "input_tokens": inp, "output_tokens": out}
+        )
 
     def on_tool_result(self, result) -> None:
         call = self._call
@@ -91,11 +93,13 @@ class _HeadlessEventHandler:
 
         return (
             f"✓ Worked {format_duration(duration)} "
-            f"⎿ {self.model_calls}⟳ · {self.tool_calls}🛠 · "
+            f"⎿ {self.model_calls}⟳ · {self.tool_calls}⚒︎ · "
             f"↑{format_tokens(self.input_tokens)} ↓{format_tokens(self.output_tokens)}"
         )
 
-    def on_plan_update(self, plan, action: str = "", focus_index: int | None = None) -> None:
+    def on_plan_update(
+        self, plan, action: str = "", focus_index: int | None = None
+    ) -> None:
         return None
 
     def on_status(self, message: str, level: str = "info") -> None:
@@ -227,7 +231,9 @@ async def _run_once(
 @click.command("run")
 @click.argument("prompt", nargs=-1)
 @click.option("--model", "-m", default=None, help="Model (id or display_name).")
-@click.option("--workdir", "-w", default=None, help="Working directory (defaults to cwd).")
+@click.option(
+    "--workdir", "-w", default=None, help="Working directory (defaults to cwd)."
+)
 @click.option("--api", "-A", default=None, help="API provider for this run.")
 @click.option("--json", "json_output", is_flag=True, help="JSON output to stdout.")
 @click.option(

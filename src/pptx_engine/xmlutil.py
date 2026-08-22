@@ -15,6 +15,10 @@ C_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 DML_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
 
 NS = {"p": P_NS, "a": A_NS, "r": R_NS, "c": C_NS, "dgm": DML_NS}
+# OOXML parts never need DTDs or custom entities. Rejecting them before parsing
+# prevents entity-expansion payloads from consuming process resources.
+_UNSAFE_XML_DECLARATION_RE = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
+
 for prefix, uri in NS.items():
     ET.register_namespace(prefix, uri)
 
@@ -36,6 +40,9 @@ def xml_escape_attr(value: str) -> str:
 
 
 def parse_xml(xml: str) -> ET.Element:
+    """Parse an OOXML fragment while rejecting DTD and entity declarations."""
+    if _UNSAFE_XML_DECLARATION_RE.search(xml):
+        raise ET.ParseError("DTD and entity declarations are not allowed in OOXML")
     return ET.fromstring(xml.encode("utf-8"))
 
 
@@ -76,7 +83,9 @@ def tag_ranges(
     """
     wanted = set(tag_names)
     limit = len(xml) if end is None else end
-    token_re = re.compile(r"<!--.*?-->|<\?.*?\?>|<!\[CDATA\[.*?\]\]>|<[^>]+>", re.S)
+    token_re = re.compile(
+        r"<!--.*?-->|<\?.*?\?>|<!\[CDATA\[.*?\]\]>|<[^>]+>", re.DOTALL
+    )
     result: list[tuple[str, int, int]] = []
     stack: list[tuple[str, int]] = []
     for match in token_re.finditer(xml, start, limit):
@@ -105,7 +114,9 @@ def tag_ranges(
     return result
 
 
-def element_range(xml: str, open_tag: str, from_index: int = 0) -> tuple[int, int] | None:
+def element_range(
+    xml: str, open_tag: str, from_index: int = 0
+) -> tuple[int, int] | None:
     """Find an element's exact range, including nested same-name nodes."""
     m = re.search(rf"<{re.escape(open_tag)}\b[^>]*>", xml[from_index:])
     if not m:
@@ -117,7 +128,7 @@ def element_range(xml: str, open_tag: str, from_index: int = 0) -> tuple[int, in
     raw = m.group(0)
     if raw.rstrip().endswith("/>"):
         return start, from_index + m.end()
-    token_re = re.compile(rf"</?{re.escape(open_tag)}\b[^>]*>", re.S)
+    token_re = re.compile(rf"</?{re.escape(open_tag)}\b[^>]*>", re.DOTALL)
     depth = 0
     for x in token_re.finditer(xml, start):
         token = x.group(0)
@@ -186,7 +197,11 @@ def colour_from_node(
         if local(child.tag) in {"alpha", "alphaMod", "alphaOff"} and child.get("val"):
             with contextlib.suppress(ValueError):
                 alpha = round(int(child.get("val", "100000")) * 255 / 100000)
-    return "#" + color.upper() + (f"{alpha:02X}" if alpha is not None and alpha < 255 else "")
+    return (
+        "#"
+        + color.upper()
+        + (f"{alpha:02X}" if alpha is not None and alpha < 255 else "")
+    )
 
 
 def hex_to_rgba(color: str | None, opacity: float = 1.0) -> tuple[int, int, int, int]:

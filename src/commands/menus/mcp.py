@@ -52,11 +52,15 @@ async def mcp_interactive():
                     "badge_style": role,
                 }
             )
-        items.append({"label": _("mcp.add_server"), "hint": _("mcp.add_hint"), "action": True})
+        items.append(
+            {"label": _("mcp.add_server"), "hint": _("mcp.add_hint"), "action": True}
+        )
         items.append({"label": _("mcp.reconnect_all"), "hint": "", "action": True})
 
         facts = (
-            [f"{len(servers)} server(s)"] if servers else [_("mcp.no_servers"), _("mcp.examples")]
+            [f"{len(servers)} server(s)"]
+            if servers
+            else [_("mcp.no_servers"), _("mcp.examples")]
         )
 
         choice = await card_menu(items, title=_("mcp.title"), facts=facts)
@@ -152,7 +156,9 @@ async def _detail(sid: str):
 
 
 async def _add_interactive():
-    sid = await overlays.ask_text(f"{_('mcp.field_server_id')} ({_('mcp.add_example')}):")
+    sid = await overlays.ask_text(
+        f"{_('mcp.field_server_id')} ({_('mcp.add_example')}):"
+    )
     if not sid:
         return
     if get_server(sid):
@@ -160,10 +166,14 @@ async def _add_interactive():
     command = await overlays.ask_text(f"{_('mcp.field_command')}:")
     if not command:
         return
-    args_raw = await overlays.ask_text(f"{_('mcp.field_args')} ({_('mcp.field_args_hint')}):")
+    args_raw = await overlays.ask_text(
+        f"{_('mcp.field_args')} ({_('mcp.field_args_hint')}):"
+    )
     if args_raw is None:
         return  # esc в любом поле отменяет добавление, как прежний Ctrl+C
-    env_raw = await overlays.ask_text(f"{_('mcp.field_env')} ({_('mcp.field_env_hint')}):")
+    env_raw = await overlays.ask_text(
+        f"{_('mcp.field_env')} ({_('mcp.field_env_hint')}):"
+    )
     if env_raw is None:
         return
     env: dict[str, str] = {}

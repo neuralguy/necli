@@ -89,7 +89,9 @@ def create_file(call: ToolCall) -> ToolResult:
         invalidate_read_cache(path)
 
         new_size = path.stat().st_size
-        lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        lines = content.count("\n") + (
+            1 if content and not content.endswith("\n") else 0
+        )
 
         logger.info(
             "create_file: {} ({}, {}→{}b, {} lines)",

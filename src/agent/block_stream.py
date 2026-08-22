@@ -160,7 +160,9 @@ class BlockStreamer:
 
             txt = escape_md_underscores(latex_to_unicode(txt))
             try:
-                return ResponseMarkdown(txt, code_theme="monokai", inline_code_theme="monokai")
+                return ResponseMarkdown(
+                    txt, code_theme="monokai", inline_code_theme="monokai"
+                )
             except Exception:
                 return Text(txt)
 

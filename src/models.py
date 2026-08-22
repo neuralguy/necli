@@ -60,7 +60,10 @@ MODEL_PRICING: dict[str, ModelPricing] = {
 
 _NO_PRICING = ModelPricing(0.0, 0.0)
 
-_DEFAULT_CONTEXT_LIMIT = 200_000
+# Единственный источник дефолтного окна контекста: используется и как значение
+# поля ApiModelInfo.context_window, и как fallback-лимит для моделей, про которые
+# в конфигах нет данных. Все остальные модули берут его отсюда.
+DEFAULT_CONTEXT_LIMIT = 1_000_000
 
 
 def _lookup_api_context_window(model: str) -> int | None:
@@ -69,12 +72,16 @@ def _lookup_api_context_window(model: str) -> int | None:
     try:
         from apis.config import list_api_configs
     except Exception:
-        logger.debug("_lookup_api_context_window: import list_api_configs failed", exc_info=True)
+        logger.debug(
+            "_lookup_api_context_window: import list_api_configs failed", exc_info=True
+        )
         return None
     try:
         configs = list_api_configs()
     except Exception:
-        logger.debug("_lookup_api_context_window: list_api_configs() failed", exc_info=True)
+        logger.debug(
+            "_lookup_api_context_window: list_api_configs() failed", exc_info=True
+        )
         return None
     target = model.strip().lower()
     for cfg in configs:
@@ -116,11 +123,29 @@ def model_group_order(group: str) -> int:
     return len(MODEL_GROUPS)
 
 
+def input_cost_with_cache(
+    input_tokens: int,
+    input_price: float,
+    *,
+    cache_read_tokens: int = 0,
+    cache_read_factor: float = 0.1,
+) -> float:
+    """Стоимость input с отдельным тарифом для прочитанных из кэша токенов."""
+    total = max(0, int(input_tokens or 0))
+    cached = min(total, max(0, int(cache_read_tokens or 0)))
+    try:
+        factor = max(0.0, float(cache_read_factor))
+    except (TypeError, ValueError):
+        factor = 0.1
+    regular = total - cached
+    return (regular * input_price + cached * input_price * factor) / 1_000_000
+
+
 def get_context_limit(model: str) -> int:
     cw = _lookup_api_context_window(model)
     if cw and cw > 0:
         return cw
-    return _DEFAULT_CONTEXT_LIMIT
+    return DEFAULT_CONTEXT_LIMIT
 
 
 def normalize_model_name(model_id: str) -> str:
@@ -202,7 +227,9 @@ def resolve_model(name: str) -> str | None:
             return matches[0]
 
     query_words = query_lower.split()
-    word_matches = [c for c in CANONICAL_MODELS if all(w in c.lower() for w in query_words)]
+    word_matches = [
+        c for c in CANONICAL_MODELS if all(w in c.lower() for w in query_words)
+    ]
     if len(word_matches) == 1:
         return word_matches[0]
     if word_matches:
@@ -239,7 +266,9 @@ def _lookup_api_pricing(model: str) -> ModelPricing | None:
     try:
         from apis.config import list_api_configs
     except Exception:
-        logger.debug("_lookup_api_pricing: import list_api_configs failed", exc_info=True)
+        logger.debug(
+            "_lookup_api_pricing: import list_api_configs failed", exc_info=True
+        )
         return None
     try:
         configs = list_api_configs()
@@ -252,8 +281,15 @@ def _lookup_api_pricing(model: str) -> ModelPricing | None:
             mid = str(m.get("id", "")).strip().lower()
             mname = str(m.get("display_name", "")).strip().lower()
             if target == mid or (mname and target == mname):
-                inp = float(m.get("input_price", 0.0) or 0.0)
-                out = float(m.get("output_price", 0.0) or 0.0)
+                try:
+                    inp = float(m.get("input_price", 0.0) or 0.0)
+                    out = float(m.get("output_price", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring invalid pricing for API model %r",
+                        m.get("id") or m.get("display_name") or model,
+                    )
+                    return None
                 return ModelPricing(inp, out)
     return None
 

@@ -87,7 +87,9 @@ def execute_grep(call: ToolCall) -> ToolResult:
     matched_files = 0
     for file_path, relative in _visible_files(root):
         relative_text = relative.as_posix()
-        if include and not any(fnmatch.fnmatch(relative_text, mask) for mask in include):
+        if include and not any(
+            fnmatch.fnmatch(relative_text, mask) for mask in include
+        ):
             continue
         if regex is None:
             results.append(relative_text)

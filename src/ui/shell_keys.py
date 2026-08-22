@@ -30,7 +30,11 @@ def _cycle_completion(buf, *, previous: bool) -> None:
     move = buf.complete_previous if previous else buf.complete_next
     move()
     state = getattr(buf, "complete_state", None)
-    if had_selection and state is not None and getattr(state, "current_completion", None) is None:
+    if (
+        had_selection
+        and state is not None
+        and getattr(state, "current_completion", None) is None
+    ):
         move()
 
 

@@ -57,7 +57,9 @@ def _run_command_hook(
             (proc.stderr or "")[:_MAX_OUTPUT_CHARS],
         )
     except subprocess.TimeoutExpired:
-        logger.warning("hook command timed out after {}s: {}", spec.timeout, spec.command[:80])
+        logger.warning(
+            "hook command timed out after {}s: {}", spec.timeout, spec.command[:80]
+        )
         return 124, "", f"hook timed out after {spec.timeout}s"
     except Exception as e:
         logger.opt(exception=True).error("hook command failed: {}", e)
@@ -73,7 +75,9 @@ def _run_http_hook(spec: HookSpec, payload_json: str) -> tuple[int, str, str]:
         for k, v in spec.headers.items():
             # Интерполяция $VAR / ${VAR} из окружения.
             headers[k] = os.path.expandvars(v)
-        resp = httpx.post(spec.url, content=payload_json, headers=headers, timeout=spec.timeout)
+        resp = httpx.post(
+            spec.url, content=payload_json, headers=headers, timeout=spec.timeout
+        )
         body = (resp.text or "")[:_MAX_OUTPUT_CHARS]
         # 2xx → ок; иной статус трактуем как «не блок, но залогируем».
         code = 0 if resp.is_success else 1
@@ -168,7 +172,9 @@ def run_hooks(
     payload = dict(payload or {})
     payload.setdefault("event", event)
     tool_name = str(payload.get("tool_name", ""))
-    tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    tool_input = (
+        payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    )
     payload_json = json.dumps(payload, ensure_ascii=False)
 
     for matcher in matchers:
@@ -189,7 +195,9 @@ def run_hooks(
             if spec.type == "http":
                 code, out, err = _run_http_hook(spec, payload_json)
             else:
-                code, out, err = _run_command_hook(spec, payload_json, working_dir, event)
+                code, out, err = _run_command_hook(
+                    spec, payload_json, working_dir, event
+                )
             _apply_output(spec, code, out, err, outcome)
             # Блокирующее решение прерывает дальнейшие hooks события.
             if outcome.blocked:
@@ -210,7 +218,9 @@ def _spawn_async(spec: HookSpec, payload_json: str, working_dir: str | None) -> 
         if spec.type == "http":
             import threading
 
-            threading.Thread(target=_run_http_hook, args=(spec, payload_json), daemon=True).start()
+            threading.Thread(
+                target=_run_http_hook, args=(spec, payload_json), daemon=True
+            ).start()
             return
         import threading
 

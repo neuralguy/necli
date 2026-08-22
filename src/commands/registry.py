@@ -43,7 +43,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/models", "model", "help.models", immediate=True),
     SlashCommand("/autoprune", "model", "help.autoprune", immediate=True),
     SlashCommand(
-        "/proxy", "model", "help.proxy", args_hint="[URL|off]", action=True, immediate=True
+        "/proxy",
+        "model",
+        "help.proxy",
+        args_hint="[URL|off]",
+        action=True,
+        immediate=True,
     ),
     SlashCommand("/permissions", "tools", "help.permissions", immediate=True),
     SlashCommand("/tools", "tools", "help.tools"),

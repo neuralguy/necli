@@ -53,7 +53,9 @@ def _arg_haystack(tool_name: str, tool_input: dict[str, Any] | None) -> list[str
     return out
 
 
-def if_matches(rule: str | None, tool_name: str, tool_input: dict[str, Any] | None) -> bool:
+def if_matches(
+    rule: str | None, tool_name: str, tool_input: dict[str, Any] | None
+) -> bool:
     """Проверяет permission-style правило `if` против вызова."""
     if not rule or not rule.strip():
         return True

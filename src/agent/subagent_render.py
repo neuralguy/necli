@@ -331,14 +331,16 @@ class SubagentBuffer:
                 is_response = iteration == self.iteration and not events
                 if is_response:
                     if not response_header_shown:
-                        out.extend([Text(""), Text("Response", style=f"bold {t('accent')}")])
+                        out.extend(
+                            [Text(""), Text("Response", style=f"bold {t('accent')}")]
+                        )
                         response_header_shown = True
                     out.extend(
                         Text("  " + line, style=t("fg_primary"))
                         for line in _wrap_preserve(response, max(12, width - 2))
                     )
                 else:
-                    thought = Text("  💭 ", style=t("magenta"))
+                    thought = Text("  ⋯ ", style=t("dim_alt"))
                     thought.append(_one_line(response), style=t("dim_text"))
                     thought.truncate(width, overflow="ellipsis")
                     out.append(thought)
@@ -361,7 +363,9 @@ class SubagentBuffer:
                     else ""
                 )
                 line = Text(f"  {mark} {ev.emoji} {label}", style=style)
-                detail_budget = width - visible_width(line.plain) - visible_width(elapsed) - 2
+                detail_budget = (
+                    width - visible_width(line.plain) - visible_width(elapsed) - 2
+                )
                 if detail and detail_budget >= 4:
                     detail_text = Text(detail, style=t("dim_text"))
                     detail_text.truncate(detail_budget, overflow="ellipsis")
@@ -467,7 +471,10 @@ class SubagentBuffer:
             txt.append(f"error \u2014 {err}", style=t("error"))
         elif self.status == "streaming":
             lines = self.streaming_text.count("\n") + 1
-            txt.append(f"iter {self.iteration + 1} \u2014 streaming ({lines} lines)", style="dim")
+            txt.append(
+                f"iter {self.iteration + 1} \u2014 streaming ({lines} lines)",
+                style="dim",
+            )
         elif self.status == "tools":
             last = self.tool_events[-1] if self.tool_events else None
             if last and last.status == "running":
@@ -496,8 +503,7 @@ class SubagentBuffer:
         head = self._head_left()
         timer = self._timer()
         gap = width - len(head.plain) - len(timer)
-        if gap < 1:
-            gap = 1
+        gap = max(gap, 1)
         head.append(" " * gap)
         head.append(timer, style="dim")
         lines.append(head)
@@ -520,8 +526,7 @@ class SubagentBuffer:
         trail = self._emoji_trail(width - len(action_prefixed.plain) - 1)
         if trail.plain:
             gap = width - len(action_prefixed.plain) - len(trail.plain)
-            if gap < 1:
-                gap = 1
+            gap = max(gap, 1)
             action_prefixed.append(" " * gap)
             action_prefixed.append_text(trail)
         lines.append(action_prefixed)
@@ -543,7 +548,9 @@ class SubagentBuffer:
             metrics.append("0 tok", style="dim")
         n_tools = len(self.tool_events)
         if n_tools:
-            metrics.append(f" · {n_tools} tool{'s' if n_tools != 1 else ''}", style="dim")
+            metrics.append(
+                f" · {n_tools} tool{'s' if n_tools != 1 else ''}", style="dim"
+            )
         metrics.append(f" · {format_duration(self.elapsed)}", style="dim")
 
         # Левая часть — только глиф, label и модель. Текущее действие здесь
@@ -767,10 +774,13 @@ class SubagentTracker:
 
     def row_label(self) -> str:
         """Компактная сводка прогона для строки под панелью ввода."""
-        emoji = str(ui.get("subagent.header_emoji", "\U0001f916"))
+        emoji = str(ui.get("subagent.header_emoji", "◉"))
         total = len(self._buffers)
         done = sum(1 for b in self._buffers if b.status in ("done", "error"))
-        parts = [f"{emoji} {self._name}", tr("subagent.agents_n", done=done, total=total)]
+        parts = [
+            f"{emoji} {self._name}",
+            tr("subagent.agents_n", done=done, total=total),
+        ]
         phases = self._seen_phases()
         if phases:
             active = self.active_phase()
@@ -794,7 +804,7 @@ class SubagentTracker:
         glyph, _style = buffer._status_glyph()
         name = buffer.label or f"Sub{buffer.index + 1}"
         metrics = f"{_fmt_tokens(buffer.total_tokens)} tok · {len(buffer.tool_events)} calls · {self._fmt_clock(buffer.elapsed)}"
-        left = f"{glyph} 🤖 {name}"
+        left = f"{glyph} ◉ {name}"
         budget = max(12, _w() - visible_width(metrics) - 7)
         left = _short(left, budget)
         return f"{left}  {metrics}"
@@ -806,7 +816,9 @@ class SubagentTracker:
         style = t("error") if failed else t("success")
         header = Text()
         header.append(f"{glyph} Subagents", style=f"bold {style}")
-        header.append(f" · {self._name} · {done}/{len(self._buffers)} done", style="dim")
+        header.append(
+            f" · {self._name} · {done}/{len(self._buffers)} done", style="dim"
+        )
         if failed:
             header.append(f" · {failed} failed", style=t("error"))
         header.append(f" · {self._fmt_clock(self._total_elapsed())}", style="dim")
@@ -849,7 +861,9 @@ class SubagentTracker:
                 self._show_overlay(sh, AgentOverlay(self, buffer)),
             )
         except RuntimeError:
-            logger.debug("subagent tracker: no running loop for agent overlay", exc_info=True)
+            logger.debug(
+                "subagent tracker: no running loop for agent overlay", exc_info=True
+            )
 
     async def _show_table(self, sh) -> None:
         await self._show_overlay(sh, SwarmOverlay(self))
@@ -896,13 +910,21 @@ class SubagentTracker:
 
     def _total_elapsed(self) -> float:
         """Стенные часы всего запуска: от первой активности до сейчас/последней."""
-        starts = [b.activity_start_time for b in self._buffers if b.activity_start_time is not None]
+        starts = [
+            b.activity_start_time
+            for b in self._buffers
+            if b.activity_start_time is not None
+        ]
         if not starts:
             return 0.0
         start = min(starts)
         all_done = all(b.status in ("done", "error") for b in self._buffers)
         if all_done:
-            ends = [b.activity_end_time for b in self._buffers if b.activity_end_time is not None]
+            ends = [
+                b.activity_end_time
+                for b in self._buffers
+                if b.activity_end_time is not None
+            ]
             end = max(ends) if ends else time.monotonic()
         else:
             end = time.monotonic()
@@ -944,8 +966,7 @@ class SubagentTracker:
             header.append(f" · {self._name}", style=t("accent"))
         right = f"{done}/{total} agents · {self._fmt_clock(self._total_elapsed())}"
         gap = width - len(header.plain) - len(right)
-        if gap < 1:
-            gap = 1
+        gap = max(gap, 1)
         header.append(" " * gap)
         header.append(right, style="dim")
 
@@ -1047,7 +1068,12 @@ class SubagentTracker:
         if p_end - p_start < len(phases):
             phase_lines.append(
                 Text(
-                    tr("subagent.page_range", start=p_start + 1, end=p_end, total=len(phases)),
+                    tr(
+                        "subagent.page_range",
+                        start=p_start + 1,
+                        end=p_end,
+                        total=len(phases),
+                    ),
                     style="dim",
                 )
             )
@@ -1088,7 +1114,12 @@ class SubagentTracker:
         elif end - start < len(shown_bufs):
             agent_lines.append(
                 Text(
-                    tr("subagent.page_range", start=start + 1, end=end, total=len(shown_bufs)),
+                    tr(
+                        "subagent.page_range",
+                        start=start + 1,
+                        end=end,
+                        total=len(shown_bufs),
+                    ),
                     style="dim",
                 )
             )
@@ -1112,7 +1143,11 @@ class SubagentTracker:
         if expanded:
             lines.extend(_detail_tail(b, inner))
         border = (
-            "red" if b.status == "error" else t("success") if b.status == "done" else t("magenta")
+            "red"
+            if b.status == "error"
+            else t("success")
+            if b.status == "done"
+            else t("magenta")
         )
         return Panel(Group(*lines), border_style=border, padding=pad, width=width)
 
@@ -1126,7 +1161,9 @@ def _follow_anchor(bufs: list[SubagentBuffer]) -> int:
     return max(0, len(bufs) - 1)
 
 
-def _detail_tail(b: SubagentBuffer, inner: int, limit: int = _EXPAND_LINES) -> list[Text]:
+def _detail_tail(
+    b: SubagentBuffer, inner: int, limit: int = _EXPAND_LINES
+) -> list[Text]:
     """Хвост работы агента: ошибка, последние строки стрима либо инструменты."""
     if b.error:
         return [
@@ -1177,7 +1214,9 @@ class AgentOverlay(Overlay):
         return (self._buffer.revision, self._offset, self._follow, tick)
 
     def render(self, width: int):
-        budget = self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        budget = (
+            self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        )
         inner = max(20, width - 6)
         lines = self._buffer.execution_lines(inner)
         self._total = len(lines)
@@ -1193,7 +1232,7 @@ class AgentOverlay(Overlay):
 
         glyph, _style = self._buffer._status_glyph()
         name = self._buffer.label or f"Sub{self._buffer.index + 1}"
-        title = f" {glyph} 🤖 {name} "
+        title = f" {glyph} ◉ {name} "
         metrics = (
             f"{_fmt_tokens(self._buffer.total_tokens)} tok · "
             f"{len(self._buffer.tool_events)} calls · "
@@ -1288,7 +1327,9 @@ class SwarmOverlay(Overlay):
         рамки, индикатор и панель деталей. На низком терминале деталями
         приходится жертвовать — иначе prompt_toolkit скажет «Window too small».
         """
-        available = self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        available = (
+            self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        )
         available = max(3, available - 2)  # рамка полноэкранного контейнера
         base = 1 + _PANEL_CHROME
         budget = available - base - _DETAIL_ROWS - self._expand_rows()
@@ -1322,7 +1363,9 @@ class SwarmOverlay(Overlay):
             expanded=self._expanded,
             focus=self._focus,
         )
-        available = self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        available = (
+            self.shell.overlay_budget() if self.shell is not None else _term_rows() - 3
+        )
         return Panel(
             view,
             border_style=t("muted"),
@@ -1401,7 +1444,9 @@ class SwarmOverlay(Overlay):
                 self._show_selected_agent(selected),
             )
         except RuntimeError:
-            logger.debug("subagent table: no running loop for agent overlay", exc_info=True)
+            logger.debug(
+                "subagent table: no running loop for agent overlay", exc_info=True
+            )
 
     async def _show_selected_agent(self, buffer: SubagentBuffer) -> None:
         if self.shell is None:

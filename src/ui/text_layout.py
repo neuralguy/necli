@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from prompt_toolkit.layout.processors import Processor, Transformation, TransformationInput
+from prompt_toolkit.layout.processors import (
+    Processor,
+    Transformation,
+    TransformationInput,
+)
 from prompt_toolkit.layout.utils import explode_text_fragments
 from wcwidth import wcswidth
 
@@ -113,5 +117,7 @@ class WordWrapProcessor(Processor):
         return Transformation(
             result,
             source_to_display=lambda i: source_to_display[min(i, len(chars))],
-            display_to_source=lambda i: display_to_source[min(i, len(display_to_source) - 1)],
+            display_to_source=lambda i: display_to_source[
+                min(i, len(display_to_source) - 1)
+            ],
         )

@@ -18,7 +18,9 @@ from tools.registry import build_blocked_result, is_tool_allowed
 logger = logging.getLogger(__name__)
 
 
-def _build_parse_error_result(tool_name: str, body: str, raw: str, reason: str) -> tools.ToolResult:
+def _build_parse_error_result(
+    tool_name: str, body: str, raw: str, reason: str
+) -> tools.ToolResult:
     """Создаёт ToolResult-ошибку для непарсящегося tool-блока."""
     short_body = (body or "").strip()
     if len(short_body) > 200:
@@ -55,7 +57,9 @@ def _diagnose_parse_failure(tool_name: str, attrs_header: str, body: str) -> str
         if tool_name not in _CONTENT_TOOLS:
             return "empty block body"
     elif stripped.startswith(("{", "[")):
-        return "body looks like JSON but does not parse — check quotes, commas, escaping"
+        return (
+            "body looks like JSON but does not parse — check quotes, commas, escaping"
+        )
 
     return "unknown reason (see body above)"
 
@@ -83,14 +87,21 @@ async def flush_deferred_scan_tools(stream, deferred_calls: list) -> None:
         stream.ctx.interrupted = True
 
 
-async def handle_complete_tool(stream, complete, deferred_scan_calls: list | None = None) -> bool:
+async def handle_complete_tool(
+    stream, complete, deferred_scan_calls: list | None = None
+) -> bool:
     """Обрабатывает один complete-блок: парсит, исполняет или показывает ошибку.
 
     Возвращает True если блок реально исполнен (для инкремента счётчика).
     КЛЮЧЕВОЕ ОТЛИЧИЕ от старой логики — если call=None, мы НЕ молчим:
     показываем error-панель и добавляем ToolResult в inline_results.
     """
-    if deferred_scan_calls and complete.tool_name not in ("read", "grep", "think", "plan"):
+    if deferred_scan_calls and complete.tool_name not in (
+        "read",
+        "grep",
+        "think",
+        "plan",
+    ):
         await flush_deferred_scan_tools(stream, deferred_scan_calls)
 
     # think — это не исполняемый инструмент, а отображаемая мысль.
@@ -155,7 +166,9 @@ async def handle_complete_tool(stream, complete, deferred_scan_calls: list | Non
 
     # Factory: пересчитает subtitle с реальным output после выполнения.
     def _mk_subtitle(result):
-        return _tool_subtitle(stream.model, write_time, complete.raw, result.output or "")
+        return _tool_subtitle(
+            stream.model, write_time, complete.raw, result.output or ""
+        )
 
     if complete.tool_name == "subagent":
         # subagent выполняется в agent/loop.py — здесь только парсим/валидируем

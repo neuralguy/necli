@@ -7,10 +7,21 @@ import re
 from .xml_utils import escape_xml_attr
 
 THEME_PART_PATH = "word/theme/theme1.xml"
-THEME_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+THEME_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+)
 THEME_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.theme+xml"
 
-COLOR_TAGS = ["dk2", "lt2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6"]
+COLOR_TAGS = [
+    "dk2",
+    "lt2",
+    "accent1",
+    "accent2",
+    "accent3",
+    "accent4",
+    "accent5",
+    "accent6",
+]
 READ_TAGS = ["dk1", "lt1", *COLOR_TAGS, "hlink", "folHlink"]
 SLOTS = {
     "dark1": "dk1",
@@ -76,7 +87,9 @@ def apply_theme_fonts(xml: str, fonts: dict) -> str:
             continue
         nxt = re.sub(
             r'(<a:latin typeface=")[^"]*(")',
-            lambda m, _key=key: m.group(1) + escape_xml_attr(fonts.get(_key, "")) + m.group(2),
+            lambda m, _key=key: (
+                m.group(1) + escape_xml_attr(fonts.get(_key, "")) + m.group(2)
+            ),
             sec,
         )
         if fonts.get("eastAsia") is not None:
@@ -99,7 +112,8 @@ def read_theme_colors(xml: str):
         out["name"] = nm.group(1)
     for tag in READ_TAGS:
         m = re.search(
-            rf"<a:{tag}>\s*<a:(?:srgbClr val|sysClr[^>]*? lastClr)=\"([0-9A-Fa-f]{{6}})\"", scheme
+            rf"<a:{tag}>\s*<a:(?:srgbClr val|sysClr[^>]*? lastClr)=\"([0-9A-Fa-f]{{6}})\"",
+            scheme,
         )
         if m:
             out[tag] = m.group(1).upper()

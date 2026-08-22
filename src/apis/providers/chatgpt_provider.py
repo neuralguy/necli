@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import json
 import uuid
@@ -9,17 +10,62 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+import websockets
+from websockets.asyncio.client import ClientConnection
+from websockets.exceptions import InvalidStatus
 
-from apis.base import BaseProvider, _format_api_error
+from apis.base import BaseProvider, _format_api_error, _RetryableStreamError
 from apis.chatgpt_auth import CHATGPT_RESPONSES_URL, get_chatgpt_access
 from apis.messages import AIMessage, AIMessageChunk
 from apis.models import ApiProviderDefinition
+from logger import logger
+
+
+class _ResponsesWebSocket:
+    def __init__(self, connection: ClientConnection, timeout: float) -> None:
+        self._connection = connection
+        self._timeout = timeout
+        self._lock = asyncio.Lock()
+
+    async def stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        async with self._lock:
+            await asyncio.wait_for(
+                self._connection.send(json.dumps(payload)), timeout=self._timeout
+            )
+            while True:
+                raw = await asyncio.wait_for(self._connection.recv(), timeout=self._timeout)
+                if not isinstance(raw, str):
+                    raise ValueError("ChatGPT websocket returned a binary event")
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                yield event
+                if event.get("type") in {
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                    "error",
+                }:
+                    return
+
+    async def close(self) -> None:
+        await self._connection.close()
 
 
 class ChatGPTProvider(BaseProvider):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._session_id = str(uuid.uuid4())
+        self._websocket_enabled = False
+        self._websocket: _ResponsesWebSocket | None = None
+        self._websocket_disabled = False
+        self._websocket_previous_response_id: str | None = None
+        self._websocket_previous_input: list[dict[str, Any]] | None = None
+        self._websocket_previous_output: list[dict[str, Any]] | None = None
+        self._websocket_previous_properties: str | None = None
 
     @staticmethod
     def _response_tools(tools: Any) -> list[dict[str, Any]]:
@@ -69,16 +115,40 @@ class ChatGPTProvider(BaseProvider):
 
     def _response_input(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
+        open_call_ids: set[str] = set()
         for message in messages:
             role = str(message.get("role") or "user")
             if role == "tool":
-                result.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": str(message.get("tool_call_id") or ""),
-                        "output": str(message.get("content") or ""),
-                    }
-                )
+                call_id = str(message.get("tool_call_id") or "")
+                output = str(message.get("content") or "")
+                if call_id and call_id in open_call_ids:
+                    result.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": output,
+                        }
+                    )
+                    open_call_ids.remove(call_id)
+                else:
+                    logger.warning(
+                        "ChatGPT OAuth: preserving orphan tool output as user text (call_id={})",
+                        call_id or "<empty>",
+                    )
+                    result.append(
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": (
+                                        f"[Tool result for {call_id or 'unknown call'}]\n{output}"
+                                    ),
+                                }
+                            ],
+                        }
+                    )
                 continue
             response_role = "developer" if role == "system" else role
             calls = message.get("tool_calls") or []
@@ -92,14 +162,17 @@ class ChatGPTProvider(BaseProvider):
                 result.append({"type": "message", "role": response_role, "content": parts})
             for call in calls:
                 function = call.get("function") or {}
+                call_id = str(call.get("id") or "")
                 result.append(
                     {
                         "type": "function_call",
-                        "call_id": str(call.get("id") or ""),
+                        "call_id": call_id,
                         "name": str(function.get("name") or ""),
                         "arguments": str(function.get("arguments") or "{}"),
                     }
                 )
+                if call_id:
+                    open_call_ids.add(call_id)
         return result
 
     def _responses_payload(self, params: dict[str, Any], *, stream: bool) -> dict[str, Any]:
@@ -179,16 +252,331 @@ class ChatGPTProvider(BaseProvider):
             await response.aclose()
         raise AssertionError("unreachable")
 
+    @staticmethod
+    def _websocket_url() -> str:
+        if CHATGPT_RESPONSES_URL.startswith("https://"):
+            return "wss://" + CHATGPT_RESPONSES_URL.removeprefix("https://")
+        if CHATGPT_RESPONSES_URL.startswith("http://"):
+            return "ws://" + CHATGPT_RESPONSES_URL.removeprefix("http://")
+        raise ValueError("ChatGPT Responses URL must use HTTP or HTTPS")
+
+    async def _connect_websocket(self, session_key: str = "default") -> _ResponsesWebSocket:
+        del session_key
+        timeout = float(self.timeout or 300)
+        for refresh in (False, True):
+            headers = await self._headers(force_refresh=refresh)
+            headers.pop("Accept", None)
+            headers.pop("Content-Type", None)
+            user_agent = headers.pop("User-Agent", None)
+            try:
+                connection = await websockets.connect(
+                    self._websocket_url(),
+                    additional_headers=headers,
+                    user_agent_header=user_agent,
+                    proxy=self._proxy or True,
+                    open_timeout=min(timeout, 30.0),
+                    ping_interval=20.0,
+                    ping_timeout=20.0,
+                    close_timeout=5.0,
+                    max_size=None,
+                )
+                return _ResponsesWebSocket(connection, timeout)
+            except InvalidStatus as exc:
+                if exc.response.status_code != 401 or refresh:
+                    raise
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def _websocket_properties(payload: dict[str, Any]) -> str:
+        properties = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"input", "previous_response_id", "type"}
+        }
+        return json.dumps(properties, sort_keys=True, separators=(",", ":"))
+
+    def _websocket_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = {**payload, "type": "response.create"}
+        current_input = payload.get("input") or []
+        properties = self._websocket_properties(request)
+        previous_input = self._websocket_previous_input
+        can_reuse = (
+            self._websocket_previous_response_id is not None
+            and previous_input is not None
+            and self._websocket_previous_output is not None
+            and properties == self._websocket_previous_properties
+            and current_input[: len(previous_input)] == previous_input
+        )
+        if can_reuse:
+            incremental = list(current_input[len(previous_input) :])
+            previous_output = self._websocket_previous_output or []
+            if incremental[: len(previous_output)] == previous_output:
+                next_input = incremental[len(previous_output) :]
+                # ChatGPT's Codex websocket occasionally loses the function-call
+                # association behind previous_response_id. Sending only the output
+                # then fails with "No tool call found ...". Tool continuations are
+                # small and correctness-sensitive, so send their complete history.
+                if not any(
+                    item.get("type") == "function_call_output"
+                    for item in next_input
+                    if isinstance(item, dict)
+                ):
+                    request["input"] = next_input
+                    request["previous_response_id"] = self._websocket_previous_response_id
+        return request
+
+    @staticmethod
+    def _canonical_output_item(item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        item_type = item.get("type")
+        if item_type == "message" and item.get("role") == "assistant":
+            content = [
+                {"type": "output_text", "text": str(part.get("text") or "")}
+                for part in item.get("content") or []
+                if isinstance(part, dict) and part.get("type") == "output_text"
+            ]
+            return {"type": "message", "role": "assistant", "content": content}
+        if item_type == "function_call":
+            return {
+                "type": "function_call",
+                "call_id": str(item.get("call_id") or ""),
+                "name": str(item.get("name") or ""),
+                "arguments": str(item.get("arguments") or "{}"),
+            }
+        return None
+
+    async def _close_websocket(self) -> None:
+        websocket, self._websocket = self._websocket, None
+        self._websocket_previous_response_id = None
+        self._websocket_previous_input = None
+        self._websocket_previous_output = None
+        self._websocket_previous_properties = None
+        if websocket is not None:
+            await websocket.close()
+
+    async def _websocket_events(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        if self._websocket is None:
+            self._websocket = await self._connect_websocket()
+        request = self._websocket_payload(payload)
+        terminal = False
+        output_text: list[str] = []
+        output_items: list[dict[str, Any]] = []
+        try:
+            async for event in self._websocket.stream(request):
+                event_type = event.get("type")
+                if event_type == "response.output_text.delta":
+                    output_text.append(str(event.get("delta") or ""))
+                elif event_type == "response.output_item.done":
+                    item = self._canonical_output_item(event.get("item"))
+                    if item is not None:
+                        output_items.append(item)
+                if event_type == "response.completed":
+                    response = event.get("response") or {}
+                    response_id = response.get("id")
+                    if isinstance(response_id, str) and response_id:
+                        completed_items = [
+                            item
+                            for raw_item in response.get("output") or []
+                            if (item := self._canonical_output_item(raw_item)) is not None
+                        ]
+                        if completed_items:
+                            output_items = completed_items
+                        elif output_text and not any(
+                            item.get("type") == "message" for item in output_items
+                        ):
+                            output_items.insert(
+                                0,
+                                {
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [
+                                        {
+                                            "type": "output_text",
+                                            "text": "".join(output_text),
+                                        }
+                                    ],
+                                },
+                            )
+                        self._websocket_previous_response_id = response_id
+                        self._websocket_previous_input = list(
+                            payload.get("input") or []
+                        )
+                        self._websocket_previous_output = output_items
+                        self._websocket_previous_properties = (
+                            self._websocket_properties(request)
+                        )
+                    terminal = True
+                elif event_type == "response.incomplete":
+                    terminal = True
+                yield event
+        finally:
+            if not terminal:
+                await self._close_websocket()
+        if not terminal:
+            raise ConnectionError("ChatGPT websocket closed before a terminal event")
+
+    async def _stream_response_events(
+        self, events: AsyncIterator[dict[str, Any]]
+    ) -> AsyncIterator[AIMessageChunk]:
+        argument_items: set[str] = set()
+        async for event in events:
+            event_type = str(event.get("type") or "")
+            if event_type == "response.output_text.delta":
+                yield AIMessageChunk(content=str(event.get("delta") or ""))
+            elif event_type in {
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_text.delta",
+            }:
+                delta = str(event.get("delta") or "")
+                yield AIMessageChunk(content="", additional_kwargs={"reasoning_content": delta})
+            elif event_type == "response.output_item.added":
+                item = event.get("item") or {}
+                if item.get("type") == "function_call":
+                    yield AIMessageChunk(
+                        content="",
+                        tool_call_chunks=[
+                            {
+                                "index": int(event.get("output_index") or 0),
+                                "id": item.get("call_id") or item.get("id"),
+                                "name": item.get("name"),
+                                "args": "",
+                            }
+                        ],
+                    )
+            elif event_type == "response.function_call_arguments.delta":
+                item_id = str(event.get("item_id") or event.get("call_id") or "")
+                argument_items.add(item_id)
+                yield AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "index": int(event.get("output_index") or 0),
+                            "id": event.get("call_id"),
+                            "name": None,
+                            "args": str(event.get("delta") or ""),
+                        }
+                    ],
+                )
+            elif event_type == "response.output_item.done":
+                item = event.get("item") or {}
+                item_id = str(item.get("id") or item.get("call_id") or "")
+                if item.get("type") == "function_call" and item_id not in argument_items:
+                    yield AIMessageChunk(
+                        content="",
+                        tool_call_chunks=[
+                            {
+                                "index": int(event.get("output_index") or 0),
+                                "id": item.get("call_id") or item.get("id"),
+                                "name": item.get("name"),
+                                "args": str(item.get("arguments") or "{}"),
+                            }
+                        ],
+                    )
+            elif event_type == "response.completed":
+                completed = event.get("response") or {}
+                from apis.chatgpt_usage import schedule_chatgpt_usage_refresh
+
+                schedule_chatgpt_usage_refresh(proxy=self._proxy)
+                yield AIMessageChunk(
+                    content="",
+                    usage_metadata=self._usage(completed.get("usage")),
+                    response_metadata={
+                        "model_name": completed.get("model", self.model),
+                        "finish_reason": "stop",
+                        "stream_complete": True,
+                    },
+                )
+                return
+            elif event_type == "response.incomplete":
+                incomplete = event.get("response") or {}
+                details = incomplete.get("incomplete_details") or {}
+                reason = details.get("reason") or "max_output_tokens"
+                from apis.chatgpt_usage import schedule_chatgpt_usage_refresh
+
+                schedule_chatgpt_usage_refresh(proxy=self._proxy)
+                yield AIMessageChunk(
+                    content="",
+                    usage_metadata=self._usage(incomplete.get("usage")),
+                    response_metadata={
+                        "model_name": incomplete.get("model", self.model),
+                        "finish_reason": reason,
+                        "stream_complete": True,
+                    },
+                )
+                return
+            elif event_type in {"response.failed", "error"}:
+                error = event.get("error") or (event.get("response") or {}).get("error")
+                if isinstance(error, dict):
+                    raw_status = error.get("status_code") or error.get("code")
+                    try:
+                        status = int(raw_status)
+                    except (TypeError, ValueError):
+                        status = None
+                    error_type = str(error.get("type") or "").lower()
+                    if status in self._RETRYABLE_STATUS_CODES or error_type in {
+                        "api_error",
+                        "overloaded_error",
+                        "rate_limit_error",
+                        "server_error",
+                    }:
+                        raise _RetryableStreamError(
+                            status or (429 if "rate_limit" in error_type else 500),
+                            f"{self._provider_name} API Error: {error}",
+                        )
+                raise ValueError(f"{self._provider_name} API Error: {error}")
+
+        yield AIMessageChunk(
+            content="",
+            response_metadata={
+                "finish_reason": None,
+                "stream_complete": False,
+                "stream_incomplete": True,
+            },
+        )
+
     async def _astream_attempt(self, params: dict[str, Any]) -> AsyncIterator[AIMessageChunk]:
+        if self._websocket_enabled and not self._websocket_disabled:
+            logger.debug("ChatGPT OAuth transport: WebSocket")
+            payload = self._responses_payload(params, stream=True)
+            yielded_any = False
+            try:
+                async for chunk in self._stream_response_events(self._websocket_events(payload)):
+                    yielded_any = True
+                    yield chunk
+                return
+            except Exception as exc:
+                self._websocket_disabled = True
+                await self._close_websocket()
+                if yielded_any:
+                    logger.warning(
+                        "ChatGPT websocket failed after partial response: {}", exc
+                    )
+                    raise
+                logger.warning("ChatGPT websocket unavailable, using SSE: {}", exc)
+        logger.debug("ChatGPT OAuth transport: SSE")
+        async for chunk in self._astream_sse_attempt(params):
+            yield chunk
+
+    async def _astream_sse_attempt(self, params: dict[str, Any]) -> AsyncIterator[AIMessageChunk]:
         payload = self._responses_payload(params, stream=True)
         decoder = codecs.getincrementaldecoder("utf-8")()
         buffer = ""
-        argument_items: set[str] = set()
         async with httpx.AsyncClient(**self._client_kwargs(params)) as client:
             response = await self._open_stream(client, payload)
             try:
                 if response.status_code != 200:
                     body = (await response.aread()).decode("utf-8", errors="replace")
+                    if response.status_code in self._RETRYABLE_STATUS_CODES:
+                        raise _RetryableStreamError(
+                            response.status_code,
+                            _format_api_error(
+                                self._provider_name,
+                                response.status_code,
+                                body,
+                                response.headers.get("content-type") or "",
+                            ),
+                        )
                     raise ValueError(
                         _format_api_error(
                             self._provider_name,
@@ -197,95 +585,28 @@ class ChatGPTProvider(BaseProvider):
                             response.headers.get("content-type") or "",
                         )
                     )
-                async for raw in response.aiter_bytes():
-                    buffer += decoder.decode(raw)
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if not data or data == "[DONE]":
-                            continue
-                        try:
-                            event = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-                        event_type = str(event.get("type") or "")
-                        if event_type == "response.output_text.delta":
-                            yield AIMessageChunk(content=str(event.get("delta") or ""))
-                        elif event_type in {
-                            "response.reasoning_summary_text.delta",
-                            "response.reasoning_text.delta",
-                        }:
-                            delta = str(event.get("delta") or "")
-                            yield AIMessageChunk(
-                                content="", additional_kwargs={"reasoning_content": delta}
-                            )
-                        elif event_type == "response.output_item.added":
-                            item = event.get("item") or {}
-                            if item.get("type") == "function_call":
-                                yield AIMessageChunk(
-                                    content="",
-                                    tool_call_chunks=[
-                                        {
-                                            "index": int(event.get("output_index") or 0),
-                                            "id": item.get("call_id") or item.get("id"),
-                                            "name": item.get("name"),
-                                            "args": "",
-                                        }
-                                    ],
-                                )
-                        elif event_type == "response.function_call_arguments.delta":
-                            item_id = str(event.get("item_id") or event.get("call_id") or "")
-                            argument_items.add(item_id)
-                            yield AIMessageChunk(
-                                content="",
-                                tool_call_chunks=[
-                                    {
-                                        "index": int(event.get("output_index") or 0),
-                                        "id": event.get("call_id"),
-                                        "name": None,
-                                        "args": str(event.get("delta") or ""),
-                                    }
-                                ],
-                            )
-                        elif event_type == "response.output_item.done":
-                            item = event.get("item") or {}
-                            item_id = str(item.get("id") or item.get("call_id") or "")
-                            if (
-                                item.get("type") == "function_call"
-                                and item_id not in argument_items
-                            ):
-                                yield AIMessageChunk(
-                                    content="",
-                                    tool_call_chunks=[
-                                        {
-                                            "index": int(event.get("output_index") or 0),
-                                            "id": item.get("call_id") or item.get("id"),
-                                            "name": item.get("name"),
-                                            "args": str(item.get("arguments") or "{}"),
-                                        }
-                                    ],
-                                )
-                        elif event_type == "response.completed":
-                            completed = event.get("response") or {}
-                            from apis.chatgpt_usage import schedule_chatgpt_usage_refresh
 
-                            schedule_chatgpt_usage_refresh(proxy=self._proxy)
-                            yield AIMessageChunk(
-                                content="",
-                                usage_metadata=self._usage(completed.get("usage")),
-                                response_metadata={
-                                    "model_name": completed.get("model", self.model),
-                                    "finish_reason": "stop",
-                                    "stream_complete": True,
-                                },
-                            )
-                            return
-                        elif event_type in {"response.failed", "error"}:
-                            error = event.get("error") or (event.get("response") or {}).get("error")
-                            raise ValueError(f"{self._provider_name} API Error: {error}")
+                async def events() -> AsyncIterator[dict[str, Any]]:
+                    nonlocal buffer
+                    async for raw in response.aiter_bytes():
+                        buffer += decoder.decode(raw)
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if not data or data == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            if isinstance(event, dict):
+                                yield event
+
+                async for chunk in self._stream_response_events(events()):
+                    yield chunk
             finally:
                 await response.aclose()
 
@@ -384,6 +705,7 @@ def create_chatgpt_provider(
     provider._provider_name = definition.name
     provider._provider_id = definition.id
     provider._proxy = definition.proxy
+    provider._websocket_enabled = definition.extra.get("websocket") is True
     return provider
 
 

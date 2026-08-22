@@ -42,7 +42,9 @@ _THINK_CACHE: tuple[int, bool] | None = None
 
 _MD_LINK_RE = re.compile(r"!?\[([^]]*)\]\([^)]*\)")
 _MD_INLINE_RE = re.compile(r"(`+|\*{1,3}|_{1,3}|~~)(.*?)\1")
-_MD_LINE_PREFIX_RE = re.compile(r"^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+|[-*_]{3,}\s*$)")
+_MD_LINE_PREFIX_RE = re.compile(
+    r"^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+|[-*_]{3,}\s*$)"
+)
 _MD_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})[^\n]*$")
 
 
@@ -310,7 +312,7 @@ def compact_thought_preview(
 def render_thinking_summary(
     text: str,
     *,
-    elapsed: float | int | None = None,
+    elapsed: float | None = None,
     label: str | None = None,
 ):
     """Компактная плашка мысли без утечки её содержимого."""
@@ -319,11 +321,11 @@ def render_thinking_summary(
     from config.i18n import format_duration
     from config.i18n import t as _i18n
 
-    emoji = ui.get("symbols.thinking_emoji", "💭")
+    emoji = ui.get("symbols.thinking_emoji", "⋯")
     header = Text()
     header.append(
         f"{emoji} {label or _i18n('ui.thinking_stream')}",
-        style=f"bold {_theme('magenta')}",
+        style=_theme("dim_alt"),
     )
     if elapsed is not None:
         header.append("  ")
@@ -391,7 +393,7 @@ def strip_partial_think_block(text: str) -> str:
 def render_think_static(
     log: ThinkLog,
     streaming: bool = False,
-    elapsed: float | int | None = None,
+    elapsed: float | None = None,
 ):
     """Скрывает активную мысль, сохраняя прежний статический рендер."""
     muted = _theme("dim_text")
@@ -400,7 +402,7 @@ def render_think_static(
     from config.i18n import format_duration
     from config.i18n import t as _i18n
 
-    emoji = ui.get("symbols.thinking_emoji", "💭")
+    emoji = ui.get("symbols.thinking_emoji", "⋯")
     label = _i18n("ui.thinking")
 
     raw_text = "\n\n".join(step.raw_text or step.text for step in log.steps)
@@ -415,7 +417,7 @@ def render_think_static(
         from agent.markdown import ThoughtMarkdown
 
         header = Text()
-        header.append(f"{emoji} {label}", style=f"bold {_theme('magenta')}")
+        header.append(f"{emoji} {label}", style=_theme("dim_alt"))
         preview_source = "\n\n".join(step.raw_text or step.text for step in log.steps)
         prefix = ui.get("symbols.summary_prefix", "⎿  ")
         try:

@@ -108,8 +108,7 @@ class ExternalChange:
 
 def _normalize_own(p: str) -> str:
     """Нормализует путь к relpath: убирает ./ префикс и слэши."""
-    if p.startswith("./"):
-        p = p[2:]
+    p = p.removeprefix("./")
     return p.lstrip("/")
 
 

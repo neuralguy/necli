@@ -13,6 +13,7 @@ from config._atomic import atomic_write_json
 from config.paths import APIS_FILE
 from config.settings import get, set_value
 from logger import logger
+from models import DEFAULT_CONTEXT_LIMIT
 
 _apis_cache: dict | None = None
 _apis_load_failed: bool = False
@@ -28,6 +29,35 @@ def _locked(func):
             return func(*args, **kwargs)
 
     return wrapper
+
+
+def _migrate_legacy_default_contexts(data: dict) -> bool:
+    """Replace the former implicit 128K default without touching named models."""
+    providers = data.get("providers")
+    if not isinstance(providers, list):
+        return False
+
+    changed = False
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        models = provider.get("models")
+        if not isinstance(models, list):
+            continue
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            model_id = str(model.get("id") or "").strip()
+            display_name = str(model.get("display_name") or "").strip()
+            context_window = model.get("context_window")
+            if (
+                model_id
+                and (not display_name or display_name == model_id)
+                and context_window in (128_000, "128000")
+            ):
+                model["context_window"] = DEFAULT_CONTEXT_LIMIT
+                changed = True
+    return changed
 
 
 @_locked
@@ -58,6 +88,9 @@ def _load_apis() -> dict:
                 f"Using empty config in memory; saving is disabled until file is fixed."
             )
     else:
+        # Missing file is a valid recovery path after a malformed config.
+        # Clear the read-only latch before legacy migration/recreation.
+        _apis_load_failed = False
         # Миграция из config.json
         providers = get("api_providers", [])
         keys = get("api_keys", {})
@@ -67,6 +100,13 @@ def _load_apis() -> dict:
             # Очищаем из config.json
             set_value("api_providers", [])
             set_value("api_keys", {})
+
+    if _migrate_legacy_default_contexts(data):
+        _save_apis(data)
+        logger.info(
+            "Migrated models with the former implicit 128K context limit to {}",
+            DEFAULT_CONTEXT_LIMIT,
+        )
 
     _apis_cache = copy.deepcopy(data)
     return copy.deepcopy(_apis_cache)
@@ -159,7 +199,9 @@ def list_routers() -> list[dict]:
 
 @_locked
 def get_router(router_id: str) -> dict | None:
-    return next((router for router in list_routers() if router["id"] == router_id), None)
+    return next(
+        (router for router in list_routers() if router["id"] == router_id), None
+    )
 
 
 @_locked
@@ -168,7 +210,9 @@ def save_router(router_id: str, name: str, routes: list[dict]) -> dict:
     if not router_id:
         raise ValueError("Router ID is required")
     normalized = [
-        value for route in routes if (value := _normalize_router_route(route)) is not None
+        value
+        for route in routes
+        if (value := _normalize_router_route(route)) is not None
     ]
     if not normalized:
         raise ValueError("Router must contain at least one model")
@@ -218,7 +262,12 @@ def move_router_route(router_id: str, index: int, offset: int) -> bool:
     if router is None:
         return False
     target = index + offset
-    if index < 0 or index >= len(router["routes"]) or target < 0 or target >= len(router["routes"]):
+    if (
+        index < 0
+        or index >= len(router["routes"])
+        or target < 0
+        or target >= len(router["routes"])
+    ):
         return False
     router["routes"][index], router["routes"][target] = (
         router["routes"][target],
@@ -298,7 +347,9 @@ def add_api_config(
             keys[provider_id] = [entry["key"] for entry in entries]
 
     _save_apis(data)
-    logger.info(f"API provider {'updated' if found else 'added'}: {provider_id} ({name})")
+    logger.info(
+        f"API provider {'updated' if found else 'added'}: {provider_id} ({name})"
+    )
     return copy.deepcopy(config_entry)
 
 
@@ -425,7 +476,14 @@ def get_api_credentials(provider_id: str) -> list[dict[str, Any]]:
     if provider_id == "anthropic":
         auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "").strip()
         if auth_token:
-            return [{"key": auth_token, "proxy": "", "main": True, "name": "ANTHROPIC_AUTH_TOKEN"}]
+            return [
+                {
+                    "key": auth_token,
+                    "proxy": "",
+                    "main": True,
+                    "name": "ANTHROPIC_AUTH_TOKEN",
+                }
+            ]
     return credentials
 
 
@@ -458,9 +516,13 @@ def _compact_credential(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 @_locked
-def add_api_credential(provider_id: str, api_key: str, proxy: str = "", name: str = "") -> None:
+def add_api_credential(
+    provider_id: str, api_key: str, proxy: str = "", name: str = ""
+) -> None:
     entries = get_api_credentials(provider_id)
-    entries.append({"key": api_key.strip(), "proxy": proxy.strip(), "name": name.strip()})
+    entries.append(
+        {"key": api_key.strip(), "proxy": proxy.strip(), "name": name.strip()}
+    )
     set_api_credentials(provider_id, entries)
 
 
@@ -553,10 +615,14 @@ def get_provider_balance(provider_id: str) -> float:
     """Суммарный баланс всех ключей провайдера."""
     if provider_id == "routers":
         provider_ids = {
-            route["provider_id"] for router in list_routers() for route in router["routes"]
+            route["provider_id"]
+            for router in list_routers()
+            for route in router["routes"]
         }
         return sum(get_provider_balance(item) for item in provider_ids)
-    return sum(_parse_balance(cred.get("balance")) for cred in get_api_credentials(provider_id))
+    return sum(
+        _parse_balance(cred.get("balance")) for cred in get_api_credentials(provider_id)
+    )
 
 
 @_locked
@@ -609,7 +675,7 @@ def add_model_to_provider(
     provider_id: str,
     model_id: str,
     display_name: str = "",
-    context_window: int = 128_000,
+    context_window: int = DEFAULT_CONTEXT_LIMIT,
     input_price: float = 0.0,
     output_price: float = 0.0,
 ) -> bool:

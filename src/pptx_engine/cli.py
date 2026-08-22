@@ -22,7 +22,9 @@ VERSION = "0.1.0"
 
 def _emit(payload: dict[str, Any], pretty: bool = False) -> None:
     print(
-        json.dumps(payload, ensure_ascii=False, indent=2 if pretty else None, sort_keys=pretty),
+        json.dumps(
+            payload, ensure_ascii=False, indent=2 if pretty else None, sort_keys=pretty
+        ),
         flush=True,
     )
 
@@ -34,19 +36,25 @@ def _operations_from(value: str) -> list[dict[str, Any]]:
     if isinstance(decoded, dict):
         decoded = decoded.get("operations", [decoded])
     if not isinstance(decoded, list) or not all(isinstance(x, dict) for x in decoded):
-        raise PptxError("operations must be a JSON array or {'operations': [...]} object")
+        raise PptxError(
+            "operations must be a JSON array or {'operations': [...]} object"
+        )
     return decoded
 
 
 def _inspect(
     document: PptxDocument, slide_index: int | None, include_xml: bool = False
 ) -> dict[str, Any]:
-    slides = document.deck.slides if slide_index is None else [document.slide(slide_index)]
+    slides = (
+        document.deck.slides if slide_index is None else [document.slide(slide_index)]
+    )
     summary = []
     for slide in slides:
         elements = []
 
-        def walk(items: list[Any], parent_id: str | None = None, _elements=elements) -> None:
+        def walk(
+            items: list[Any], parent_id: str | None = None, _elements=elements
+        ) -> None:
             for element in items:
                 item = {
                     "id": element.id,
@@ -140,7 +148,8 @@ def command_apply(args: argparse.Namespace) -> dict[str, Any]:
     }
     if args.model_output:
         Path(args.model_output).write_text(
-            json.dumps(document.to_model(), ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(document.to_model(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
         payload["model_output"] = str(Path(args.model_output).resolve())
     return payload
@@ -165,7 +174,9 @@ def command_render(args: argparse.Namespace) -> dict[str, Any]:
     if not args.output:
         raise PptxError("--output is required for svg and png rendering")
     if args.format == "svg":
-        Path(args.output).write_text(render_svg(document, args.slide, args.width), encoding="utf-8")
+        Path(args.output).write_text(
+            render_svg(document, args.slide, args.width), encoding="utf-8"
+        )
     else:
         render_png(document, args.slide, args.output, args.width)
     return {
@@ -220,7 +231,9 @@ def _agent_request(request: dict[str, Any]) -> dict[str, Any]:
             )
         elif action == "validate":
             required = ["[Content_Types].xml", "_rels/.rels", "ppt/presentation.xml"]
-            missing = [item for item in required if item not in document.archive.entries]
+            missing = [
+                item for item in required if item not in document.archive.entries
+            ]
             result = {
                 "ok": not missing,
                 "missing_parts": missing,
@@ -229,14 +242,17 @@ def _agent_request(request: dict[str, Any]) -> dict[str, Any]:
         elif action == "export-model":
             if request.get("output"):
                 Path(request["output"]).write_text(
-                    json.dumps(document.to_model(), ensure_ascii=False, indent=2), encoding="utf-8"
+                    json.dumps(document.to_model(), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
                 )
                 result = {"ok": True, "output": str(Path(request["output"]).resolve())}
             else:
                 result = {"ok": True, "model": document.to_model()}
         elif action == "apply":
             results = apply_operations(
-                document, request.get("operations", []), atomic=bool(request.get("atomic", True))
+                document,
+                request.get("operations", []),
+                atomic=bool(request.get("atomic", True)),
             )
             output = request["output"]
             document.save(output)
@@ -259,19 +275,33 @@ def _agent_request(request: dict[str, Any]) -> dict[str, Any]:
                     Path(output).write_text(
                         json.dumps(tree, ensure_ascii=False, indent=2), encoding="utf-8"
                     )
-                    result = {"ok": True, "output": str(Path(output).resolve()), "format": fmt}
+                    result = {
+                        "ok": True,
+                        "output": str(Path(output).resolve()),
+                        "format": fmt,
+                    }
                 else:
                     result = {"ok": True, "slide": tree, "format": fmt}
             elif fmt == "svg":
                 if not output:
                     raise PptxError("render SVG requires output")
-                Path(output).write_text(render_svg(document, slide, width), encoding="utf-8")
-                result = {"ok": True, "output": str(Path(output).resolve()), "format": fmt}
+                Path(output).write_text(
+                    render_svg(document, slide, width), encoding="utf-8"
+                )
+                result = {
+                    "ok": True,
+                    "output": str(Path(output).resolve()),
+                    "format": fmt,
+                }
             elif fmt == "png":
                 if not output:
                     raise PptxError("render PNG requires output")
                 render_png(document, slide, output, width)
-                result = {"ok": True, "output": str(Path(output).resolve()), "format": fmt}
+                result = {
+                    "ok": True,
+                    "output": str(Path(output).resolve()),
+                    "format": fmt,
+                }
             else:
                 raise PptxError("format must be json, svg, or png")
         result["request_id"] = request.get("request_id")
@@ -291,7 +321,9 @@ def command_agent(_: argparse.Namespace) -> int:
         request_id = None
         try:
             request = json.loads(raw)
-            request_id = request.get("request_id") if isinstance(request, dict) else None
+            request_id = (
+                request.get("request_id") if isinstance(request, dict) else None
+            )
             answer = _agent_request(request)
         except Exception as exc:
             exit_code = 1
@@ -311,7 +343,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pptx-agent", description="Pure-Python PPTX engine and agent-ready CLI"
     )
     parser.add_argument("--version", action="version", version=VERSION)
-    parser.add_argument("--pretty", action="store_true", help="pretty-print the JSON response")
+    parser.add_argument(
+        "--pretty", action="store_true", help="pretty-print the JSON response"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     create = sub.add_parser("create", help="create a blank valid PPTX")
     create.add_argument("--output", required=True)
@@ -329,12 +363,16 @@ def build_parser() -> argparse.ArgumentParser:
     model.set_defaults(handler=command_export_model)
     apply = sub.add_parser("apply", help="apply a JSON operation batch atomically")
     apply.add_argument("--input", required=True)
-    apply.add_argument("--operations", required=True, help="JSON file path or inline JSON")
+    apply.add_argument(
+        "--operations", required=True, help="JSON file path or inline JSON"
+    )
     apply.add_argument("--output", required=True)
     apply.add_argument("--model-output")
     apply.add_argument("--no-atomic", action="store_true")
     apply.set_defaults(handler=command_apply)
-    render = sub.add_parser("render", help="render one slide to SVG, PNG, or render-tree JSON")
+    render = sub.add_parser(
+        "render", help="render one slide to SVG, PNG, or render-tree JSON"
+    )
     render.add_argument("--input", required=True)
     render.add_argument("--slide", required=True, type=int)
     render.add_argument("--format", required=True, choices=("svg", "png", "json"))
@@ -344,7 +382,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", help="validate PPTX package essentials")
     validate.add_argument("--input", required=True)
     validate.set_defaults(handler=command_validate)
-    agent = sub.add_parser("agent", help="serve newline-delimited JSON agent requests on stdin")
+    agent = sub.add_parser(
+        "agent", help="serve newline-delimited JSON agent requests on stdin"
+    )
     agent.set_defaults(handler=command_agent)
     return parser
 

@@ -131,9 +131,7 @@ def read_docx_compact(path: Path) -> str:
             dims = ""
             if b.image_width_px and b.image_height_px:
                 dims = f" {round(b.image_width_px)}x{round(b.image_height_px)}px"
-            payload = (
-                f"{dims} align={b.image_align or 'left'} wrap={b.image_wrap or 'inline'}".strip()
-            )
+            payload = f"{dims} align={b.image_align or 'left'} wrap={b.image_wrap or 'inline'}".strip()
         elif b.chart_display:
             c = b.chart_display or {}
             kind = "chart"
@@ -431,7 +429,21 @@ def _jpeg_size(data: bytes) -> tuple[int, int] | None:
         length = int.from_bytes(data[i : i + 2], "big")
         if length < 2 or i + length > len(data):
             break
-        if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }:
             h = int.from_bytes(data[i + 3 : i + 5], "big")
             w = int.from_bytes(data[i + 5 : i + 7], "big")
             return w, h
@@ -519,13 +531,18 @@ def _block_spec_to_final(spec: Any, parsed, options: dict) -> list[dict]:
                     "type": "paragraph",
                     "runs": _runs_from_spec(spec),
                     **({"styleId": spec["styleId"]} if spec.get("styleId") else {}),
-                    **({"format": spec["format"]} if spec.get("format") is not None else {}),
+                    **(
+                        {"format": spec["format"]}
+                        if spec.get("format") is not None
+                        else {}
+                    ),
                 },
             }
         ]
     if low in ("h", "heading") or (low.startswith("h") and low[1:].isdigit()):
         level = int(
-            spec.get("level") or (low[1:] if low.startswith("h") and low[1:].isdigit() else 1)
+            spec.get("level")
+            or (low[1:] if low.startswith("h") and low[1:].isdigit() else 1)
         )
         return [
             {
@@ -535,7 +552,11 @@ def _block_spec_to_final(spec: Any, parsed, options: dict) -> list[dict]:
                     "level": level,
                     "runs": _runs_from_spec(spec),
                     **({"styleId": spec["styleId"]} if spec.get("styleId") else {}),
-                    **({"format": spec["format"]} if spec.get("format") is not None else {}),
+                    **(
+                        {"format": spec["format"]}
+                        if spec.get("format") is not None
+                        else {}
+                    ),
                 },
             }
         ]
@@ -557,11 +578,17 @@ def _block_spec_to_final(spec: Any, parsed, options: dict) -> list[dict]:
                     "type": "listItem",
                     "runs": _runs_from_spec(spec),
                     "list": {
-                        "kind": "bullet" if list_kind in ("bullet", "unordered") else "ordered",
+                        "kind": "bullet"
+                        if list_kind in ("bullet", "unordered")
+                        else "ordered",
                         "numId": num_id,
                         "ilvl": max(0, min(8, ilvl)),
                     },
-                    **({"format": spec["format"]} if spec.get("format") is not None else {}),
+                    **(
+                        {"format": spec["format"]}
+                        if spec.get("format") is not None
+                        else {}
+                    ),
                 },
             }
         ]
@@ -575,7 +602,9 @@ def _block_spec_to_final(spec: Any, parsed, options: dict) -> list[dict]:
         return [
             {
                 "kind": "xml",
-                "xml": math_paragraph_xml(latex_to_omml(latex), str(spec.get("align") or "center")),
+                "xml": math_paragraph_xml(
+                    latex_to_omml(latex), str(spec.get("align") or "center")
+                ),
             }
         ]
     if low == "image":
@@ -673,8 +702,16 @@ def _generated_from_source(block) -> dict:
             if block.hidden_bookmarks is not None
             else {}
         ),
-        **({"commentStarts": block.comment_starts} if block.comment_starts is not None else {}),
-        **({"commentEnds": block.comment_ends} if block.comment_ends is not None else {}),
+        **(
+            {"commentStarts": block.comment_starts}
+            if block.comment_starts is not None
+            else {}
+        ),
+        **(
+            {"commentEnds": block.comment_ends}
+            if block.comment_ends is not None
+            else {}
+        ),
         **({"sdtShell": block.sdt_shell} if block.sdt_shell is not None else {}),
     }
 
@@ -691,8 +728,14 @@ def _apply_set(item: dict, op: dict) -> None:
     if has_text and has_runs:
         raise ValueError("set accepts either text or runs, not both")
     if has_text and not has_format:
-        if not block.original_xml or block.type not in ("paragraph", "heading", "listItem"):
-            raise ValueError("text-only set requires a text paragraph; use replace for this block")
+        if not block.original_xml or block.type not in (
+            "paragraph",
+            "heading",
+            "listItem",
+        ):
+            raise ValueError(
+                "text-only set requires a text paragraph; use replace for this block"
+            )
         runs = block.runs or []
         if any(r.math or r.note_ref for r in runs):
             raise ValueError(
@@ -706,7 +749,9 @@ def _apply_set(item: dict, op: dict) -> None:
         for run in runs:
             model = _run_json(run, include_raw=True)
             model.pop("text", None)
-            signatures.append(json.dumps(model, ensure_ascii=False, sort_keys=True, default=str))
+            signatures.append(
+                json.dumps(model, ensure_ascii=False, sort_keys=True, default=str)
+            )
         if len(set(signatures)) > 1:
             raise ValueError(
                 "text-only set is ambiguous for mixed-format runs; use runs or replace"
@@ -774,7 +819,9 @@ def _apply_edit_ops(parsed, ops: list[dict], options: dict) -> list[dict]:
             ]
             items[idx : idx + 1] = new
         elif kind == "delete":
-            for idx in sorted(_find_item_indexes(items, op.get("target")), reverse=True):
+            for idx in sorted(
+                _find_item_indexes(items, op.get("target")), reverse=True
+            ):
                 del items[idx]
         elif kind == "set":
             idxs = _find_item_indexes(items, op.get("target"))
@@ -911,7 +958,8 @@ def docx(call: ToolCall) -> ToolResult:
                         (
                             x
                             for x in visible
-                            if x.id == tok or (tok.isdigit() and x.docx_index == int(tok))
+                            if x.id == tok
+                            or (tok.isdigit() and x.docx_index == int(tok))
                         ),
                         None,
                     )
@@ -945,7 +993,11 @@ def docx(call: ToolCall) -> ToolResult:
             out_path = resolve_path(out_arg, extensions=(".docx",)) if out_arg else path
             if out_path.suffix.lower() != ".docx":
                 out_path = out_path.with_suffix(".docx")
-            if out_path != path and out_path.exists() and args.get("overwrite") is False:
+            if (
+                out_path != path
+                and out_path.exists()
+                and args.get("overwrite") is False
+            ):
                 raise ValueError(f"file already exists: {out_path}")
             return _write_result(out_path, data, call.command, changed="updated")
 

@@ -113,9 +113,7 @@ def create_skill(name: str, description: str, content: str) -> SkillInfo | None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_md = skill_dir / SKILL_FILENAME
     safe_description = " ".join(str(description).splitlines()).strip()
-    text = (
-        f"---\nname: {skill_dir.name}\ndescription: {safe_description}\n---\n\n{content.rstrip()}\n"
-    )
+    text = f"---\nname: {skill_dir.name}\ndescription: {safe_description}\n---\n\n{content.rstrip()}\n"
     atomic_write_text(skill_md, text)
     return _load_skill_info(skill_dir)
 

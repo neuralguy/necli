@@ -71,11 +71,17 @@ def latex_to_unicode(text: str) -> str:
         code_blocks.append(m.group(0))
         return f"\x00CODE{len(code_blocks) - 1}\x00"
 
-    protected = re.sub(r"(?:```|~~~).*?(?:```|~~~)", _save_code, result, flags=re.DOTALL)
+    protected = re.sub(
+        r"(?:```|~~~).*?(?:```|~~~)", _save_code, result, flags=re.DOTALL
+    )
     protected = re.sub(r"`[^`]+`", _save_code, protected)
 
     def _replace_match(m: re.Match) -> str:
-        latex = (m.group(1) or m.group(2)) if (m.lastindex and m.lastindex >= 2) else m.group(1)
+        latex = (
+            (m.group(1) or m.group(2))
+            if (m.lastindex and m.lastindex >= 2)
+            else m.group(1)
+        )
         if latex is None:
             return m.group(0)
         return _latex_fragment_to_unicode(latex.strip())
@@ -162,11 +168,17 @@ BAR_EMPTY_END = "\x00EE\x00"
 
 def progress_bar(current: int, total: int, width: int = 10) -> str:
     """Сегментированный прогресс-бар с маркерами для цветного отображения."""
-    ratio = 0.0 if total <= 0 else min(current / total, 1.0)
+    width = max(int(width), 0)
+    ratio = 0.0 if total <= 0 else max(0.0, min(current / total, 1.0))
     filled = int(width * ratio)
     empty = width - filled
     filled_str = "▮" * filled
     empty_str = "▯" * empty
     return (
-        BAR_FILLED_START + filled_str + BAR_FILLED_END + BAR_EMPTY_START + empty_str + BAR_EMPTY_END
+        BAR_FILLED_START
+        + filled_str
+        + BAR_FILLED_END
+        + BAR_EMPTY_START
+        + empty_str
+        + BAR_EMPTY_END
     )

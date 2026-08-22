@@ -47,7 +47,10 @@ class LazyCommandGroup(click.Group):
         return getattr(importlib.import_module(module_name), attribute)
 
     def format_commands(self, ctx, formatter):
-        rows = [("cli", "Interactive terminal chat"), ("run", "Headless one-shot/CI mode")]
+        rows = [
+            ("cli", "Interactive terminal chat"),
+            ("run", "Headless one-shot/CI mode"),
+        ]
         with formatter.section("Commands"):
             formatter.write_dl(rows)
 

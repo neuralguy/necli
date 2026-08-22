@@ -8,18 +8,67 @@
 """
 
 import asyncio
+import codecs
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
+from io import StringIO
 
 from config.constants import Limits
 from config.i18n import format_duration
 from logger import logger
 from tools.models import ToolResult
+
+
+class _OutputBuffer:
+    def __init__(self, limit: int) -> None:
+        self._limit = max(2, limit)
+        self._head_limit = self._limit // 2
+        self._tail_limit = self._limit - self._head_limit
+        self._head = StringIO()
+        self._tail: deque[str] = deque()
+        self._tail_chars = 0
+        self.total_chars = 0
+
+    def write(self, text: str) -> None:
+        if not text:
+            return
+        self.total_chars += len(text)
+        head_remaining = self._head_limit - self._head.tell()
+        if head_remaining > 0:
+            self._head.write(text[:head_remaining])
+            text = text[head_remaining:]
+        if not text:
+            return
+        self._tail.append(text)
+        self._tail_chars += len(text)
+        while self._tail_chars > self._tail_limit and self._tail:
+            excess = self._tail_chars - self._tail_limit
+            first = self._tail[0]
+            if len(first) <= excess:
+                self._tail.popleft()
+                self._tail_chars -= len(first)
+            else:
+                self._tail[0] = first[excess:]
+                self._tail_chars -= excess
+
+    def snapshot(self, max_chars: int | None = None) -> str:
+        head = self._head.getvalue()
+        tail = "".join(self._tail)
+        if self.total_chars <= self._limit:
+            text = head + tail
+        else:
+            skipped = self.total_chars - len(head) - len(tail)
+            text = head + f"\n... [{skipped} chars skipped] ...\n" + tail
+        if max_chars is None or len(text) <= max_chars:
+            return text
+        skipped = len(text) - max_chars
+        return f"... [{skipped} earlier chars hidden in live view] ...\n" + text[-max_chars:]
 
 # ── Мост поток-демон → asyncio ──
 # Фоновые задачи исполняются в daemon-потоках (вне asyncio). Чтобы REPL мог
@@ -42,10 +91,22 @@ def get_finish_event() -> "asyncio.Event | None":
     return _finish_event
 
 
-def clear_finish_event() -> None:
-    """Сбрасывает Event после обработки — чтобы ждать следующего завершения."""
-    if _finish_event is not None:
-        _finish_event.clear()
+def clear_finish_event(*, force: bool = False) -> None:
+    """Сбрасывает Event после обработки, не теряя гонку с новым результатом.
+
+    Публикация результата и эта проверка используют один lock. Поэтому новый
+    результат, опубликованный после проверки, гарантированно взведёт Event
+    снова; ``force`` нужен только когда результат намеренно оставлен ждать
+    следующего пользовательского хода.
+    """
+    if _finish_event is None:
+        return
+    with _lock:
+        if force or not (
+            _external_results
+            or any(j.status != "running" and not j.delivered for j in _jobs.values())
+        ):
+            _finish_event.clear()
 
 
 def _signal_finish() -> None:
@@ -77,6 +138,10 @@ class _Job:
     visible: bool = True
     timeout: float = Limits.BG_SHELL_TIMEOUT
     process_ready: threading.Event = field(default_factory=threading.Event, repr=False)
+    output_buffer: _OutputBuffer = field(
+        default_factory=lambda: _OutputBuffer(Limits.BG_SHELL_MAX_OUTPUT_CHARS),
+        repr=False,
+    )
 
 
 _jobs: dict[str, _Job] = {}
@@ -118,9 +183,34 @@ def _append_job_output(job: _Job, text: str, *, stderr: bool = False) -> None:
         return
     chunk = f"[stderr] {text}" if stderr else text
     with _lock:
-        job.output += chunk
+        job.output_buffer.write(chunk)
         job.revision += 1
-    _notify_job_changed(job)
+
+
+def snapshot_job_output(job: _Job, max_chars: int | None = None) -> str:
+    with _lock:
+        output_buffer = getattr(job, "output_buffer", None)
+        buffered = (
+            output_buffer.snapshot(max_chars=max_chars)
+            if output_buffer is not None
+            else ""
+        )
+        output = getattr(job, "output", "") or ""
+        if not output:
+            return buffered
+        combined = output + buffered
+        if max_chars is None or len(combined) <= max_chars:
+            return combined
+        skipped = len(combined) - max_chars
+        return (
+            f"... [{skipped} earlier chars hidden in live view] ...\n"
+            + combined[-max_chars:]
+        )
+
+
+def _finalize_job_output(job: _Job) -> None:
+    job.output += job.output_buffer.snapshot()
+    job.output_buffer = _OutputBuffer(Limits.BG_SHELL_MAX_OUTPUT_CHARS)
 
 
 def _stop_process(process: subprocess.Popen, *, force: bool = False) -> None:
@@ -145,10 +235,11 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
     # `python script.py`, и для модулей/обёрток, не переписывая команду.
     child_env["PYTHONUNBUFFERED"] = "1"
     run_kwargs = {
+        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
-        "text": True,
-        "bufsize": 1,
+        "text": False,
+        "bufsize": 0,
         "cwd": cwd,
         "env": child_env,
     }
@@ -168,9 +259,15 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
                 continue
 
             def _read(stream=pipe, err=is_stderr, job_ref=job):
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                 try:
-                    for line in iter(stream.readline, ""):
-                        _append_job_output(job_ref, line, stderr=err)
+                    while chunk := os.read(stream.fileno(), 64 * 1024):
+                        text = decoder.decode(chunk)
+                        if text:
+                            _append_job_output(job_ref, text, stderr=err)
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        _append_job_output(job_ref, tail, stderr=err)
                 except (OSError, ValueError):
                     # Pipe закрыт извне (process killed, timeout) — не даём
                     # потоку упасть и не оставляем дескриптор открытым.
@@ -217,6 +314,7 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
             reader.join(timeout=1)
         with _lock:
             job.process = None
+            _finalize_job_output(job)
             if not job.output:
                 job.output = "(no output)"
             cancelled = job.cancel_requested
@@ -242,7 +340,9 @@ def _run_job(job: _Job, cwd: str, env: dict) -> None:
         job.process_ready.set()
         with _lock:
             job.process = None
-            job.output = f"Error: {e}"
+            _finalize_job_output(job)
+            error = f"Error: {e}"
+            job.output = f"{job.output}\n{error}" if job.output else error
             job.exit_code = 130 if job.cancel_requested else -1
             job.status = "cancelled" if job.cancel_requested else "error"
             job.finished_at = time.monotonic()

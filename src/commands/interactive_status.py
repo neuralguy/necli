@@ -7,7 +7,7 @@ import time
 from wcwidth import wcswidth
 
 import config
-from models import get_context_limit
+from models import DEFAULT_CONTEXT_LIMIT, get_context_limit
 from ui import format_cost, format_tokens
 from ui.formatting import (
     BAR_EMPTY_END,
@@ -195,11 +195,12 @@ def build_status_line(state, extra: str = "") -> str:
     # tool schemas (в том числе MCP). Полоса контекста ниже показывает
     # текущую историю + системный промт (session.system_prompt_tokens),
     # а не накопленный billing input.
+    cache_tok = int(getattr(s, "cache_read_tokens", 0) or 0)
     in_tok = s.input_tokens
     out_tok = s.output_tokens
     total_tok = s.context_tokens
 
-    ctx_limit = get_context_limit(state.cur_model) or 200_000
+    ctx_limit = get_context_limit(state.cur_model) or DEFAULT_CONTEXT_LIMIT
     ctx_bar = progress_bar(total_tok, ctx_limit, width=10)
     cost_str = format_cost(s.total_cost)
 
@@ -239,18 +240,24 @@ def build_status_line(state, extra: str = "") -> str:
 
     # Секция 1 — провайдер и модель; секция 2 — usage (сообщения, токены,
     # стоимость, контекст). Вспомогательные индикаторы (think, extra) — вне.
-    sec1_inner = (f"🔌 {_api_id} · " if _api_id else "") + state.cur_model + provider_balance
+    sec1_inner = (
+        (f"⌁ {_api_id} · " if _api_id else "") + state.cur_model + provider_balance
+    )
     ctx_str = f"{ctx_bar} {format_tokens(total_tok)}/{format_tokens(ctx_limit)}"
 
     msg_str = f"{mc}msg" if mc > 0 else ""
-    io_str = f"↑{format_tokens(in_tok)} ↓{format_tokens(out_tok)}" if mc > 0 else ""
+    io_str = (
+        f"↑{format_tokens(cache_tok)}/{format_tokens(in_tok)} ↓{format_tokens(out_tok)}"
+        if mc > 0
+        else ""
+    )
     cost_str = f"≈{cost_str}" if mc > 0 else ""
 
     # Порядок показа: msg, io, cost, ctx; порядок удаления: cost, io, msg.
     usage = [u for u in (msg_str, io_str, cost_str, ctx_str) if u]
     removables = [cost_str, io_str, msg_str]
 
-    think_str = "💭" if getattr(state, "think_enabled", False) else ""
+    think_str = "⋯" if getattr(state, "think_enabled", False) else ""
     extra_str = extra or ""
 
     # Бюджет: ширина терминала минус префикс "─── ", суффикс " " + хвост ─

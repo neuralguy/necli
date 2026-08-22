@@ -6,15 +6,14 @@ from datetime import datetime
 
 import prompts.fenced
 import prompts.native
+from config.paths import USER_PROMPT_FILE
 
 logger = logging.getLogger(__name__)
 
 
 # ── Notice/signal constants (formerly in prompts._notices & prompts._settings) ──
 
-CONTINUE_MESSAGE = (
-    "Your previous reply was cut off by the token limit. Continue from where you stopped"
-)
+CONTINUE_MESSAGE = "Your previous reply was cut off by the token limit. Continue from where you stopped"
 
 INTERRUPTED_NOTICE = "[Execution stopped by the user]"
 
@@ -113,7 +112,9 @@ THINK_SWITCH_ON = (
     "[SYSTEM: THINK format ON now — see the THINK FORMAT section in the system "
     "prompt. Start emitting a single think step before acting]"
 )
-THINK_SWITCH_OFF = "[SYSTEM: THINK format OFF now — stop emitting think steps, reply as usual]"
+THINK_SWITCH_OFF = (
+    "[SYSTEM: THINK format OFF now — stop emitting think steps, reply as usual]"
+)
 MODE_SWITCH_TO_PLANNING = (
     "[SYSTEM: Switched to PLANNING mode — read-only tools only, write/execute blocked. "
     "See the PLANNING MODE section in the system prompt]"
@@ -241,7 +242,9 @@ def _build_mcp_tools_block(native_tools: bool = True) -> str:
         by_server.setdefault(t.server_id, []).append(t)
 
     if native_tools:
-        call_line = "Call them like any other tool, with name prefixed mcp__<server>__<tool>"
+        call_line = (
+            "Call them like any other tool, with name prefixed mcp__<server>__<tool>"
+        )
     else:
         call_line = "Call them via the same fenced-block format, with name prefixed mcp__<server>__<tool>. Pass arguments as JSON in the block body"
 
@@ -269,7 +272,33 @@ def _build_mcp_tools_block(native_tools: bool = True) -> str:
     return "\n".join(lines)
 
 
+def _build_user_prompt_block() -> str:
+    try:
+        from config.settings import get as _settings_get
+
+        if not bool(_settings_get("user_prompt_enabled", True)):
+            return ""
+        if not USER_PROMPT_FILE.exists():
+            return ""
+        text = USER_PROMPT_FILE.read_text(encoding="utf-8").strip()
+        return text
+    except Exception:
+        logger.debug("user prompt block build failed", exc_info=True)
+        return ""
+
+
+def _memory_enabled() -> bool:
+    try:
+        from config.settings import get
+
+        return bool(get("memory_enabled", True))
+    except Exception:
+        return True
+
+
 def _build_memory_block(working_dir: str = "", memory_query: str = "") -> str:
+    if not _memory_enabled():
+        return ""
     try:
         from memory import format_memory_block
 
@@ -313,8 +342,9 @@ def build_system_prompt(
     # Select module based on format
     mod = prompts.native if native_tools else prompts.fenced
 
-    # Build base from always-present sections
-    parts = [mod.BASE]
+    # The user role is the first prompt block; the built-in role is only a fallback.
+    role = _build_user_prompt_block() or mod.ROLE.strip()
+    parts = [role, mod.ROLE_ENFORCEMENT.strip(), mod.BASE]
 
     # Conditional sections
     if mode == "planning":
@@ -338,7 +368,10 @@ def build_system_prompt(
     # Append dynamic blocks (skills, MCP, memory)
     text += _build_skills_block()
     text += _build_mcp_tools_block(native_tools)
-    text += _build_memory_block(working_dir, memory_query)
+    if _memory_enabled() and not native_tools:
+        text += "\n\n" + prompts.fenced.MEMORY_TOOL_INSTRUCTIONS.strip()
+    if _memory_enabled():
+        text += _build_memory_block(working_dir, memory_query)
 
     logger.debug(
         "build_system_prompt: %d chars (proof=%d, mode=%s, think=%s, native=%s)",
@@ -371,7 +404,9 @@ def build_tool_results(results: list[dict]) -> str:
         if exit_code != 0:
             attrs.append(f'exit_code="{escape(str(exit_code), quote=True)}"')
 
-        parts.append("<result " + " ".join(attrs) + f">\n<![CDATA[\n{output}\n]]>\n</result>")
+        parts.append(
+            "<result " + " ".join(attrs) + f">\n<![CDATA[\n{output}\n]]>\n</result>"
+        )
 
     body = "\n".join(parts)
     return (

@@ -16,7 +16,9 @@ from config.themes import t
 class ResponseTable(TableElement):
     """Compact, high-contrast table used in AI responses."""
 
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
         table = Table(
             box=box.SQUARE,
             border_style=t("muted"),
@@ -64,7 +66,9 @@ class ThoughtMarkdown(ResponseMarkdown):
                 if child.type == "softbreak":
                     child.type = "hardbreak"
 
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
         muted = console.get_style(self._muted_style)
         pale = Style(dim=True)
         for segment in super().__rich_console__(console, options):

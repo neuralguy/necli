@@ -71,7 +71,11 @@ def grab_image_from_clipboard(dest_dir: Path | None = None) -> Path | None:
     if _has_cmd("xclip"):
         result = _grab_xclip(dest)
         if result:
-            logger.info("clipboard.grab: xclip ok → %s (%d bytes)", result, result.stat().st_size)
+            logger.info(
+                "clipboard.grab: xclip ok → %s (%d bytes)",
+                result,
+                result.stat().st_size,
+            )
             return result
 
     # Linux Wayland: wl-paste
@@ -225,7 +229,9 @@ def _grab_pillow(dest: Path) -> Path | None:
         if isinstance(img, list):
             # Проверяем — может это файл изображения
             for f in img:
-                if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")):
+                if f.lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
+                ):
                     import shutil as sh
 
                     sh.copy2(f, dest)

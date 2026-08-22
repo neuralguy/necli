@@ -164,6 +164,9 @@ class TelegramBridge:
         self._callback_handler = None
         self._button_aliases: dict[str, str] = {}
         self.agent_busy: bool = False
+        # Polling and agent execution use different asyncio tasks, so ContextVar
+        # state is not shared. This reference is used only for stop requests.
+        self.active_agent_context = None
         # Inline-approve tool-вызовов: approval_id → (concurrent.futures.Future, message_id)
         self._pending_approvals: dict = {}
         self._approval_seq: int = 0
@@ -234,14 +237,19 @@ class TelegramBridge:
                             await handler(arg, message)
                         except Exception as e:
                             logger.error("tg cmd %s failed: %s", cmd, e, exc_info=True)
-                            self.send(f"❌ <i>cmd {_escape_html(cmd)}: {_escape_html(str(e))}</i>")
+                            self.send(
+                                f"❌ <i>cmd {_escape_html(cmd)}: {_escape_html(str(e))}</i>"
+                            )
                         return
                 await self.incoming_queue.put(
                     IncomingMessage(
                         text=text,
                         chat_id=message.chat.id,
                         user_id=message.from_user.id if message.from_user else 0,
-                        username=(message.from_user.username if message.from_user else "") or "",
+                        username=(
+                            message.from_user.username if message.from_user else ""
+                        )
+                        or "",
                     )
                 )
                 logger.info("telegram in: %s", text[:80])
@@ -323,7 +331,9 @@ class TelegramBridge:
                                     parse_mode=None,
                                 )
                             except Exception as e2:
-                                logger.warning("tg send failed (plain fallback): %s", e2)
+                                logger.warning(
+                                    "tg send failed (plain fallback): %s", e2
+                                )
                         else:
                             logger.warning("tg send failed: %s", e)
                     await asyncio.sleep(SEND_INTERVAL)
@@ -479,8 +489,12 @@ class TelegramBridge:
         markup = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="✅ Allow", callback_data=f"approve:{approval_id}"),
-                    InlineKeyboardButton(text="✗ Deny", callback_data=f"deny:{approval_id}"),
+                    InlineKeyboardButton(
+                        text="✅ Allow", callback_data=f"approve:{approval_id}"
+                    ),
+                    InlineKeyboardButton(
+                        text="✗ Deny", callback_data=f"deny:{approval_id}"
+                    ),
                 ]
             ]
         )
@@ -543,7 +557,9 @@ class TelegramBridge:
             logger.debug("tg approval wait failed: %s", e)
             return None
 
-    async def edit_inline_message(self, callback_query, text: str, reply_markup=None) -> None:
+    async def edit_inline_message(
+        self, callback_query, text: str, reply_markup=None
+    ) -> None:
         try:
             chunk = _split_long(text)[0]
             await callback_query.message.edit_text(

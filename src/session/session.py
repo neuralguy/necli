@@ -36,7 +36,9 @@ class Session:
         site: str | None = None,
         working_dir: str | None = None,
     ):
-        self.id = _validate_session_id(session_id) if session_id else self._generate_id()
+        self.id = (
+            _validate_session_id(session_id) if session_id else self._generate_id()
+        )
         self.title = title or ""
         self.site: str = site or "api"
         self.working_dir = working_dir or ""
@@ -293,6 +295,7 @@ class Session:
         self._compressed_stats = {
             "messages": snapshot["messages"],
             "total_cost": snapshot["total_cost"],
+            "cache_read_tokens": snapshot.get("cache_read_tokens", 0),
             "input_tokens": snapshot["input_tokens"],
             "output_tokens": snapshot["output_tokens"],
         }
@@ -344,12 +347,20 @@ class Session:
         prev = self._compressed_stats or {
             "messages": 0,
             "total_cost": 0.0,
+            "cache_read_tokens": 0,
             "input_tokens": 0,
             "output_tokens": 0,
         }
+        head_cache_read_tokens = sum(
+            int((m.usage or {}).get("cache_read") or 0)
+            for m in head
+            if m.role == "assistant" and isinstance(m.usage, dict)
+        )
         self._compressed_stats = {
             "messages": prev["messages"] + compressed_msgs,
             "total_cost": prev["total_cost"] + compressed_cost,
+            "cache_read_tokens": prev.get("cache_read_tokens", 0)
+            + head_cache_read_tokens,
             "input_tokens": prev.get("input_tokens", 0) + head_input_tokens,
             "output_tokens": prev.get("output_tokens", 0) + head_output_tokens,
         }
@@ -387,18 +398,44 @@ class Session:
         return ""
 
     @property
+    def cache_read_tokens(self) -> int:
+        base = (
+            self._compressed_stats.get("cache_read_tokens", 0)
+            if self._compressed_stats
+            else 0
+        )
+        current = sum(
+            int((m.usage or {}).get("cache_read") or 0)
+            for m in self.messages
+            if m.role == "assistant" and isinstance(m.usage, dict)
+        )
+        return base + current
+
+    @property
     def input_tokens(self) -> int:
-        base = self._compressed_stats.get("input_tokens", 0) if self._compressed_stats else 0
+        base = (
+            self._compressed_stats.get("input_tokens", 0)
+            if self._compressed_stats
+            else 0
+        )
         return base + sum(s["input_tokens"] for s in self._compute_cost().values())
 
     @property
     def output_tokens(self) -> int:
-        base = self._compressed_stats.get("output_tokens", 0) if self._compressed_stats else 0
+        base = (
+            self._compressed_stats.get("output_tokens", 0)
+            if self._compressed_stats
+            else 0
+        )
         return base + sum(m.tokens for m in self.messages if m.role == "assistant")
 
     @property
     def raw_input_tokens(self) -> int:
-        return sum(m.tokens for m in self.messages if m.role in ("user", "system", "tool_result"))
+        return sum(
+            m.tokens
+            for m in self.messages
+            if m.role in ("user", "system", "tool_result")
+        )
 
     @property
     def total_tokens(self) -> int:
@@ -413,7 +450,9 @@ class Session:
         # история + оценка системного промта.
         if self.last_provider_input > 0:
             return self.last_provider_input + self._last_assistant_tokens
-        current_output_tokens = sum(m.tokens for m in self.messages if m.role == "assistant")
+        current_output_tokens = sum(
+            m.tokens for m in self.messages if m.role == "assistant"
+        )
         return self.raw_input_tokens + current_output_tokens + self.system_prompt_tokens
 
     def _token_totals_of_messages(self, msgs: list) -> tuple[int, int]:
@@ -451,12 +490,15 @@ class Session:
                         "output_tokens": 0,
                         "input_cost": 0.0,
                         "output_cost": 0.0,
+                        "cache_read_tokens": 0,
+                        "cache_read_billed_tokens": 0.0,
                         "total_cost": 0.0,
                     }
                 price_in, price_out = app_models.get_pricing(model)
 
-                # Приоритет: реальный usage от провайдера. Cached-токены
-                # игнорируем — считаем весь input по обычной цене.
+                # Приоритет: реальный usage от провайдера. Прочитанная из
+                # prompt-cache часть input тарифицируется с сохранённым
+                # коэффициентом провайдера (обычно 0.1).
                 usage = msg.usage if isinstance(msg.usage, dict) else None
                 if usage and (usage.get("input") or usage.get("output")):
                     all_input = int(usage.get("input") or 0)
@@ -465,9 +507,24 @@ class Session:
                     all_input = sum(t for t, _ in input_buffer)
                     output_tokens = msg.tokens
 
+                cache_read = int((usage or {}).get("cache_read") or 0)
+                cache_factor = (usage or {}).get("cache_read_factor", 0.1)
+                try:
+                    cache_factor = max(0.0, float(cache_factor))
+                except (TypeError, ValueError):
+                    cache_factor = 0.1
                 by_model[model]["input_tokens"] += all_input
+                by_model[model]["cache_read_tokens"] += min(all_input, cache_read)
+                by_model[model]["cache_read_billed_tokens"] += (
+                    min(all_input, cache_read) * cache_factor
+                )
                 by_model[model]["output_tokens"] += output_tokens
-                by_model[model]["input_cost"] += all_input * price_in / 1_000_000
+                by_model[model]["input_cost"] += app_models.input_cost_with_cache(
+                    all_input,
+                    price_in,
+                    cache_read_tokens=cache_read,
+                    cache_read_factor=cache_factor,
+                )
                 by_model[model]["output_cost"] += output_tokens * price_out / 1_000_000
                 # Ответ ассистента входит в историю следующего API-запроса.
                 input_buffer.append((msg.tokens, model))
@@ -501,7 +558,12 @@ class Session:
                 else:
                     all_input = sum(input_buffer)
                     output_tokens = msg.tokens
-                total += all_input * price_in / 1_000_000
+                total += app_models.input_cost_with_cache(
+                    all_input,
+                    price_in,
+                    cache_read_tokens=int((usage or {}).get("cache_read") or 0),
+                    cache_read_factor=(usage or {}).get("cache_read_factor", 0.1),
+                )
                 total += output_tokens * price_out / 1_000_000
                 input_buffer.append(msg.tokens)
         return total
@@ -513,7 +575,9 @@ class Session:
 
     @property
     def total_duration(self) -> float:
-        return sum(m.duration for m in self.messages if m.role == "assistant" and m.duration)
+        return sum(
+            m.duration for m in self.messages if m.role == "assistant" and m.duration
+        )
 
     @property
     def message_count(self) -> int:
@@ -535,6 +599,7 @@ class Session:
             "models": self.models_used,
             "last_model": self.last_model,
             "messages": self.message_count,
+            "cache_read_tokens": self.cache_read_tokens,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
@@ -542,7 +607,10 @@ class Session:
             "total_cost": round(total_cost, 8),
             "total_duration": round(self.total_duration, 2),
             "cost_by_model": {
-                k: {kk: round(vv, 8) if isinstance(vv, float) else vv for kk, vv in v.items()}
+                k: {
+                    kk: round(vv, 8) if isinstance(vv, float) else vv
+                    for kk, vv in v.items()
+                }
                 for k, v in cost_data.items()
                 if k not in ("unknown", "")
             },

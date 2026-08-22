@@ -74,7 +74,9 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
-def _cache_record(path: Path, key: str, start: int, end: int, *, binary: bool = False) -> dict:
+def _cache_record(
+    path: Path, key: str, start: int, end: int, *, binary: bool = False
+) -> dict:
     """Фиксирует факт чтения диапазона [start,end] в кэше текущей сессии."""
     try:
         stat = path.stat()
@@ -83,7 +85,11 @@ def _cache_record(path: Path, key: str, start: int, end: int, *, binary: bool = 
     with _READ_CACHE_LOCK:
         bucket = _session_cache()
         entry = bucket.get(key)
-        if entry is None or entry["mtime_ns"] != stat.st_mtime_ns or entry["size"] != stat.st_size:
+        if (
+            entry is None
+            or entry["mtime_ns"] != stat.st_mtime_ns
+            or entry["size"] != stat.st_size
+        ):
             entry = {
                 "mtime_ns": stat.st_mtime_ns,
                 "size": stat.st_size,
@@ -135,11 +141,15 @@ def clear_read_cache(session_id: str | None = None) -> int:
         sid = session_id if session_id else _current_session_id()
         bucket = _READ_CACHE.pop(sid, None)
         n = len(bucket) if bucket else 0
-    logger.info("read cache: cleared session={} entries={}", sid[:16] if sid else "?", n)
+    logger.info(
+        "read cache: cleared session={} entries={}", sid[:16] if sid else "?", n
+    )
     return n
 
 
-def _parse_lines_range(lines_range: str, total_lines: int) -> tuple[int, int] | str | None:
+def _parse_lines_range(
+    lines_range: str, total_lines: int
+) -> tuple[int, int] | str | None:
     """Единый парсер диапазона строк — источник истины и для cache-coverage, и для вывода.
 
     Принимает 'A-B'/'A:B', 'A', открытые 'A-' (до конца файла) и '-B' (с начала).
@@ -204,7 +214,11 @@ def _read_binary_cached(
                 name="read", status="ok", output=filtered, exit_code=0, command=command
             )
         return ToolResult(
-            name="read", status="ok", output=f"{info}\n{content}", exit_code=0, command=command
+            name="read",
+            status="ok",
+            output=f"{info}\n{content}",
+            exit_code=0,
+            command=command,
         )
     except Exception as e:
         return ToolResult(
@@ -243,7 +257,9 @@ def _read_single_file(
                 exit_code=1,
                 command=command,
             )
-        listing = "\n".join(f"{entry.name}/" if entry.is_dir() else entry.name for entry in entries)
+        listing = "\n".join(
+            f"{entry.name}/" if entry.is_dir() else entry.name for entry in entries
+        )
         return ToolResult(
             name="read",
             status="ok",
@@ -268,7 +284,9 @@ def _read_single_file(
         return ToolResult(
             name="read",
             status="ok",
-            output=(f"[image: {path_str} · {path.suffix.lower()} — will be sent as image]"),
+            output=(
+                f"[image: {path_str} · {path.suffix.lower()} — will be sent as image]"
+            ),
             exit_code=0,
             command=command,
             image_path=path,
@@ -336,7 +354,11 @@ def _read_single_file(
         content = _safe_read(path, encoding)
     except Exception as e:
         return ToolResult(
-            name="read", status="error", output=f"Read error: {e}", exit_code=1, command=command
+            name="read",
+            status="error",
+            output=f"Read error: {e}",
+            exit_code=1,
+            command=command,
         )
 
     MAX_LINES = 1000
@@ -356,7 +378,7 @@ def _read_single_file(
         content_out = "\n".join(all_file_lines[:MAX_LINES])
         info = f"[{path_str} · {total_lines} lines (showing first {MAX_LINES})]"
         note = (
-            f"\n\n⚠️ File truncated: showing {MAX_LINES} of {total_lines} lines. "
+            f"\n\n⚠︎ File truncated: showing {MAX_LINES} of {total_lines} lines. "
             f'Use {{"path": "{path_str}", "lines": "{MAX_LINES + 1}-{total_lines}"}} to read the rest.'
         )
         _cache_record(path, cache_key, 1, MAX_LINES)
@@ -455,8 +477,7 @@ def read(call: ToolCall) -> ToolResult:
             offset = int(offset)
         except (TypeError, ValueError):
             offset = 1
-    if offset < 1:
-        offset = 1
+    offset = max(offset, 1)
 
     lines_range = f"{offset}-{offset + limit - 1}"
 

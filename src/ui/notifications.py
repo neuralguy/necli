@@ -12,6 +12,7 @@ Windows: PowerShell toast через Windows Runtime API (без сторонн�
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import shutil
@@ -58,9 +59,11 @@ def _ps_escape(text: str) -> str:
 
 
 def _windows_toast_command(title: str, body: str) -> list[str]:
+    safe_title = html.escape(title, quote=False)
+    safe_body = html.escape(body, quote=False)
     xml = (
         "<toast><visual><binding template='ToastGeneric'>"
-        f"<text>{title}</text><text>{body}</text>"
+        f"<text>{safe_title}</text><text>{safe_body}</text>"
         "</binding></visual></toast>"
     )
     script = (
@@ -188,14 +191,14 @@ def notify_turn_finished(
     True, если уведомление запланировано к отправке.
     """
     try:
-        if not _passes_gates(elapsed):
+        if poll or not _passes_gates(elapsed):
             return False
         from config.i18n import format_duration, t
 
-        if poll:
-            body = t("notifications.poll_body", time=format_duration(elapsed or 0.0))
-        elif cancelled:
-            body = t("notifications.cancelled_body", time=format_duration(elapsed or 0.0))
+        if cancelled:
+            body = t(
+                "notifications.cancelled_body", time=format_duration(elapsed or 0.0)
+            )
         else:
             body = t("notifications.done_body", time=format_duration(elapsed or 0.0))
         _send_in_thread(_APP_NAME, body)

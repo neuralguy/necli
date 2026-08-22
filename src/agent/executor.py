@@ -49,7 +49,13 @@ def _extract_write_time(subtitle: str) -> float | None:
 def _working_detail(args: dict | None) -> str:
     """Короткое описание вызова для Working без предположений о его схеме."""
     data = args or {}
-    value = data.get("path") or data.get("command") or data.get("prompt") or data.get("name") or ""
+    value = (
+        data.get("path")
+        or data.get("command")
+        or data.get("prompt")
+        or data.get("name")
+        or ""
+    )
     lines = str(value).splitlines()
     return lines[0][:72] if lines else ""
 
@@ -100,7 +106,7 @@ def _raise_tool_zone(call: tools.ToolCall, detail: str):
         if elapsed < _TOOL_ZONE_DELAY_SEC:
             return ""
         frame = Text()
-        frame.append("🛠 ", style=t("dim_text"))
+        frame.append("⚒︎ ", style=t("dim_text"))
         frame.append(name, style=f"bold {t('accent')}")
         if detail:
             frame.append(f" · {detail}", style=t("dim_text"))
@@ -161,8 +167,13 @@ def _execute_single(
     if call.tool_name != "poll":
         from tools.registry import TOOL_REGISTRY
 
-        if not call.tool_name.startswith("mcp__") and call.tool_name not in TOOL_REGISTRY:
-            logger.warning("unknown tool requested: {} (skipping approval prompt)", call.tool_name)
+        if (
+            not call.tool_name.startswith("mcp__")
+            and call.tool_name not in TOOL_REGISTRY
+        ):
+            logger.warning(
+                "unknown tool requested: {} (skipping approval prompt)", call.tool_name
+            )
             return tools.execute_call(call)
         from config.permissions import get_decision
 
@@ -223,7 +234,9 @@ def _execute_single(
         finally:
             if working is not None:
                 working.finish_call(call.tool_name)
-            if prompt_input is not None and hasattr(prompt_input, "set_activity_status"):
+            if prompt_input is not None and hasattr(
+                prompt_input, "set_activity_status"
+            ):
                 try:
                     prompt_input.set_activity_status("working")
                 except Exception:
@@ -232,13 +245,6 @@ def _execute_single(
             event_handler.on_tool_result(result)
         elif not _silent:
             _show_poll_result(result)
-        if working is not None:
-            try:
-                from ui.notifications import notify_turn_finished
-
-                notify_turn_finished(max(0.0, time.monotonic() - working.started_at), poll=True)
-            except Exception:
-                logger.debug("poll notification failed", exc_info=True)
         return result
     if event_handler is not None:
         event_handler.on_tool_start(call, subtitle=subtitle)
@@ -274,7 +280,10 @@ def _execute_single(
     # Slow tool warning
     if result.elapsed > SLOW_TOOL_THRESHOLD:
         warning(
-            "tool.slow", tool=call.tool_name, duration=result.elapsed, command=call.command[:100]
+            "tool.slow",
+            tool=call.tool_name,
+            duration=result.elapsed,
+            command=call.command[:100],
         )
 
     logger.info(
@@ -290,7 +299,9 @@ def _execute_single(
         try:
             final_subtitle = subtitle_factory(result)
         except Exception:
-            logger.debug("subtitle_factory failed for {}", call.tool_name, exc_info=True)
+            logger.debug(
+                "subtitle_factory failed for {}", call.tool_name, exc_info=True
+            )
 
     # Для контентных инструментов (write/create/patch/docx/pptx) реальная «работа» —
     # это время, пока модель СТРИМИЛА тело блока (тикает в live-индикаторе), а
@@ -349,7 +360,10 @@ def _scan_group_indices(calls: list[tools.ToolCall]) -> list[int]:
 
 
 def execute_and_show(
-    calls: list[tools.ToolCall], event_handler=None, subtitle: str = "", subtitle_factory=None
+    calls: list[tools.ToolCall],
+    event_handler=None,
+    subtitle: str = "",
+    subtitle_factory=None,
 ) -> list[tools.ToolResult]:
     # Сохраняем исходный порядок: results[idx] = result
     indexed: dict[int, tools.ToolResult] = {}
@@ -372,7 +386,10 @@ def execute_and_show(
             indexed[idx] = result
         else:
             result = _execute_single_safe(
-                call, event_handler, subtitle=subtitle, subtitle_factory=subtitle_factory
+                call,
+                event_handler,
+                subtitle=subtitle,
+                subtitle_factory=subtitle_factory,
             )
             indexed[idx] = result
 
@@ -467,7 +484,9 @@ async def _execute_and_show_async_impl(
         # thread. После возврата в основной event loop принудительно просим
         # свежий кадр и отдаём один тик loop'у: так result одного инструмента
         # успевает зафиксироваться в scrollback/dynamic ДО старта следующего.
-        working = getattr(agent_ctx, "working_round", None) if agent_ctx is not None else None
+        working = (
+            getattr(agent_ctx, "working_round", None) if agent_ctx is not None else None
+        )
         if working is not None:
             working.invalidate()
         else:

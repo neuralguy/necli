@@ -16,11 +16,10 @@ import time
 from dataclasses import dataclass, field
 
 import models as app_models
-import session.storage as storage
 from config.i18n import format_duration, get_lang
 from config.i18n import t as tr
 from logger import logger
-from session import Session
+from session import Session, storage
 from ui.formatting import format_cost, format_tokens
 from ui.overlays import (
     BOLD,
@@ -104,10 +103,12 @@ def _metric_grid(
     for start in range(0, len(metrics), columns):
         chunk = metrics[start : start + columns]
         values = "".join(
-            _cell(paint(value, role, bold=True), column_width) for _label, value, role in chunk
+            _cell(paint(value, role, bold=True), column_width)
+            for _label, value, role in chunk
         )
         labels = "".join(
-            _cell(f"{DIM}{label}{RESET}", column_width) for label, _value, _role in chunk
+            _cell(f"{DIM}{label}{RESET}", column_width)
+            for label, _value, _role in chunk
         )
         lines.extend((values, labels))
     return lines
@@ -161,7 +162,7 @@ class Snapshot:
     title: str = ""
     model: str = ""
     context_used: int = 0
-    context_limit: int = 200_000
+    context_limit: int = app_models.DEFAULT_CONTEXT_LIMIT
     billed_input: int = 0
     output: int = 0
     reasoning: int = 0
@@ -190,7 +191,13 @@ def _msg_cost(msg, input_buffer: list[int]) -> tuple[float, int, int]:
         output_tokens = msg.tokens
     elif not output_tokens:
         output_tokens = msg.tokens
-    cost = input_tokens * price_in / 1_000_000 + output_tokens * price_out / 1_000_000
+    usage = msg.usage if isinstance(msg.usage, dict) else {}
+    cost = app_models.input_cost_with_cache(
+        input_tokens,
+        price_in,
+        cache_read_tokens=_usage_int(msg, "cache_read"),
+        cache_read_factor=usage.get("cache_read_factor", 0.1),
+    ) + output_tokens * price_out / 1_000_000
     return cost, input_tokens, output_tokens
 
 
@@ -241,7 +248,9 @@ def collect(session: Session, active_model: str = "") -> Snapshot:
     snap.title = session.title or session.id
     snap.model = active_model or session.last_model or ""
     snap.context_used = session.context_tokens
-    snap.context_limit = app_models.get_context_limit(snap.model) or 200_000
+    snap.context_limit = (
+        app_models.get_context_limit(snap.model) or app_models.DEFAULT_CONTEXT_LIMIT
+    )
     snap.turns = _collect_turns(session)
 
     snap.total_cost = float(session.total_cost or 0.0)
@@ -312,7 +321,9 @@ def _section_session(snap: Snapshot, width: int, _selected: int) -> Body:
         (tr("stats.col_output"), format_tokens(snap.output), ""),
     ]
     if snap.cache_read:
-        usage.append((tr("stats.metric_cache"), format_tokens(snap.cache_read), "success"))
+        usage.append(
+            (tr("stats.metric_cache"), format_tokens(snap.cache_read), "success")
+        )
     if snap.reasoning:
         usage.append((tr("stats.metric_reasoning"), format_tokens(snap.reasoning), ""))
     lines.extend(_inline_metrics(usage, inner))
@@ -390,7 +401,9 @@ def _section_turns(snap: Snapshot, width: int, selected: int) -> Body:
     ]
     if turn.cache_read:
         details.append(tr("stats.cached_tokens", n=format_tokens(turn.cache_read)))
-    body.foot.append(section(clip(" · ".join(details), width - GUTTER - 2), indent=GUTTER + 1))
+    body.foot.append(
+        section(clip(" · ".join(details), width - GUTTER - 2), indent=GUTTER + 1)
+    )
     return body
 
 
@@ -433,7 +446,10 @@ def _section_history(
         stats["by_model"].items(),
         key=lambda item: (
             -float(item[1].get("cost") or 0),
-            -(int(item[1].get("input_tokens") or 0) + int(item[1].get("output_tokens") or 0)),
+            -(
+                int(item[1].get("input_tokens") or 0)
+                + int(item[1].get("output_tokens") or 0)
+            ),
             item[0].casefold(),
         ),
     )
@@ -480,7 +496,9 @@ def _section_history(
     )
 
     for name, data in items:
-        model_tokens = int(data.get("input_tokens") or 0) + int(data.get("output_tokens") or 0)
+        model_tokens = int(data.get("input_tokens") or 0) + int(
+            data.get("output_tokens") or 0
+        )
         cost_value = float(data.get("cost") or 0.0)
         share = cost_value / total_cost
         tokens = format_tokens(model_tokens)
@@ -536,7 +554,9 @@ class StatsOverlay(Overlay):
     def _stats(self) -> dict:
         if self.period not in self._stats_cache:
             try:
-                self._stats_cache[self.period] = storage.get_statistics(days=self.period)
+                self._stats_cache[self.period] = storage.get_statistics(
+                    days=self.period
+                )
             except Exception:
                 logger.warning("stats: get_statistics failed", exc_info=True)
                 self._stats_cache[self.period] = {}
@@ -605,7 +625,9 @@ class StatsOverlay(Overlay):
         for index in range(start, end):
             plain, styled = body.rows[index]
             picked = index == selected and body.selectable
-            output.append(row(plain if picked else styled, selected=picked, width=width))
+            output.append(
+                row(plain if picked else styled, selected=picked, width=width)
+            )
         if below:
             output.append(more_note(below, up=False))
         output.extend(body.foot)
@@ -617,7 +639,9 @@ class StatsOverlay(Overlay):
         if name == "history":
             pairs.extend((("↑↓", tr("stats.hint_row")), ("p", tr("stats.hint_period"))))
         elif name == "turns":
-            pairs.extend((("↑↓", tr("stats.hint_row")), ("pgup/pgdn", tr("stats.hint_page"))))
+            pairs.extend(
+                (("↑↓", tr("stats.hint_row")), ("pgup/pgdn", tr("stats.hint_page")))
+            )
         pairs.append(("esc", tr("stats.hint_close")))
         return key_hints(*pairs)
 
@@ -646,7 +670,9 @@ class StatsOverlay(Overlay):
         elif key == "end":
             self._move(10_000)
         elif key in ("p", "P") and SECTIONS[self.section] == "history":
-            index = self.periods.index(self.period) if self.period in self.periods else 0
+            index = (
+                self.periods.index(self.period) if self.period in self.periods else 0
+            )
             self.period = self.periods[(index + 1) % len(self.periods)]
             self.sel["history"] = 0
         elif len(key) == 1 and key.isdigit() and 1 <= int(key) <= len(SECTIONS):
